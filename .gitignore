@@ -1,0 +1,5 @@
+/target
+*.uid
+
+# every hidden folder, including .code4me (agent bookkeeping) and .git tooling folders
+.*/
