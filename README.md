@@ -16,7 +16,9 @@ by `save-scene`.
 
 ## Layout
 
-- `addon/godot_pipeline/` — the GDScript `EditorPlugin` source of truth.
+- `addon/godot_pipeline/` — the GDScript `EditorPlugin` source of truth:
+  `editor_plugin.gd` holds the socket server, command handlers, and request
+  guard, and `value_codec.gd` holds the JSON/Variant value conversions.
   Copy this folder into a Godot project's `addons/` directory and enable it
   under Project Settings > Plugins to use it.
 - `src/protocol.rs` — the wire protocol and the synchronous TCP client.
