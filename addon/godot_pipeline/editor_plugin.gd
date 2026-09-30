@@ -3,10 +3,11 @@ extends EditorPlugin
 ## Godot Pipeline bridge.
 ##
 ## Listens on a loopback-only TCP socket and answers a single JSON request
-## per connection. Supported commands: `status`, `scene_tree`, `rename_node`,
-## `create_node`, `set_property`, `delete_node`, and `save_scene`. The read
-## commands report the editor's status and the active edited scene's node
-## tree; the editing commands change the active scene through the editor's
+## per connection. Supported commands: `status`, `scene_tree`, `inspect_node`,
+## `rename_node`, `create_node`, `set_property`, `delete_node`, and
+## `save_scene`. The read commands report the editor's status, the active
+## edited scene's node tree, and a node's class, child count, and property
+## values; the editing commands change the active scene through the editor's
 ## undo/redo stack (one Undo/Redo step each) and never save it. `save_scene`
 ## persists the currently edited scene to the file path it already has, so
 ## edits made through the other commands survive a reload. Every editing
@@ -176,6 +177,8 @@ func _handle_request(raw_text: String, raw_bytes: int) -> void:
 			_handle_create_node(parsed)
 		"set_property":
 			_handle_set_property(parsed)
+		"inspect_node":
+			_handle_inspect_node(parsed)
 		"delete_node":
 			_handle_delete_node(parsed)
 		"save_scene":
@@ -526,6 +529,199 @@ func _handle_set_property(request: Dictionary) -> void:
 		"old_value": var_to_str(old_value),
 		"value": var_to_str(target.get(property)),
 	})
+
+
+## Reports a node's class, child count, and the current values of its
+## inspector and storage properties without changing the scene: no undo/redo
+## action is created, no dirty flag is set, and no file is written. Reads are
+## safe inside an instanced sub-scene regardless of Editable Children, so no
+## ownership guard applies.
+##
+## `request` must carry string fields `node_path` (relative to the edited
+## scene root, "." for the root itself) and `project_path` (the canonical,
+## symlink-resolved absolute path of the project the caller intends to read).
+## The project-path check runs before anything else is resolved, so a
+## mismatched caller is rejected before any property is read.
+func _handle_inspect_node(request: Dictionary) -> void:
+	var node_path_value: Variant = request.get("node_path")
+	var project_path_value: Variant = request.get("project_path")
+	if typeof(node_path_value) != TYPE_STRING or typeof(project_path_value) != TYPE_STRING:
+		_reply_error("inspect_node requires string fields: node_path, project_path")
+		return
+
+	var current_project_path := ProjectSettings.globalize_path("res://").rstrip("/")
+	var requested_project_path: String = (project_path_value as String).rstrip("/")
+	if requested_project_path != current_project_path:
+		_reply_error(
+			"project path mismatch: this editor has %s open, not %s" % [current_project_path, requested_project_path]
+		)
+		return
+
+	var scene_root := get_editor_interface().get_edited_scene_root()
+	if scene_root == null:
+		_reply_error("no scene is currently being edited")
+		return
+
+	var node_path: String = node_path_value
+	if node_path.is_empty():
+		_reply_error("node path must not be empty; use \".\" for the scene root")
+		return
+	if node_path.begins_with("/"):
+		_reply_error("node path must be relative to the scene root; absolute paths are rejected")
+		return
+	if node_path.contains(":"):
+		_reply_error("node path must not contain ':'")
+		return
+	if node_path != "." and ".." in node_path.split("/"):
+		_reply_error("node path must not contain '..'")
+		return
+
+	# Resolving relative to scene_root (rather than any absolute NodePath)
+	# confines the target to the edited scene's own node tree.
+	var target: Node = scene_root if node_path == "." else scene_root.get_node_or_null(NodePath(node_path))
+	if target == null:
+		_reply_error("node not found: %s" % node_path)
+		return
+
+	var properties: Array = []
+	for info in target.get_property_list():
+		# Only inspector-visible or serialized properties are reported, the
+		# same visibility `set-property` addresses (read-only ones included,
+		# marked by `read_only`). Category and group header entries carry no
+		# EDITOR or STORAGE usage bits, so the check below excludes them too.
+		var usage: int = info["usage"]
+		if usage & (PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_STORAGE) == 0:
+			continue
+		var entry := {
+			"name": info["name"],
+			"type": type_string(info["type"]),
+			"read_only": usage & PROPERTY_USAGE_READ_ONLY != 0,
+		}
+		var json_value: Variant = _value_to_json(target.get(info["name"]))
+		if json_value == null:
+			entry["value"] = null
+			entry["supported"] = false
+		else:
+			entry["value"] = json_value
+		properties.append(entry)
+
+	_reply_ok({
+		"path": node_path,
+		"name": str(target.name),
+		"type": target.get_class(),
+		"child_count": target.get_child_count(),
+		"properties": properties,
+	})
+
+
+## Converts a Variant into a JSON-representable value whose shape matches the
+## `set-property` input rules for the types it supports, so an inspected value
+## can be fed back through `set-property` unchanged. Non-finite floats become
+## the strings "inf", "-inf", and "nan", keeping the reply valid JSON. Returns
+## null for types `set-property` cannot address (Object/Resource references,
+## Dictionary, untyped Array, Callable, Signal, RID, ...); the caller reports
+## those as `supported: false`.
+func _value_to_json(value: Variant) -> Variant:
+	match typeof(value):
+		TYPE_BOOL, TYPE_INT, TYPE_STRING:
+			return value
+		TYPE_FLOAT:
+			return _float_to_json(value)
+		TYPE_STRING_NAME, TYPE_NODE_PATH:
+			return str(value)
+		TYPE_VECTOR2:
+			return [_float_to_json(value.x), _float_to_json(value.y)]
+		TYPE_VECTOR3:
+			return [_float_to_json(value.x), _float_to_json(value.y), _float_to_json(value.z)]
+		TYPE_VECTOR2I:
+			return [value.x, value.y]
+		TYPE_VECTOR3I:
+			return [value.x, value.y, value.z]
+		TYPE_VECTOR4:
+			return [_float_to_json(value.x), _float_to_json(value.y), _float_to_json(value.z), _float_to_json(value.w)]
+		TYPE_VECTOR4I:
+			return [value.x, value.y, value.z, value.w]
+		TYPE_RECT2:
+			return [
+				_float_to_json(value.position.x),
+				_float_to_json(value.position.y),
+				_float_to_json(value.size.x),
+				_float_to_json(value.size.y),
+			]
+		TYPE_RECT2I:
+			return [value.position.x, value.position.y, value.size.x, value.size.y]
+		TYPE_TRANSFORM2D:
+			return [
+				[_float_to_json(value.x.x), _float_to_json(value.x.y)],
+				[_float_to_json(value.y.x), _float_to_json(value.y.y)],
+				[_float_to_json(value.origin.x), _float_to_json(value.origin.y)],
+			]
+		TYPE_TRANSFORM3D:
+			var basis: Basis = value.basis
+			return [
+				[_float_to_json(basis.x.x), _float_to_json(basis.x.y), _float_to_json(basis.x.z)],
+				[_float_to_json(basis.y.x), _float_to_json(basis.y.y), _float_to_json(basis.y.z)],
+				[_float_to_json(basis.z.x), _float_to_json(basis.z.y), _float_to_json(basis.z.z)],
+				[_float_to_json(value.origin.x), _float_to_json(value.origin.y), _float_to_json(value.origin.z)],
+			]
+		TYPE_COLOR:
+			return [_float_to_json(value.r), _float_to_json(value.g), _float_to_json(value.b), _float_to_json(value.a)]
+		TYPE_PACKED_BYTE_ARRAY, TYPE_PACKED_INT32_ARRAY, TYPE_PACKED_INT64_ARRAY:
+			var ints: Array = []
+			for element in value:
+				ints.append(element)
+			return ints
+		TYPE_PACKED_FLOAT32_ARRAY, TYPE_PACKED_FLOAT64_ARRAY:
+			var floats: Array = []
+			for element in value:
+				floats.append(_float_to_json(element))
+			return floats
+		TYPE_PACKED_STRING_ARRAY:
+			var strings: Array = []
+			for element in value:
+				strings.append(element)
+			return strings
+		TYPE_PACKED_VECTOR2_ARRAY:
+			var vector2s: Array = []
+			for element in value:
+				vector2s.append([_float_to_json(element.x), _float_to_json(element.y)])
+			return vector2s
+		TYPE_PACKED_VECTOR3_ARRAY:
+			var vector3s: Array = []
+			for element in value:
+				vector3s.append([_float_to_json(element.x), _float_to_json(element.y), _float_to_json(element.z)])
+			return vector3s
+		TYPE_PACKED_VECTOR4_ARRAY:
+			var vector4s: Array = []
+			for element in value:
+				vector4s.append([_float_to_json(element.x), _float_to_json(element.y), _float_to_json(element.z), _float_to_json(element.w)])
+			return vector4s
+		TYPE_PACKED_COLOR_ARRAY:
+			var colors: Array = []
+			for element in value:
+				colors.append([_float_to_json(element.r), _float_to_json(element.g), _float_to_json(element.b), _float_to_json(element.a)])
+			return colors
+		TYPE_ARRAY:
+			if not value.is_typed():
+				return null
+			if not _is_supported_array_element(value.get_typed_builtin()):
+				return null
+			var elements: Array = []
+			for element in value:
+				elements.append(_value_to_json(element))
+			return elements
+	return null
+
+
+## Converts a float into a JSON-representable number, replacing a non-finite
+## value with the strings "inf", "-inf", or "nan" so the reply stays valid
+## JSON regardless of how the engine's own JSON stringifier handles them.
+func _float_to_json(value: float) -> Variant:
+	if not is_finite(value):
+		if is_nan(value):
+			return "nan"
+		return "inf" if value > 0.0 else "-inf"
+	return value
 
 
 func _handle_delete_node(request: Dictionary) -> void:
