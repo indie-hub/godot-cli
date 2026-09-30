@@ -25,6 +25,19 @@ static func error(message: String) -> Dictionary:
 	return {"status": "error", "message": message}
 
 
+## Returns the plugin's exact project-path mismatch message when
+## `project_path_value` does not match the running editor's project, or an
+## empty string when it does. The first check every command runs (a mismatched
+## caller can never cause a mutation or a read); shared by `guard_request` and
+## commands that do not need an edited scene, like `inspect_class`.
+static func project_path_mismatch(project_path_value: Variant) -> String:
+	var current_project_path := ProjectSettings.globalize_path("res://").rstrip("/")
+	var requested_project_path: String = (project_path_value as String).rstrip("/")
+	if requested_project_path != current_project_path:
+		return "project path mismatch: this editor has %s open, not %s" % [current_project_path, requested_project_path]
+	return ""
+
+
 ## Resolves the request fields every scene command checks in the same fixed
 ## order: the project path first (so a mismatched caller can never cause a
 ## mutation or a read), then the edited scene root, then the node path and its
@@ -34,10 +47,9 @@ static func error(message: String) -> Dictionary:
 ## passed here are already known to be strings. Commands without a node path
 ## omit `node_path_value`, which skips the node-path checks.
 static func guard_request(plugin: EditorPlugin, project_path_value: Variant, node_path_value: Variant = null) -> Variant:
-	var current_project_path := ProjectSettings.globalize_path("res://").rstrip("/")
-	var requested_project_path: String = (project_path_value as String).rstrip("/")
-	if requested_project_path != current_project_path:
-		return "project path mismatch: this editor has %s open, not %s" % [current_project_path, requested_project_path]
+	var project_mismatch := project_path_mismatch(project_path_value)
+	if project_mismatch != "":
+		return project_mismatch
 	var scene_root := plugin.get_editor_interface().get_edited_scene_root()
 	if scene_root == null:
 		return "no scene is currently being edited"
