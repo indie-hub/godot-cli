@@ -349,13 +349,7 @@ def main():
         with open(os.path.join(proj, "main.tscn"), "w") as f:
             f.write(MAIN_TSCN)
         dst = os.path.join(proj, "addons", "godot_pipeline")
-        os.makedirs(dst)
-        for name in sorted(os.listdir(a.plugin_dir)):
-            if name.endswith(".uid"):
-                continue
-            src = os.path.join(a.plugin_dir, name)
-            if os.path.isfile(src):
-                shutil.copy(src, os.path.join(dst, name))
+        shutil.copytree(a.plugin_dir, dst, ignore=shutil.ignore_patterns("*.uid"))
         target = os.path.join(dst, "editor_plugin.gd")
         with open(target) as f:
             patched = f.read().replace(PORT_LINE, "const PORT := %d" % a.port)
