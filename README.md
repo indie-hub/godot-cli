@@ -3,9 +3,9 @@
 A bridge between a terminal and a running Godot editor: a small Rust CLI
 talks over a loopback TCP socket to a stock-Godot GDScript `EditorPlugin`,
 which reports the editor's status, the node tree of the scene currently
-being edited, and can rename, create, set properties on, and delete nodes
-in that scene through the editor's own undo/redo stack, then save the
-edited scene to disk.
+being edited, and the properties of a node in that scene, and can rename,
+create, set properties on, and delete nodes through the editor's own
+undo/redo stack, then save the edited scene to disk.
 
 This is a prototype (v0). It does not modify the Godot engine checkout and
 does not touch any project files beyond a temporary plugin install used for
@@ -33,6 +33,8 @@ One TCP connection per request, on `127.0.0.1:47821` by default:
    or
    `{"command":"set_property","node_path":"...","property":"...","value":<json>,"project_path":"..."}`,
    or
+   `{"command":"inspect_node","node_path":"...","project_path":"..."}`,
+   or
    `{"command":"delete_node","node_path":"...","project_path":"..."}`,
    or
    `{"command":"save_scene","project_path":"..."}`,
@@ -40,6 +42,29 @@ One TCP connection per request, on `127.0.0.1:47821` by default:
 2. The plugin writes one line of JSON back:
    `{"status":"ok","data":...}` or `{"status":"error","message":"..."}`.
 3. Either side closes the connection after the exchange.
+
+`inspect_node` reads a node in the currently edited scene and changes
+nothing: no Undo/Redo step, no dirty flag, no save. `node_path` and
+`project_path` follow the same rules as `rename_node`'s, and the reply is
+`{"status":"ok","data":{"path":"...","name":"...","type":"...","child_count":...,"properties":[...]}}`
+with `data.path` echoing the node path as given (`.` for the scene root),
+`data.type` the node's class, and one entry per editor-visible property
+(`get_property_list()` entries with inspector or storage usage, excluding
+category and group headers, in engine order): `name`, the Variant type name
+(`"Vector2"`, `"Array"`, ...), `value`, and `read_only`. For the value types
+`set-property` accepts (bool, int, float, String, StringName, NodePath, the
+vector and int-vector types, Rect2/Rect2i, Transform2D/Transform3D, Color,
+the Packed*Array types, and typed `Array[T]` of those types), `value` uses
+exactly the JSON shape `set-property` accepts as input, so an inspected
+value can be fed back to `set-property` unchanged (Color as `[r,g,b,a]`,
+Rect2/Rect2i as `[x,y,w,h]`, Transform2D as `[[xx,xy],[yx,yy],[ox,oy]]`,
+Transform3D as the three basis axis vectors then the origin). For any other type
+(Object/Resource references, Dictionary, untyped Array, Callable, Signal,
+RID, ...) the entry has `value: null` and `supported: false`; supported
+entries carry no `supported` key. A float holding `inf`, `-inf`, or `nan`
+is emitted as the string `"inf"`, `"-inf"`, or `"nan"`, so the reply is
+always valid JSON. Reads are allowed anywhere in the edited scene,
+including inside an instanced sub-scene without Editable Children.
 
 `rename_node` renames a node in the currently edited scene through the
 editor's `EditorUndoRedoManager`, so the change is a single Undo/Redo step
@@ -206,6 +231,7 @@ cargo run -- rename-node Child/Deep NewName --project-path /path/to/project
 cargo run -- create-node Child/Deep Label NewLabel --project-path /path/to/project
 cargo run -- set-property Child/Deep position '[10, 20]' --project-path /path/to/project
 cargo run -- set-property Child/Deep modulate '#ff8800' --project-path /path/to/project
+cargo run -- inspect-node --node-path Child/Deep --project-path /path/to/project
 cargo run -- delete-node Child/Deep --project-path /path/to/project
 cargo run -- save-scene --project-path /path/to/project
 ```
@@ -225,6 +251,10 @@ sets a property on that node (see Protocol above). `<value>` is sent as JSON
 if it parses as JSON (`true`, `3`, `1.5`, `[1, 2]`, `"42"`), otherwise as a
 plain string (`Hello`, `#ff8800`), so a String property whose value looks
 like a number or a bool needs explicit JSON quotes, e.g. `'"42"'`.
+`inspect-node --node-path <scene-relative-path> --project-path <dir>` reads
+a node and its editor-visible properties without changing the scene (see
+Protocol above), canonicalizing `--project-path` the same way as the other
+commands.
 `delete-node <scene-relative-path> --project-path <dir>` removes that node
 and its subtree from the scene (see Protocol above), canonicalizing
 `--project-path` the same way as the other mutating commands. If the plugin is not running
@@ -245,7 +275,7 @@ cargo clippy -- -D warnings
 
 `cargo test` includes protocol tests that open a real loopback socket and
 round-trip `Request`/`Response` pairs through the exact wire format, not
-just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `delete_node`, and `save_scene` wire
+just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `inspect_node`, `delete_node`, and `save_scene` wire
 shapes and the CLI's `set-property` value parsing.
 
 Live verification against a running Godot editor (status, scene tree,

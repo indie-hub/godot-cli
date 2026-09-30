@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `inspect-node` command to read a node's class, child count, and the values of its editor-visible properties without changing the scene, including the JSON shape needed to feed a supported value back through `set-property`.
+
 ### Fixed
 
 - Requests that arrive in several TCP segments are no longer cut short; the plugin buffers and assembles each request until its terminating newline.

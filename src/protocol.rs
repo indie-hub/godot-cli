@@ -58,6 +58,13 @@ pub enum Request {
         value: serde_json::Value,
         project_path: String,
     },
+    /// Reports a node's class, child count, and the values of its inspector
+    /// and storage properties without changing the scene. `project_path`
+    /// follows the same rules as [`Request::RenameNode`].
+    InspectNode {
+        node_path: String,
+        project_path: String,
+    },
     /// Removes a node and its subtree from the currently edited scene
     /// through the editor's undo/redo manager, without saving. The scene
     /// root itself is rejected. `project_path` follows the same rules as
@@ -256,6 +263,25 @@ mod tests {
         assert_eq!(
             json,
             r#"{"command":"set_property","node_path":"Child/Deep","property":"position","value":[1.5,-2],"project_path":"/tmp/project"}"#
+        );
+    }
+
+    /// Pins the exact wire shape the GDScript plugin matches on
+    /// (`"command":"inspect_node"` plus the two snake_case fields); a silent
+    /// rename in `#[serde(...)]` here would desync the two sides without
+    /// either one failing to compile.
+    #[test]
+    fn inspect_node_request_serializes_to_the_documented_wire_shape() {
+        let request = Request::InspectNode {
+            node_path: "Child/Deep".to_string(),
+            project_path: "/tmp/project".to_string(),
+        };
+
+        let json = serde_json::to_string(&request).expect("serialize request");
+
+        assert_eq!(
+            json,
+            r#"{"command":"inspect_node","node_path":"Child/Deep","project_path":"/tmp/project"}"#
         );
     }
 
