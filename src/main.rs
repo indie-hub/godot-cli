@@ -34,6 +34,10 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut set_property_name: Option<String> = None;
     let mut set_value: Option<String> = None;
     let mut inspect_node_path: Option<String> = None;
+    let mut query_class: Option<String> = None;
+    let mut query_group: Option<String> = None;
+    let mut query_name: Option<String> = None;
+    let mut query_limit: Option<String> = None;
     let mut delete_node_path: Option<String> = None;
 
     let mut arguments = args.iter().skip(1);
@@ -101,6 +105,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 set_value = Some(next_operand()?);
             }
             "inspect-node" => command = Some(argument.clone()),
+            "query-nodes" => command = Some(argument.clone()),
             "delete-node" => {
                 command = Some(argument.clone());
                 delete_node_path = Some(
@@ -131,6 +136,30 @@ fn run(args: &[String]) -> Result<(), String> {
                     .ok_or_else(|| "--node-path requires a value".to_string())?;
                 inspect_node_path = Some(value.clone());
             }
+            "--class" => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| "--class requires a value".to_string())?;
+                query_class = Some(value.clone());
+            }
+            "--group" => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| "--group requires a value".to_string())?;
+                query_group = Some(value.clone());
+            }
+            "--name" => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| "--name requires a value".to_string())?;
+                query_name = Some(value.clone());
+            }
+            "--limit" => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| "--limit requires a value".to_string())?;
+                query_limit = Some(value.clone());
+            }
             "--help" | "-h" => {
                 print_usage();
                 return Ok(());
@@ -142,7 +171,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let Some(command) = command else {
         print_usage();
         return Err(
-            "missing command (expected 'status', 'scene-tree', 'rename-node', 'create-node', 'set-property', 'inspect-node', 'delete-node', or 'save-scene')"
+            "missing command (expected 'status', 'scene-tree', 'rename-node', 'create-node', 'set-property', 'inspect-node', 'query-nodes', 'delete-node', or 'save-scene')"
                 .to_string(),
         );
     };
@@ -198,6 +227,24 @@ fn run(args: &[String]) -> Result<(), String> {
             Request::InspectNode {
                 node_path,
                 project_path: canonicalize_project_path(&project_path)?,
+            }
+        }
+        "query-nodes" => {
+            let project_path = project_path
+                .ok_or_else(|| "query-nodes requires --project-path <dir>".to_string())?;
+            // The limit is forwarded as raw JSON (a number, or a plain string
+            // when it does not parse) so an invalid limit still reaches the
+            // plugin, which validates it after the project and scene guards.
+            let limit = query_limit
+                .as_deref()
+                .map(parse_value_argument)
+                .unwrap_or_else(|| serde_json::json!(100));
+            Request::QueryNodes {
+                project_path: canonicalize_project_path(&project_path)?,
+                class: query_class,
+                group: query_group,
+                name: query_name,
+                limit,
             }
         }
         "delete-node" => {
@@ -281,6 +328,9 @@ fn print_usage() {
         "       godot-pipeline inspect-node --node-path <scene-relative-path> --project-path <dir> [--port PORT]"
     );
     eprintln!(
+        "       godot-pipeline query-nodes [--class <class>] [--group <group>] [--name <pattern>] [--limit <n>] --project-path <dir> [--port PORT]"
+    );
+    eprintln!(
         "       godot-pipeline delete-node <scene-relative-path> --project-path <dir> [--port PORT]"
     );
     eprintln!("       godot-pipeline save-scene --project-path <dir> [--port PORT]");
@@ -299,13 +349,18 @@ fn print_usage() {
         "  inspect-node report a node's class, child count, and the values of its editor-visible"
     );
     eprintln!("              properties without changing the scene; '.' targets the scene root");
+    eprintln!("  query-nodes search the edited scene for nodes matching every given filter");
+    eprintln!(
+        "              (class, group, glob name), in tree order, up to --limit (default 100,"
+    );
+    eprintln!("              max 1000) results; the reply's `truncated` is true when more matched");
     eprintln!("  delete-node remove a node and its subtree from the edited scene through the");
     eprintln!("              editor's undo/redo stack; the scene root ('.') is rejected");
     eprintln!("  save-scene  persist the currently edited scene to the file path it already has;");
     eprintln!("              rejected if no scene is open or the open scene has no file path");
     eprintln!("  --project-path  the project the command targets; required for rename-node,");
     eprintln!(
-        "                  create-node, set-property, inspect-node, delete-node, and save-scene, rejected"
+        "                  create-node, set-property, inspect-node, query-nodes, delete-node, and save-scene, rejected"
     );
     eprintln!("                  by the plugin if it does not match the open project");
     eprintln!("  --port      override the default port ({DEFAULT_PORT})");
@@ -439,6 +494,198 @@ mod tests {
         run(&args).expect("run succeeds");
 
         server.join().expect("server thread does not panic");
+    }
+
+    /// Pins the CLI's `query-nodes` argument parsing: the filters and limit are
+    /// forwarded as given and `--project-path` is canonicalized the same way as
+    /// the other commands, then the request is sent to the configured `--port`.
+    /// Runs `run` against a real loopback socket that answers with an ok reply,
+    /// then asserts the received wire request, so parsing and transport are
+    /// both exercised rather than just the data types.
+    #[test]
+    fn query_nodes_cli_forwards_filters_limit_and_canonicalized_project_path() {
+        let listener = TcpListener::bind((HOST, 0)).expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+
+        let project_dir = std::env::temp_dir();
+        let canonical = std::fs::canonicalize(&project_dir).expect("canonicalize temp dir");
+        let canonical_arg = canonical.to_str().expect("temp dir is UTF-8").to_string();
+
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept connection");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+            let mut request_line = String::new();
+            reader
+                .read_line(&mut request_line)
+                .expect("read request line");
+            let request: Request =
+                serde_json::from_str(request_line.trim_end()).expect("parse request");
+            assert_eq!(
+                request,
+                Request::QueryNodes {
+                    project_path: canonical_arg,
+                    class: Some("Node2D".to_string()),
+                    group: Some("enemies".to_string()),
+                    name: Some("Leaf*".to_string()),
+                    limit: serde_json::json!(50),
+                }
+            );
+
+            let mut writer = stream;
+            let mut response_line =
+                serde_json::to_string(&Response::Ok { data: json!({}) }).expect("serialize reply");
+            response_line.push('\n');
+            writer
+                .write_all(response_line.as_bytes())
+                .expect("write reply");
+        });
+
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "query-nodes".to_string(),
+            "--class".to_string(),
+            "Node2D".to_string(),
+            "--group".to_string(),
+            "enemies".to_string(),
+            "--name".to_string(),
+            "Leaf*".to_string(),
+            "--limit".to_string(),
+            "50".to_string(),
+            "--project-path".to_string(),
+            project_dir.to_str().expect("temp dir is UTF-8").to_string(),
+            "--port".to_string(),
+            port.to_string(),
+        ];
+        run(&args).expect("run succeeds");
+
+        server.join().expect("server thread does not panic");
+    }
+
+    /// Pins the CLI's `query-nodes` default limit of 100 and null filters when
+    /// no filter or limit flags are given.
+    #[test]
+    fn query_nodes_without_flags_uses_default_limit_and_null_filters() {
+        let listener = TcpListener::bind((HOST, 0)).expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+
+        let project_dir = std::env::temp_dir();
+        let canonical = std::fs::canonicalize(&project_dir).expect("canonicalize temp dir");
+        let canonical_arg = canonical.to_str().expect("temp dir is UTF-8").to_string();
+
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept connection");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+            let mut request_line = String::new();
+            reader
+                .read_line(&mut request_line)
+                .expect("read request line");
+            let request: Request =
+                serde_json::from_str(request_line.trim_end()).expect("parse request");
+            assert_eq!(
+                request,
+                Request::QueryNodes {
+                    project_path: canonical_arg,
+                    class: None,
+                    group: None,
+                    name: None,
+                    limit: serde_json::json!(100),
+                }
+            );
+
+            let mut writer = stream;
+            let mut response_line =
+                serde_json::to_string(&Response::Ok { data: json!({}) }).expect("serialize reply");
+            response_line.push('\n');
+            writer
+                .write_all(response_line.as_bytes())
+                .expect("write reply");
+        });
+
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "query-nodes".to_string(),
+            "--project-path".to_string(),
+            project_dir.to_str().expect("temp dir is UTF-8").to_string(),
+            "--port".to_string(),
+            port.to_string(),
+        ];
+        run(&args).expect("run succeeds");
+
+        server.join().expect("server thread does not panic");
+    }
+
+    /// Pins the CLI's `query-nodes` forwarding of a non-integer limit: `1.5`
+    /// is sent as the JSON number 1.5 (not rejected up front), so the plugin's
+    /// project guard can still run first and the limit validation happens on
+    /// the plugin side.
+    #[test]
+    fn query_nodes_forwards_a_non_integer_limit_to_the_plugin() {
+        let listener = TcpListener::bind((HOST, 0)).expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+
+        let project_dir = std::env::temp_dir();
+        let canonical = std::fs::canonicalize(&project_dir).expect("canonicalize temp dir");
+        let canonical_arg = canonical.to_str().expect("temp dir is UTF-8").to_string();
+
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept connection");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+            let mut request_line = String::new();
+            reader
+                .read_line(&mut request_line)
+                .expect("read request line");
+            let request: Request =
+                serde_json::from_str(request_line.trim_end()).expect("parse request");
+            assert_eq!(
+                request,
+                Request::QueryNodes {
+                    project_path: canonical_arg,
+                    class: None,
+                    group: None,
+                    name: None,
+                    limit: serde_json::json!(1.5),
+                }
+            );
+
+            let mut writer = stream;
+            let mut response_line =
+                serde_json::to_string(&Response::Ok { data: json!({}) }).expect("serialize reply");
+            response_line.push('\n');
+            writer
+                .write_all(response_line.as_bytes())
+                .expect("write reply");
+        });
+
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "query-nodes".to_string(),
+            "--limit".to_string(),
+            "1.5".to_string(),
+            "--project-path".to_string(),
+            project_dir.to_str().expect("temp dir is UTF-8").to_string(),
+            "--port".to_string(),
+            port.to_string(),
+        ];
+        run(&args).expect("run succeeds");
+
+        server.join().expect("server thread does not panic");
+    }
+
+    /// Pins the CLI's rejection of `query-nodes` without `--project-path`:
+    /// it must fail before any request is sent.
+    #[test]
+    fn query_nodes_without_project_path_is_rejected() {
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "query-nodes".to_string(),
+            "--class".to_string(),
+            "Node2D".to_string(),
+        ];
+        let error = run(&args).expect_err("query-nodes without --project-path must fail");
+        assert!(
+            error.contains("query-nodes requires --project-path"),
+            "{error}"
+        );
     }
 
     /// Pins the CLI's rejection of `inspect-node` without `--project-path`:

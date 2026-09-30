@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `query-nodes` command to search the edited scene's node tree for nodes matching a class, group, and glob name filter, in tree order, up to a bounded limit, without changing the scene.
 - `inspect-node` command to read a node's class, child count, and the values of its editor-visible properties without changing the scene, including the JSON shape needed to feed a supported value back through `set-property`.
 
 ### Fixed

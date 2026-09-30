@@ -3,7 +3,8 @@
 A bridge between a terminal and a running Godot editor: a small Rust CLI
 talks over a loopback TCP socket to a stock-Godot GDScript `EditorPlugin`,
 which reports the editor's status, the node tree of the scene currently
-being edited, and the properties of a node in that scene, and can rename,
+being edited, the properties of a node in that scene, and the nodes matching
+a class, group, and name search, and can rename,
 create, set properties on, and delete nodes through the editor's own
 undo/redo stack, then save the edited scene to disk.
 
@@ -35,6 +36,8 @@ One TCP connection per request, on `127.0.0.1:47821` by default:
    or
    `{"command":"inspect_node","node_path":"...","project_path":"..."}`,
    or
+   `{"command":"query_nodes","project_path":"...","class":<class or null>,"group":<group or null>,"name":<pattern or null>,"limit":<int>}`,
+   or
    `{"command":"delete_node","node_path":"...","project_path":"..."}`,
    or
    `{"command":"save_scene","project_path":"..."}`,
@@ -65,6 +68,26 @@ entries carry no `supported` key. A float holding `inf`, `-inf`, or `nan`
 is emitted as the string `"inf"`, `"-inf"`, or `"nan"`, so the reply is
 always valid JSON. Reads are allowed anywhere in the edited scene,
 including inside an instanced sub-scene without Editable Children.
+
+`query_nodes` searches the whole node tree of the currently edited scene
+(root included) and changes nothing: no Undo/Redo step, no dirty flag, no
+save. `project_path` follows the same rules as `rename_node`'s. The reply
+is `{"status":"ok","data":{"nodes":[{"path":"...","name":"...","type":"..."},...],"truncated":false}}`;
+nodes come in tree order (parent before children, siblings in order) with
+`data.nodes[].path` relative to the scene root (`.` for the root), so a path
+can be passed to `inspect_node` unchanged. The optional filters combine with
+AND: `class` matches by `is_class` (subclasses count, so `Node2D` also
+matches `Sprite2D`), `group` matches `is_in_group`, and `name` matches the
+node name against the pattern as a case-sensitive Godot glob (`String.match`,
+so `*` and `?` work). A `class` that is not an engine class
+(`ClassDB.class_exists` fails) or that names a project `class_name` script
+class is rejected with an error naming it; an unknown `group` is not an
+error and simply matches nothing. `limit` defaults to 100 and must be an
+integer in `1..1000`; when more nodes match than the limit, the reply holds
+exactly the first `limit` matches and `data.truncated` is `true` (the search
+stops early once the cap is reached). `project_path` is checked first, then
+the edited scene, then the filters and limit, so a wrong project path is
+reported even when a filter or limit is also invalid.
 
 `rename_node` renames a node in the currently edited scene through the
 editor's `EditorUndoRedoManager`, so the change is a single Undo/Redo step
@@ -232,6 +255,8 @@ cargo run -- create-node Child/Deep Label NewLabel --project-path /path/to/proje
 cargo run -- set-property Child/Deep position '[10, 20]' --project-path /path/to/project
 cargo run -- set-property Child/Deep modulate '#ff8800' --project-path /path/to/project
 cargo run -- inspect-node --node-path Child/Deep --project-path /path/to/project
+cargo run -- query-nodes --class Node2D --project-path /path/to/project
+cargo run -- query-nodes --group enemies --name 'Leaf*' --limit 50 --project-path /path/to/project
 cargo run -- delete-node Child/Deep --project-path /path/to/project
 cargo run -- save-scene --project-path /path/to/project
 ```
@@ -255,6 +280,11 @@ like a number or a bool needs explicit JSON quotes, e.g. `'"42"'`.
 a node and its editor-visible properties without changing the scene (see
 Protocol above), canonicalizing `--project-path` the same way as the other
 commands.
+`query-nodes [--class <class>] [--group <group>] [--name <pattern>] [--limit <n>] --project-path <dir>`
+searches the edited scene's node tree for matching nodes without changing
+the scene (see Protocol above), canonicalizing `--project-path` the same
+way as the other commands; the filters are optional and combine with AND,
+and `--limit` (default 100, max 1000) bounds the number of returned nodes.
 `delete-node <scene-relative-path> --project-path <dir>` removes that node
 and its subtree from the scene (see Protocol above), canonicalizing
 `--project-path` the same way as the other mutating commands. If the plugin is not running
@@ -275,7 +305,7 @@ cargo clippy -- -D warnings
 
 `cargo test` includes protocol tests that open a real loopback socket and
 round-trip `Request`/`Response` pairs through the exact wire format, not
-just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `inspect_node`, `delete_node`, and `save_scene` wire
+just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `inspect_node`, `query_nodes`, `delete_node`, and `save_scene` wire
 shapes and the CLI's `set-property` value parsing.
 
 Live verification against a running Godot editor (status, scene tree,

@@ -65,6 +65,18 @@ pub enum Request {
         node_path: String,
         project_path: String,
     },
+    /// Searches the edited scene's whole node tree for nodes matching every
+    /// provided filter, in tree order, without changing the scene. `class`,
+    /// `group`, and `name` are optional filters; `limit` is a JSON number the
+    /// plugin validates (default 100, max 1000). `project_path` follows the
+    /// same rules as [`Request::RenameNode`].
+    QueryNodes {
+        project_path: String,
+        class: Option<String>,
+        group: Option<String>,
+        name: Option<String>,
+        limit: serde_json::Value,
+    },
     /// Removes a node and its subtree from the currently edited scene
     /// through the editor's undo/redo manager, without saving. The scene
     /// root itself is rejected. `project_path` follows the same rules as
@@ -282,6 +294,49 @@ mod tests {
         assert_eq!(
             json,
             r#"{"command":"inspect_node","node_path":"Child/Deep","project_path":"/tmp/project"}"#
+        );
+    }
+
+    /// Pins the exact wire shape the GDScript plugin matches on
+    /// (`"command":"query_nodes"` plus the filter, limit, and project_path
+    /// fields); a silent rename in `#[serde(...)]` here would desync the two
+    /// sides without either one failing to compile.
+    #[test]
+    fn query_nodes_request_serializes_to_the_documented_wire_shape() {
+        let request = Request::QueryNodes {
+            project_path: "/tmp/project".to_string(),
+            class: Some("Node2D".to_string()),
+            group: Some("enemies".to_string()),
+            name: Some("Leaf*".to_string()),
+            limit: serde_json::json!(50),
+        };
+
+        let json = serde_json::to_string(&request).expect("serialize request");
+
+        assert_eq!(
+            json,
+            r#"{"command":"query_nodes","project_path":"/tmp/project","class":"Node2D","group":"enemies","name":"Leaf*","limit":50}"#
+        );
+    }
+
+    /// Pins the no-filter wire shape: absent filters serialize as null and the
+    /// CLI's default limit is 100, which the plugin treats the same as a typed
+    /// request.
+    #[test]
+    fn query_nodes_without_filters_serializes_null_filters_and_default_limit() {
+        let request = Request::QueryNodes {
+            project_path: "/tmp/project".to_string(),
+            class: None,
+            group: None,
+            name: None,
+            limit: serde_json::json!(100),
+        };
+
+        let json = serde_json::to_string(&request).expect("serialize request");
+
+        assert_eq!(
+            json,
+            r#"{"command":"query_nodes","project_path":"/tmp/project","class":null,"group":null,"name":null,"limit":100}"#
         );
     }
 

@@ -4,11 +4,12 @@ extends EditorPlugin
 ##
 ## Listens on a loopback-only TCP socket and answers a single JSON request
 ## per connection. Supported commands: `status`, `scene_tree`, `inspect_node`,
-## `rename_node`, `create_node`, `set_property`, `delete_node`, and
-## `save_scene`. The read commands report the editor's status, the active
-## edited scene's node tree, and a node's class, child count, and property
-## values; the editing commands change the active scene through the editor's
-## undo/redo stack (one Undo/Redo step each) and never save it. `save_scene`
+## `query_nodes`, `rename_node`, `create_node`, `set_property`, `delete_node`,
+## and `save_scene`. The read commands report the editor's status, the active
+## edited scene's node tree, a node's class/child count/property values, and
+## the nodes matching a class, group, and name search; the editing commands
+## change the active scene through the editor's undo/redo stack (one Undo/Redo
+## step each) and never save it. `save_scene`
 ## persists the currently edited scene to the file path it already has, so
 ## edits made through the other commands survive a reload. Every editing
 ## command requires a `project_path` that matches the running editor's
@@ -179,6 +180,8 @@ func _handle_request(raw_text: String, raw_bytes: int) -> void:
 			_handle_set_property(parsed)
 		"inspect_node":
 			_handle_inspect_node(parsed)
+		"query_nodes":
+			_handle_query_nodes(parsed)
 		"delete_node":
 			_handle_delete_node(parsed)
 		"save_scene":
@@ -612,6 +615,131 @@ func _handle_inspect_node(request: Dictionary) -> void:
 		"child_count": target.get_child_count(),
 		"properties": properties,
 	})
+
+
+## Searches the edited scene's whole node tree for nodes matching every
+## provided filter, in tree order (parent before children, siblings in
+## order), root included, and reports up to `limit` matches. Reads only: no
+## undo/redo action, no dirty flag, no file write. Nodes inside an instanced
+## sub-scene are included, so no Editable Children guard applies.
+##
+## `request` must carry string field `project_path` (the canonical,
+## symlink-resolved absolute path of the project the caller intends to read).
+## Optional string filters `class`, `group`, and `name` combine with AND;
+## `class` must name an engine class (subclasses match), `group` is any group
+## name, and `name` is a case-sensitive glob (`*` and `?`) matched with
+## `String.match`. `limit` is a JSON number defaulting to 100; it must be an
+## integer in 1..1000. The project-path check runs before anything else, then
+## the edited-scene check, then the filter and limit validation.
+func _handle_query_nodes(request: Dictionary) -> void:
+	var project_path_value: Variant = request.get("project_path")
+	if typeof(project_path_value) != TYPE_STRING:
+		_reply_error("query_nodes requires a string field: project_path")
+		return
+
+	var current_project_path := ProjectSettings.globalize_path("res://").rstrip("/")
+	var requested_project_path: String = (project_path_value as String).rstrip("/")
+	if requested_project_path != current_project_path:
+		_reply_error(
+			"project path mismatch: this editor has %s open, not %s" % [current_project_path, requested_project_path]
+		)
+		return
+
+	var scene_root := get_editor_interface().get_edited_scene_root()
+	if scene_root == null:
+		_reply_error("no scene is currently being edited")
+		return
+
+	var class_filter := _optional_string(request, "class")
+	if class_filter != "":
+		if not ClassDB.class_exists(class_filter):
+			_reply_error("unknown class: %s" % class_filter)
+			return
+		for global_class in ProjectSettings.get_global_class_list():
+			if global_class.get("class") == class_filter:
+				_reply_error("class must be a built-in class, not a project script class: %s" % class_filter)
+				return
+
+	var limit := _validate_limit(request.get("limit", 100))
+	if limit.has("error"):
+		_reply_error(limit["error"])
+		return
+
+	var matches: Array = []
+	_collect_query_nodes(
+		scene_root,
+		scene_root,
+		class_filter,
+		_optional_string(request, "group"),
+		_optional_string(request, "name"),
+		limit["value"],
+		matches
+	)
+	var truncated: bool = matches.size() > int(limit["value"])
+	if truncated:
+		matches.resize(limit["value"])
+	_reply_ok({"nodes": matches, "truncated": truncated})
+
+
+## Reads an optional string filter from `request`; a missing or non-string
+## value counts as no filter (an empty string).
+func _optional_string(request: Dictionary, key: String) -> String:
+	var value: Variant = request.get(key)
+	if typeof(value) != TYPE_STRING:
+		return ""
+	return value
+
+
+## Validates the request's `limit` (a JSON number, defaulting to 100) as an
+## integer in 1..1000. Returns `{"value": int}` on success or
+## `{"error": message}` otherwise; a fractional or non-numeric value is not an
+## integer, and an integer outside the range is rejected up front.
+func _validate_limit(value: Variant) -> Dictionary:
+	if typeof(value) == TYPE_INT:
+		if int(value) < 1 or int(value) > 1000:
+			return {"error": "limit must be between 1 and 1000"}
+		return {"value": int(value)}
+	if typeof(value) == TYPE_FLOAT:
+		var number := float(value)
+		if number != floorf(number):
+			return {"error": "limit must be an integer"}
+		if number < 1.0 or number > 1000.0:
+			return {"error": "limit must be between 1 and 1000"}
+		return {"value": int(number)}
+	return {"error": "limit must be an integer"}
+
+
+## Appends every node at or below `node` that matches all the filters, in
+## tree order, stopping once more than `limit` matches are collected. Returns
+## true when the caller should stop searching (the cap is reached), so a large
+## scene is not walked past the point where the result is already decided.
+func _collect_query_nodes(node: Node, scene_root: Node, class_filter: String, group_filter: String, name_filter: String, limit: int, matches: Array) -> bool:
+	if matches.size() <= limit and _node_matches(node, class_filter, group_filter, name_filter):
+		var path := "." if node == scene_root else str(scene_root.get_path_to(node))
+		var entry: Dictionary = {}
+		entry["path"] = path
+		entry["name"] = str(node.name)
+		entry["type"] = node.get_class()
+		matches.append(entry)
+	if matches.size() > limit:
+		return true
+	for child in node.get_children():
+		if _collect_query_nodes(child, scene_root, class_filter, group_filter, name_filter, limit, matches):
+			return true
+	return false
+
+
+## Whether `node` matches every non-empty filter: the class (via is_class, so
+## subclasses match), the group, and the name glob (`String.match`, which is
+## case-sensitive by default).
+func _node_matches(node: Node, class_filter: String, group_filter: String, name_filter: String) -> bool:
+	if class_filter != "" and not node.is_class(class_filter):
+		return false
+	if group_filter != "" and not node.is_in_group(group_filter):
+		return false
+	if name_filter != "" and not str(node.name).match(name_filter):
+		return false
+	return true
 
 
 ## Converts a Variant into a JSON-representable value whose shape matches the
