@@ -106,6 +106,7 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             "inspect-node" => command = Some(argument.clone()),
             "query-nodes" => command = Some(argument.clone()),
+            "inspect-class" => command = Some(argument.clone()),
             "delete-node" => {
                 command = Some(argument.clone());
                 delete_node_path = Some(
@@ -171,7 +172,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let Some(command) = command else {
         print_usage();
         return Err(
-            "missing command (expected 'status', 'scene-tree', 'rename-node', 'create-node', 'set-property', 'inspect-node', 'query-nodes', 'delete-node', or 'save-scene')"
+            "missing command (expected 'status', 'scene-tree', 'rename-node', 'create-node', 'set-property', 'inspect-node', 'query-nodes', 'inspect-class', 'delete-node', or 'save-scene')"
                 .to_string(),
         );
     };
@@ -245,6 +246,16 @@ fn run(args: &[String]) -> Result<(), String> {
                 group: query_group,
                 name: query_name,
                 limit,
+            }
+        }
+        "inspect-class" => {
+            let class =
+                query_class.ok_or_else(|| "inspect-class requires --class <class>".to_string())?;
+            let project_path = project_path
+                .ok_or_else(|| "inspect-class requires --project-path <dir>".to_string())?;
+            Request::InspectClass {
+                class,
+                project_path: canonicalize_project_path(&project_path)?,
             }
         }
         "delete-node" => {
@@ -331,6 +342,9 @@ fn print_usage() {
         "       godot-pipeline query-nodes [--class <class>] [--group <group>] [--name <pattern>] [--limit <n>] --project-path <dir> [--port PORT]"
     );
     eprintln!(
+        "       godot-pipeline inspect-class --class <class> --project-path <dir> [--port PORT]"
+    );
+    eprintln!(
         "       godot-pipeline delete-node <scene-relative-path> --project-path <dir> [--port PORT]"
     );
     eprintln!("       godot-pipeline save-scene --project-path <dir> [--port PORT]");
@@ -354,13 +368,20 @@ fn print_usage() {
         "              (class, group, glob name), in tree order, up to --limit (default 100,"
     );
     eprintln!("              max 1000) results; the reply's `truncated` is true when more matched");
+    eprintln!(
+        "  inspect-class report an engine class's ClassDB reflection: its ancestors, whether"
+    );
+    eprintln!(
+        "              it can be instantiated, whether it is a Node subclass, and its declared"
+    );
+    eprintln!("              properties, methods, and signals; no edited scene is required");
     eprintln!("  delete-node remove a node and its subtree from the edited scene through the");
     eprintln!("              editor's undo/redo stack; the scene root ('.') is rejected");
     eprintln!("  save-scene  persist the currently edited scene to the file path it already has;");
     eprintln!("              rejected if no scene is open or the open scene has no file path");
     eprintln!("  --project-path  the project the command targets; required for rename-node,");
     eprintln!(
-        "                  create-node, set-property, inspect-node, query-nodes, delete-node, and save-scene, rejected"
+        "                  create-node, set-property, inspect-node, query-nodes, inspect-class, delete-node, and save-scene, rejected"
     );
     eprintln!("                  by the plugin if it does not match the open project");
     eprintln!("  --port      override the default port ({DEFAULT_PORT})");
@@ -730,6 +751,93 @@ mod tests {
         let error = run(&args).expect_err("save-scene without --project-path must fail");
         assert!(
             error.contains("save-scene requires --project-path"),
+            "{error}"
+        );
+    }
+
+    /// Pins the CLI's `inspect-class` argument parsing: `--class` is passed
+    /// through as given and `--project-path` is canonicalized the same way as
+    /// the other commands, then the request is sent to the configured `--port`.
+    /// Runs `run` against a real loopback socket that answers with an ok reply,
+    /// then asserts the received wire request, so parsing and transport are
+    /// both exercised rather than just the data types.
+    #[test]
+    fn inspect_class_cli_sends_canonicalized_project_path_and_class() {
+        let listener = TcpListener::bind((HOST, 0)).expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+
+        let project_dir = std::env::temp_dir();
+        let canonical = std::fs::canonicalize(&project_dir).expect("canonicalize temp dir");
+        let canonical_arg = canonical.to_str().expect("temp dir is UTF-8").to_string();
+
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept connection");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+            let mut request_line = String::new();
+            reader
+                .read_line(&mut request_line)
+                .expect("read request line");
+            let request: Request =
+                serde_json::from_str(request_line.trim_end()).expect("parse request");
+            assert_eq!(
+                request,
+                Request::InspectClass {
+                    class: "Node".to_string(),
+                    project_path: canonical_arg,
+                }
+            );
+
+            let mut writer = stream;
+            let mut response_line =
+                serde_json::to_string(&Response::Ok { data: json!({}) }).expect("serialize reply");
+            response_line.push('\n');
+            writer
+                .write_all(response_line.as_bytes())
+                .expect("write reply");
+        });
+
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "inspect-class".to_string(),
+            "--class".to_string(),
+            "Node".to_string(),
+            "--project-path".to_string(),
+            project_dir.to_str().expect("temp dir is UTF-8").to_string(),
+            "--port".to_string(),
+            port.to_string(),
+        ];
+        run(&args).expect("run succeeds");
+
+        server.join().expect("server thread does not panic");
+    }
+
+    /// Pins the CLI's rejection of `inspect-class` without `--class`: it must
+    /// fail before any request is sent.
+    #[test]
+    fn inspect_class_without_class_is_rejected() {
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "inspect-class".to_string(),
+            "--project-path".to_string(),
+            "/tmp".to_string(),
+        ];
+        let error = run(&args).expect_err("inspect-class without --class must fail");
+        assert!(error.contains("inspect-class requires --class"), "{error}");
+    }
+
+    /// Pins the CLI's rejection of `inspect-class` without `--project-path`:
+    /// it must fail before any request is sent.
+    #[test]
+    fn inspect_class_without_project_path_is_rejected() {
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "inspect-class".to_string(),
+            "--class".to_string(),
+            "Node".to_string(),
+        ];
+        let error = run(&args).expect_err("inspect-class without --project-path must fail");
+        assert!(
+            error.contains("inspect-class requires --project-path"),
             "{error}"
         );
     }

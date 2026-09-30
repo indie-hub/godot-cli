@@ -77,6 +77,14 @@ pub enum Request {
         name: Option<String>,
         limit: serde_json::Value,
     },
+    /// Reports an engine class's ClassDB reflection (ancestors, properties,
+    /// methods, signals) without changing the scene and without requiring an
+    /// edited scene. `class` must name an engine class. `project_path` follows
+    /// the same rules as [`Request::RenameNode`].
+    InspectClass {
+        class: String,
+        project_path: String,
+    },
     /// Removes a node and its subtree from the currently edited scene
     /// through the editor's undo/redo manager, without saving. The scene
     /// root itself is rejected. `project_path` follows the same rules as
@@ -337,6 +345,25 @@ mod tests {
         assert_eq!(
             json,
             r#"{"command":"query_nodes","project_path":"/tmp/project","class":null,"group":null,"name":null,"limit":100}"#
+        );
+    }
+
+    /// Pins the exact wire shape the GDScript plugin matches on
+    /// (`"command":"inspect_class"` plus the two snake_case fields); a silent
+    /// rename in `#[serde(...)]` here would desync the two sides without
+    /// either one failing to compile.
+    #[test]
+    fn inspect_class_request_serializes_to_the_documented_wire_shape() {
+        let request = Request::InspectClass {
+            class: "Node".to_string(),
+            project_path: "/tmp/project".to_string(),
+        };
+
+        let json = serde_json::to_string(&request).expect("serialize request");
+
+        assert_eq!(
+            json,
+            r#"{"command":"inspect_class","class":"Node","project_path":"/tmp/project"}"#
         );
     }
 

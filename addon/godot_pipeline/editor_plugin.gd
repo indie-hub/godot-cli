@@ -4,12 +4,13 @@ extends EditorPlugin
 ##
 ## Listens on a loopback-only TCP socket and answers a single JSON request
 ## per connection. Supported commands: `status`, `scene_tree`, `inspect_node`,
-## `query_nodes`, `rename_node`, `create_node`, `set_property`, `delete_node`,
-## and `save_scene`. The read commands report the editor's status, the active
-## edited scene's node tree, a node's class/child count/property values, and
-## the nodes matching a class, group, and name search; the editing commands
-## change the active scene through the editor's undo/redo stack (one Undo/Redo
-## step each) and never save it. `save_scene`
+## `query_nodes`, `inspect_class`, `rename_node`, `create_node`, `set_property`,
+## `delete_node`, and `save_scene`. The read commands report the editor's
+## status, the active edited scene's node tree, a node's class/child
+## count/property values, the nodes matching a class, group, and name search,
+## and an engine class's ClassDB reflection (ancestors, properties, methods,
+## signals); the editing commands change the active scene through the editor's
+## undo/redo stack (one Undo/Redo step each) and never save it. `save_scene`
 ## persists the currently edited scene to the file path it already has, so
 ## edits made through the other commands survive a reload. Every editing
 ## command requires a `project_path` that matches the running editor's
@@ -51,6 +52,7 @@ const COMMANDS := {
 	"set_property": preload("commands/set_property.gd"),
 	"inspect_node": preload("commands/inspect_node.gd"),
 	"query_nodes": preload("commands/query_nodes.gd"),
+	"inspect_class": preload("commands/inspect_class.gd"),
 	"delete_node": preload("commands/delete_node.gd"),
 	"save_scene": preload("commands/save_scene.gd"),
 }

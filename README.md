@@ -43,6 +43,8 @@ One TCP connection per request, on `127.0.0.1:47821` by default:
    or
    `{"command":"query_nodes","project_path":"...","class":<class or null>,"group":<group or null>,"name":<pattern or null>,"limit":<int>}`,
    or
+   `{"command":"inspect_class","class":"...","project_path":"..."}`,
+   or
    `{"command":"delete_node","node_path":"...","project_path":"..."}`,
    or
    `{"command":"save_scene","project_path":"..."}`,
@@ -93,6 +95,25 @@ exactly the first `limit` matches and `data.truncated` is `true` (the search
 stops early once the cap is reached). `project_path` is checked first, then
 the edited scene, then the filters and limit, so a wrong project path is
 reported even when a filter or limit is also invalid.
+
+`inspect_class` reports an engine class's ClassDB reflection and changes
+nothing: no Undo/Redo step, no dirty flag, no save, and no edited scene is
+required. `class` must be an engine class (`ClassDB.class_exists`); a project
+`class_name` script class, an empty name, or a wrong-case name is rejected
+with an error naming it. `project_path` follows the same rules as
+`rename_node`'s and is checked before the class, so a wrong project path is
+reported even when the class is also invalid. The reply is
+`{"status":"ok","data":{"class":"...","ancestors":["..."],"can_instantiate":...,"is_node":...,"properties":[...],"methods":[...],"signals":[...]}}`;
+`data.ancestors` lists the nearest parent first and ends with `"Object"`
+(empty for `Object` itself), `data.is_node` is true for `Node` and every
+subclass, and the three lists are the class's declared members in engine
+order (no inherited members). Each property entry has `name`, the Variant
+type name, and `read_only`; each method entry has `name`, its `args` (name
+and type), `return` (type name), and `flags` (the engine's raw integer, so
+`_process` reports 8 for VIRTUAL); each signal entry has `name` and its
+`args`. Object-typed members use their class name (`InputEvent`), an untyped
+Variant argument or property renders `"Variant"`, and a method with no return
+value renders `"void"`.
 
 `rename_node` renames a node in the currently edited scene through the
 editor's `EditorUndoRedoManager`, so the change is a single Undo/Redo step
@@ -262,6 +283,7 @@ cargo run -- set-property Child/Deep modulate '#ff8800' --project-path /path/to/
 cargo run -- inspect-node --node-path Child/Deep --project-path /path/to/project
 cargo run -- query-nodes --class Node2D --project-path /path/to/project
 cargo run -- query-nodes --group enemies --name 'Leaf*' --limit 50 --project-path /path/to/project
+cargo run -- inspect-class --class Node --project-path /path/to/project
 cargo run -- delete-node Child/Deep --project-path /path/to/project
 cargo run -- save-scene --project-path /path/to/project
 ```
@@ -290,6 +312,11 @@ searches the edited scene's node tree for matching nodes without changing
 the scene (see Protocol above), canonicalizing `--project-path` the same
 way as the other commands; the filters are optional and combine with AND,
 and `--limit` (default 100, max 1000) bounds the number of returned nodes.
+`inspect-class --class <class> --project-path <dir>` reports an engine
+class's ClassDB reflection (ancestors, instantiability, Node ancestry, and
+declared properties, methods, and signals) without changing the scene and
+without requiring an edited scene (see Protocol above), canonicalizing
+`--project-path` the same way as the other commands.
 `delete-node <scene-relative-path> --project-path <dir>` removes that node
 and its subtree from the scene (see Protocol above), canonicalizing
 `--project-path` the same way as the other mutating commands. If the plugin is not running
@@ -310,7 +337,7 @@ cargo clippy -- -D warnings
 
 `cargo test` includes protocol tests that open a real loopback socket and
 round-trip `Request`/`Response` pairs through the exact wire format, not
-just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `inspect_node`, `query_nodes`, `delete_node`, and `save_scene` wire
+just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `inspect_node`, `query_nodes`, `inspect_class`, `delete_node`, and `save_scene` wire
 shapes and the CLI's `set-property` value parsing.
 
 Live verification against a running Godot editor (status, scene tree,
