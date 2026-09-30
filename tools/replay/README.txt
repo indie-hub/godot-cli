@@ -6,7 +6,7 @@ HOW TO RUN
   with it). From the repository root, DIR is addon/godot_pipeline.
   DIR holds the plugin as it sits in addons/godot_pipeline/ (editor_plugin.gd,
   plugin.cfg, plus any extra .gd files a refactor adds; the whole directory is
-  copied, *.uid skipped). Default port 47902. Never use 47821.
+  copied, subdirectories included, *.uid skipped at every level). Default port 47902. Never use 47821.
   python3 compare.py BASELINE OTHER
   Prints the first differing request with both replies, or IDENTICAL.
   Exit 0 identical, 1 different.
