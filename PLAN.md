@@ -4,10 +4,11 @@ Godot Pipeline is a Rust CLI plus a GDScript EditorPlugin for stock Godot. An ag
 
 ## Status
 
-- Seven commands exist: `status`, `scene-tree`, `rename-node`, `create-node`, `set-property`, `delete-node`, `save-scene`. See `README.md`.
+- Eleven commands exist: `status`, `scene-tree`, `rename-node`, `create-node`, `set-property`, `delete-node`, `save-scene`, `inspect-node`, `query-nodes`, `inspect-class`, `open-scene`. See `README.md`.
 - `set-property` accepts 17 value types, ten Packed array types, and typed `Array[T]`. It rejects untyped arrays on purpose.
 - The plugin assembles each request across editor ticks, with an 8 MiB cap and a 5 second idle timeout.
-- Current version is 0.4.0. The framing fix is in the changelog under Unreleased.
+- Current version is 0.5.0. Phase 1 (read and navigate) is complete.
+- The golden replay harness in `tools/replay/` covers all eleven commands (200 baseline rows).
 - The add-on is a prototype and is not ready for distribution.
 
 ## How this plan was made, and how far to trust it
@@ -45,10 +46,10 @@ Why external writes wait: scene edits go through the editor's undo stack, so Ctr
 
 **Phase 1: read and navigate.** A small release built on the current commands. No new value coercion and no file writing.
 
-1. `inspect-node`: typed node and property read.
-2. `query-nodes`: bounded scene search.
-3. `open-scene`: open a scene by path. A dirty edited scene stays open as a background tab unless `--save` saves it first; the reply lists the scenes that still have unsaved changes.
-4. `inspect-class`: ClassDB property, method, and signal discovery.
+1. `inspect-node`: typed node and property read. Done in 0.5.0.
+2. `query-nodes`: bounded scene search. Done in 0.5.0.
+3. `open-scene`: open a scene by path. A dirty edited scene stays open as a background tab unless `--save` saves it first; the reply lists the scenes that still have unsaved changes. Done in 0.5.0.
+4. `inspect-class`: ClassDB property, method, and signal discovery. Done in 0.5.0.
 
 **Phase 2: Godot scene edits.** Build after Phase 1 discovery exists and each behavior is proved in a throwaway editor.
 
