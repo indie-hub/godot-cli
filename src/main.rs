@@ -39,6 +39,8 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut query_name: Option<String> = None;
     let mut query_limit: Option<String> = None;
     let mut delete_node_path: Option<String> = None;
+    let mut scene_path: Option<String> = None;
+    let mut save: bool = false;
 
     let mut arguments = args.iter().skip(1);
     while let Some(argument) = arguments.next() {
@@ -117,6 +119,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 );
             }
             "save-scene" => command = Some(argument.clone()),
+            "open-scene" => command = Some(argument.clone()),
             "--port" => {
                 let value = arguments
                     .next()
@@ -143,6 +146,13 @@ fn run(args: &[String]) -> Result<(), String> {
                     .ok_or_else(|| "--class requires a value".to_string())?;
                 query_class = Some(value.clone());
             }
+            "--scene-path" => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| "--scene-path requires a value".to_string())?;
+                scene_path = Some(value.clone());
+            }
+            "--save" => save = true,
             "--group" => {
                 let value = arguments
                     .next()
@@ -172,7 +182,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let Some(command) = command else {
         print_usage();
         return Err(
-            "missing command (expected 'status', 'scene-tree', 'rename-node', 'create-node', 'set-property', 'inspect-node', 'query-nodes', 'inspect-class', 'delete-node', or 'save-scene')"
+            "missing command (expected 'status', 'scene-tree', 'rename-node', 'create-node', 'set-property', 'inspect-node', 'query-nodes', 'inspect-class', 'delete-node', 'save-scene', or 'open-scene')"
                 .to_string(),
         );
     };
@@ -274,6 +284,17 @@ fn run(args: &[String]) -> Result<(), String> {
                 project_path: canonicalize_project_path(&project_path)?,
             }
         }
+        "open-scene" => {
+            let scene_path =
+                scene_path.ok_or_else(|| "open-scene requires --scene-path <path>".to_string())?;
+            let project_path = project_path
+                .ok_or_else(|| "open-scene requires --project-path <dir>".to_string())?;
+            Request::OpenScene {
+                project_path: canonicalize_project_path(&project_path)?,
+                scene_path,
+                save,
+            }
+        }
         _ => unreachable!("argument parsing only assigns known commands"),
     };
 
@@ -348,6 +369,9 @@ fn print_usage() {
         "       godot-pipeline delete-node <scene-relative-path> --project-path <dir> [--port PORT]"
     );
     eprintln!("       godot-pipeline save-scene --project-path <dir> [--port PORT]");
+    eprintln!(
+        "       godot-pipeline open-scene --scene-path <path> --project-path <dir> [--save] [--port PORT]"
+    );
     eprintln!("  status      report the editor's connection state and edited scene path");
     eprintln!("  scene-tree  report the node tree of the currently edited scene");
     eprintln!("  rename-node rename a node in the edited scene through the editor's undo/redo");
@@ -379,9 +403,16 @@ fn print_usage() {
     eprintln!("              editor's undo/redo stack; the scene root ('.') is rejected");
     eprintln!("  save-scene  persist the currently edited scene to the file path it already has;");
     eprintln!("              rejected if no scene is open or the open scene has no file path");
+    eprintln!(
+        "  open-scene  open a scene by path in the running editor, optionally saving a dirty"
+    );
+    eprintln!("              edited scene first with --save; without --save a dirty edited");
+    eprintln!("              scene stays open as a background tab");
+    eprintln!("              A success reply lists the scenes that still have unsaved");
+    eprintln!("              changes in `unsaved`; an untitled scene appears as `[\"\"]`.");
     eprintln!("  --project-path  the project the command targets; required for rename-node,");
     eprintln!(
-        "                  create-node, set-property, inspect-node, query-nodes, inspect-class, delete-node, and save-scene, rejected"
+        "                  create-node, set-property, inspect-node, query-nodes, inspect-class, delete-node, save-scene, and open-scene, rejected"
     );
     eprintln!("                  by the plugin if it does not match the open project");
     eprintln!("  --port      override the default port ({DEFAULT_PORT})");
@@ -838,6 +869,107 @@ mod tests {
         let error = run(&args).expect_err("inspect-class without --project-path must fail");
         assert!(
             error.contains("inspect-class requires --project-path"),
+            "{error}"
+        );
+    }
+
+    /// Pins the CLI's `open-scene` argument parsing: `--scene-path` is passed
+    /// through as given, `--save` sets the bool (absent means false), and
+    /// `--project-path` is canonicalized the same way as the other commands.
+    /// Runs both cases against a real loopback socket that answers with an ok
+    /// reply, then asserts the received wire request, so parsing and transport
+    /// are both exercised rather than just the data types.
+    #[test]
+    fn open_scene_cli_sends_canonicalized_project_path_scene_path_and_save_flag() {
+        for with_save in [true, false] {
+            let listener = TcpListener::bind((HOST, 0)).expect("bind ephemeral port");
+            let port = listener.local_addr().expect("local addr").port();
+
+            let project_dir = std::env::temp_dir();
+            let canonical = std::fs::canonicalize(&project_dir).expect("canonicalize temp dir");
+            let canonical_arg = canonical.to_str().expect("temp dir is UTF-8").to_string();
+
+            let server = thread::spawn(move || {
+                let (stream, _) = listener.accept().expect("accept connection");
+                let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+                let mut request_line = String::new();
+                reader
+                    .read_line(&mut request_line)
+                    .expect("read request line");
+                let request: Request =
+                    serde_json::from_str(request_line.trim_end()).expect("parse request");
+                assert_eq!(
+                    request,
+                    Request::OpenScene {
+                        project_path: canonical_arg,
+                        scene_path: "scenes/S1.tscn".to_string(),
+                        save: with_save,
+                    }
+                );
+
+                let mut writer = stream;
+                let mut response_line = serde_json::to_string(&Response::Ok { data: json!({}) })
+                    .expect("serialize reply");
+                response_line.push('\n');
+                writer
+                    .write_all(response_line.as_bytes())
+                    .expect("write reply");
+            });
+
+            let mut args = vec![
+                "godot-pipeline".to_string(),
+                "open-scene".to_string(),
+                "--scene-path".to_string(),
+                "scenes/S1.tscn".to_string(),
+            ];
+            if with_save {
+                args.push("--save".to_string());
+            }
+            args.extend(
+                [
+                    "--project-path".to_string(),
+                    project_dir.to_str().expect("temp dir is UTF-8").to_string(),
+                    "--port".to_string(),
+                    port.to_string(),
+                ]
+                .into_iter(),
+            );
+            run(&args).expect("run succeeds");
+
+            server.join().expect("server thread does not panic");
+        }
+    }
+
+    /// Pins the CLI's rejection of `open-scene` without `--scene-path`: it
+    /// must fail before any request is sent.
+    #[test]
+    fn open_scene_without_scene_path_is_rejected() {
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "open-scene".to_string(),
+            "--project-path".to_string(),
+            "/tmp".to_string(),
+        ];
+        let error = run(&args).expect_err("open-scene without --scene-path must fail");
+        assert!(
+            error.contains("open-scene requires --scene-path"),
+            "{error}"
+        );
+    }
+
+    /// Pins the CLI's rejection of `open-scene` without `--project-path`: it
+    /// must fail before any request is sent.
+    #[test]
+    fn open_scene_without_project_path_is_rejected() {
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "open-scene".to_string(),
+            "--scene-path".to_string(),
+            "scenes/S1.tscn".to_string(),
+        ];
+        let error = run(&args).expect_err("open-scene without --project-path must fail");
+        assert!(
+            error.contains("open-scene requires --project-path"),
             "{error}"
         );
     }

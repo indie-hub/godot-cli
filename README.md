@@ -6,7 +6,7 @@ which reports the editor's status, the node tree of the scene currently
 being edited, the properties of a node in that scene, and the nodes matching
 a class, group, and name search, and can rename,
 create, set properties on, and delete nodes through the editor's own
-undo/redo stack, then save the edited scene to disk.
+undo/redo stack, then save the edited scene to disk or open a scene by path.
 
 This is a prototype (v0). It does not modify the Godot engine checkout and
 does not touch any project files beyond a temporary plugin install used for
@@ -48,6 +48,8 @@ One TCP connection per request, on `127.0.0.1:47821` by default:
    `{"command":"delete_node","node_path":"...","project_path":"..."}`,
    or
    `{"command":"save_scene","project_path":"..."}`,
+   or
+   `{"command":"open_scene","project_path":"...","scene_path":"...","save":false}`,
    then keeps the socket open for the reply.
 2. The plugin writes one line of JSON back:
    `{"status":"ok","data":...}` or `{"status":"error","message":"..."}`.
@@ -244,6 +246,23 @@ with a clear error and nothing is written. If Godot's save fails (a non-OK
 reply is `{"status":"ok","data":{"path":"res://..."}}` with `data.path` set
 to the saved scene path.
 
+`open_scene` opens a scene in the running editor by path and changes nothing
+else: no Undo/Redo step, no file write unless the request asks to save.
+`project_path` follows the same rules as `rename_node`'s and is checked
+first. `scene_path` may be a `res://` path, a path relative to the project
+root, an absolute path inside the project, a `..`-containing path, or a
+`uid://` id. Before anything is saved or opened, the plugin resolves the path
+and rejects imported scenes and anything that does not load as a `PackedScene`
+(a missing file, a directory, a non-scene resource, or a scene with a missing
+dependency). Without `save` a dirty edited scene stays open as a background
+tab with its edits intact; with `save` it is saved first, and a failed save
+is an `error` that opens nothing. There is no discard option. On success the
+reply is `{"status":"ok","data":{"path":"res://...","saved":false,"unsaved":[]}}`,
+with `data.unsaved` the scenes that still have unsaved changes after the call
+(an untitled dirty scene appears as an empty string, e.g. `[""]`); when
+the editor refuses the open, the reply is an `error` naming the requested
+scene, and a save that already happened stays saved.
+
 There is no length prefix beyond the newline: a request is one
 newline-terminated JSON object and a reply is one newline-terminated JSON
 object. The plugin buffers the bytes of the request in its own state and
@@ -286,6 +305,8 @@ cargo run -- query-nodes --group enemies --name 'Leaf*' --limit 50 --project-pat
 cargo run -- inspect-class --class Node --project-path /path/to/project
 cargo run -- delete-node Child/Deep --project-path /path/to/project
 cargo run -- save-scene --project-path /path/to/project
+cargo run -- open-scene --scene-path scenes/S1.tscn --project-path /path/to/project
+cargo run -- open-scene --scene-path res://scenes/S1.tscn --save --project-path /path/to/project
 ```
 
 `status` reports the editor version, whether a scene is playing, and the
@@ -326,6 +347,14 @@ a message explaining that the plugin could not be reached.
 file path it already has (see Protocol above), canonicalizing `--project-path`
 the same way as the other mutating commands. The reply's `data.path` is the
 saved scene's `res://` path.
+`open-scene --scene-path <path> --project-path <dir> [--save]` opens the
+scene at `<path>` in the running editor (see Protocol above); `<path>` may be
+a `res://`, relative, absolute-inside-project, `..`, or `uid://` path the
+editor accepts. Imported scenes (`.gltf` and friends) are rejected before
+anything is saved. Without `--save` a dirty edited scene stays open as a
+background tab; with `--save` it is saved before the open. The success reply
+lists the scenes that still have unsaved changes in `data.unsaved`.
+`--project-path` is canonicalized the same way as the other commands.
 
 ## Verification
 
@@ -337,7 +366,7 @@ cargo clippy -- -D warnings
 
 `cargo test` includes protocol tests that open a real loopback socket and
 round-trip `Request`/`Response` pairs through the exact wire format, not
-just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `inspect_node`, `query_nodes`, `inspect_class`, `delete_node`, and `save_scene` wire
+just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `inspect_node`, `query_nodes`, `inspect_class`, `delete_node`, `save_scene`, and `open_scene` wire
 shapes and the CLI's `set-property` value parsing.
 
 Live verification against a running Godot editor (status, scene tree,

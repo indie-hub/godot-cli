@@ -23,7 +23,7 @@ Godot Pipeline is a Rust CLI plus a GDScript EditorPlugin for stock Godot. An ag
 | --- | --- |
 | Expose an MCP server? | Deferred until a host without a shell needs it. The CLI stays the interface. Claude Code and Codex both have a shell. |
 | Governance gates on direct CLI calls | Deferred. Decide when the gates are designed. |
-| `open-scene` with a dirty scene | Offer a save option. Nothing is saved or discarded silently. A discard option is not included unless requested. |
+| `open-scene` with a dirty scene | Without `--save` the target opens and the dirty scene stays open as a background tab; with `--save` only the edited scene is saved first. There is no discard option. The reply lists the scenes that still have unsaved changes in `unsaved`. |
 | External writes (project settings, resource files, scripts, imports, exports) | Not yet. Ship reads and scene edits first. Add external writes later, after governance gates exist. |
 | Live game and debugger inspection | Deferred until play control and headless tests exist. |
 
@@ -47,7 +47,7 @@ Why external writes wait: scene edits go through the editor's undo stack, so Ctr
 
 1. `inspect-node`: typed node and property read.
 2. `query-nodes`: bounded scene search.
-3. `open-scene`: open a scene by path. When an edited scene is dirty, offer to save first.
+3. `open-scene`: open a scene by path. A dirty edited scene stays open as a background tab unless `--save` saves it first; the reply lists the scenes that still have unsaved changes.
 4. `inspect-class`: ClassDB property, method, and signal discovery.
 
 **Phase 2: Godot scene edits.** Build after Phase 1 discovery exists and each behavior is proved in a throwaway editor.
@@ -129,7 +129,7 @@ Source keys in the tables point to Godot 4.8-dev files: E = `EditorInterface`, U
 | unity/prefab/revert | Revert instance overrides. | DEFER | `EditorInterface.reload_scene_from_path` [E] is whole-scene; per-instance revert UNVERIFIED | PLUGIN | L | P3 | Do not discard unrelated dirty edits. |
 | unity/prefab/unpack | Detach instance to ordinary nodes. | DEFER | `Node.scene_file_path`, ownership [N]; safe unpack API UNVERIFIED | PLUGIN | L | P3 | Preserve descendants and inherited overrides. |
 | unity/scene/get_active | Read edited scene identity. | DIRECT | `EditorInterface.get_edited_scene_root` [E] | PLUGIN | S | P0 | Root may be absent. |
-| unity/scene/open | Open scene by path. | DIRECT | `EditorInterface.open_scene_from_path` [E] | PLUGIN | S | P0 | Dirty-scene interaction must be explicit; the decision is to offer a save option. |
+| unity/scene/open | Open scene by path. | DIRECT | `EditorInterface.open_scene_from_path` [E] | PLUGIN | S | P0 | Without `--save` a dirty scene stays open as a background tab; `--save` saves only the edited scene first. |
 | unity/scene/save | Save active scene. | DIRECT | Existing `save-scene`, `EditorInterface.save_scene` [P,E] | PLUGIN | S | P0 | Existing path only; no implicit save. |
 | unity/scene/list_in_build_settings | List build scenes. | ADAPT | `ProjectSettings` main scene [S]; all scene files via [F] | PLUGIN | S | P2 | Godot has no Unity build scene list. |
 | unity/scene/create | Create empty scene file. | ADAPT | `PackedScene.pack`, `ResourceSaver.save`, `EditorInterface.open_scene_from_path` [O,R,E] | PLUGIN | M | P1 | New file is disk mutation; overwrite gate. |
