@@ -116,6 +116,66 @@ script = ExtResource("1")
 [editable path="Edit"]
 """
 
+# Session C fixtures. Only session C uses them; sessions A and B never
+# reference these paths, so their rows cannot change. Uids are fixed text in
+# the headers, exactly like SUB_TSCN and MAIN_TSCN above.
+C_A_TSCN = """[gd_scene load_steps=1 format=3 uid="uid://gp021replaya01"]
+[node name="C_A" type="Node"]
+"""
+
+C_B_TSCN = """[gd_scene load_steps=1 format=3 uid="uid://gp021replayb01"]
+[node name="C_B" type="Node"]
+"""
+
+C_BROKEN_SCRIPT_TSCN = """[gd_scene load_steps=2 format=3 uid="uid://gp021replayc01"]
+[ext_resource type="Script" path="res://c_missing.gd" id="1"]
+[node name="C_Broken" type="Node"]
+script = ExtResource("1")
+"""
+
+C_BROKEN_INSTANCE_TSCN = """[gd_scene load_steps=2 format=3 uid="uid://gp021replayc02"]
+[ext_resource type="PackedScene" path="res://c_missing.tscn" id="1"]
+[node name="C_Broken" type="Node"]
+[node name="Kid" parent="." instance=ExtResource("1")]
+"""
+
+C_BROKEN_SUBRES_TSCN = """[gd_scene load_steps=2 format=3 uid="uid://gp021replayc03"]
+[ext_resource type="Texture2D" path="res://c_missing.png" id="1"]
+[node name="C_Broken" type="Sprite2D"]
+texture = ExtResource("1")
+"""
+
+C_CHILD_BROKEN_TSCN = """[gd_scene load_steps=2 format=3 uid="uid://gp021replayc04"]
+[ext_resource type="Script" path="res://c_missing_child.gd" id="1"]
+[node name="C_Child" type="Node"]
+script = ExtResource("1")
+"""
+
+C_PARENT_TSCN = """[gd_scene load_steps=2 format=3 uid="uid://gp021replayc05"]
+[ext_resource type="PackedScene" path="res://c_child_broken.tscn" id="1"]
+[node name="C_Parent" type="Node"]
+[node name="Kid" parent="." instance=ExtResource("1")]
+"""
+
+C_STALE_TSCN = """[gd_scene load_steps=2 format=3 uid="uid://gp021replayc06"]
+[ext_resource type="Script" path="uid://gp021stale0000" id="1"]
+[node name="C_Broken" type="Node"]
+script = ExtResource("1")
+"""
+
+C_NOTE_TXT = """session C plain text, not a scene
+"""
+
+C_SCRIPT_GD = """extends Node
+"""
+
+C_DATA_TRES = """[gd_resource type="StandardMaterial3D" format=3]
+"""
+
+C_OLD_SCN = """[gd_scene load_steps=1 format=3]
+[node name="C_Old" type="Node"]
+"""
+
 # Each entry is (kind, text) where kind is "line" (newline-terminated, one
 # reply expected at once) or "idle" (sent without newline; the reply arrives
 # after the plugin's 5s idle timeout). "<PROJ>" is replaced with the
@@ -246,6 +306,79 @@ def build_b():
     return out
 
 
+def ic(clazz, project="<PROJ>"):
+    return ("line", json.dumps({"command": "inspect_class", "class": clazz,
+                                "project_path": project}, separators=(",", ":")))
+
+
+def os_(scene, save=False, project="<PROJ>", no_save_key=False):
+    d = {"command": "open_scene", "project_path": project, "scene_path": scene}
+    if not no_save_key:
+        d["save"] = save
+    return ("line", json.dumps(d, separators=(",", ":")))
+
+
+def build_c():
+    # Session C: inspect-class (read-only, no scene needed) then open-scene
+    # (stateful). Runs in a fresh no-scene editor like session A; the dirty
+    # phase dirties scenes with create_node and never saves except once.
+    out = [
+        ic("Node"),
+        ic("Control"),
+        ic("Object"),
+        ic("RefCounted"),
+        ic("NoSuchClass999"),
+        ic(""),
+        ic("QryScriptClass"),
+        ic(7),
+        ("line", '{"command":"inspect_class","project_path":"<PROJ>"}'),
+        ic("Nope", "/no/replay-mismatch"),
+        os_("res://c_missing.tscn", project="/no/replay-mismatch"),
+        ("line", '{"command":"open_scene","project_path":"<PROJ>"}'),
+        ("line", '{"command":"open_scene","scene_path":"res://c_a.tscn"}'),
+        os_("res://c_a.tscn", project=7),
+        ("line", '{"command":"open_scene","project_path":"<PROJ>","scene_path":7,"save":false}'),
+        os_("res://c_a.tscn", save="yes"),
+        os_(""),
+        os_("res://c_missing.tscn"),
+        os_("res://"),
+        os_("res://c_note.txt"),
+        os_("res://c_script.gd"),
+        os_("res://c_data.tres"),
+        os_("res://c_old.scn"),
+        os_("res://c_broken_script.tscn"),
+        os_("res://c_broken_instance.tscn"),
+        os_("res://c_broken_subres.tscn"),
+        os_("res://c_parent.tscn"),
+        os_("res://c_stale.tscn"),
+        os_("res://c_a.tscn"),
+        ("line", '{"command":"status"}'),
+        os_("c_b.tscn"),
+        os_("res://addons/../c_a.tscn"),
+        os_("<PROJ>/c_b.tscn"),
+        os_("res://c_b.tscn"),
+        ("line", '{"command":"open_scene","project_path":"<PROJ>","scene_path":"res://c_a.tscn"}'),
+        os_("res://c_b.tscn", save=True),
+        os_("uid://gp021replaya01"),
+        ("line", '{"command":"create_node","parent_path":".","class_name":"Node","name":"DirtKid","project_path":"<PROJ>"}'),
+        os_("res://c_b.tscn"),
+        ("line", '{"command":"status"}'),
+        ("line", '{"command":"create_node","parent_path":".","class_name":"Node","name":"DirtKid","project_path":"<PROJ>"}'),
+        os_("res://c_a.tscn", save=True),
+        ("line", '{"command":"status"}'),
+        os_("res://c_b.tscn"),
+        ("line", '{"command":"create_node","parent_path":".","class_name":"Node","name":"DirtKid","project_path":"<PROJ>"}'),
+        os_("res://c_a.tscn"),
+        ("line", '{"command":"status"}'),
+        os_("res://c_broken_script.tscn"),
+        ("line", '{"command":"status"}'),
+        os_("res://c_broken_script.tscn", save=True),
+        ("line", '{"command":"status"}'),
+        ic("Node2D"),
+    ]
+    return out
+
+
 def send_one(port, text, newline, timeout):
     s = socket.create_connection(("127.0.0.1", port), timeout=10)
     try:
@@ -348,6 +481,23 @@ def main():
             f.write(SUB_TSCN)
         with open(os.path.join(proj, "main.tscn"), "w") as f:
             f.write(MAIN_TSCN)
+        # Session C fixtures. Sessions A and B never reference them.
+        for name, text in [
+            ("c_a.tscn", C_A_TSCN),
+            ("c_b.tscn", C_B_TSCN),
+            ("c_broken_script.tscn", C_BROKEN_SCRIPT_TSCN),
+            ("c_broken_instance.tscn", C_BROKEN_INSTANCE_TSCN),
+            ("c_broken_subres.tscn", C_BROKEN_SUBRES_TSCN),
+            ("c_child_broken.tscn", C_CHILD_BROKEN_TSCN),
+            ("c_parent.tscn", C_PARENT_TSCN),
+            ("c_stale.tscn", C_STALE_TSCN),
+            ("c_note.txt", C_NOTE_TXT),
+            ("c_script.gd", C_SCRIPT_GD),
+            ("c_data.tres", C_DATA_TRES),
+            ("c_old.scn", C_OLD_SCN),
+        ]:
+            with open(os.path.join(proj, name), "w") as f:
+                f.write(text)
         dst = os.path.join(proj, "addons", "godot_pipeline")
         shutil.copytree(a.plugin_dir, dst, ignore=shutil.ignore_patterns("*.uid"))
         target = os.path.join(dst, "editor_plugin.gd")
@@ -363,8 +513,13 @@ def main():
         if r.returncode != 0:
             raise SystemExit("godot --import failed")
         rows = []
-        rows += run_session(a.port, proj, None, REQ_A, False)
-        rows += run_session(a.port, proj, "res://main.tscn", build_b(), True)
+        # Run order is A, C, B: a fresh editor restores the previous session's
+        # open scenes, so session C (no scene, like A) must run before session
+        # B opens main.tscn. Rows are still stored A, B, C.
+        rows_a = run_session(a.port, proj, None, REQ_A, False)
+        rows_c = run_session(a.port, proj, None, build_c(), False)
+        rows_b = run_session(a.port, proj, "res://main.tscn", build_b(), True)
+        rows = rows_a + rows_b + rows_c
         with open(a.out, "w") as f:
             for req, rep in rows:
                 f.write(json.dumps({"request": req, "reply": rep}, separators=(",", ":")) + "\n")

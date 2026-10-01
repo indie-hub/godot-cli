@@ -1,4 +1,5 @@
-Golden replay harness for the Godot Pipeline editor plugin (baseline 2e64eab).
+Golden replay harness for the Godot Pipeline editor plugin (200 rows:
+1-148 unchanged, 149-200 cover inspect-class and open-scene).
 
 HOW TO RUN
   GODOT=/path/to/Godot python3 replay.py --plugin-dir DIR --port PORT --out FILE
@@ -11,8 +12,11 @@ HOW TO RUN
   Prints the first differing request with both replies, or IDENTICAL.
   Exit 0 identical, 1 different.
 
-  Each run takes about two minutes: one --import plus two editor launches
-  (session A with no scene, session B with res://main.tscn), 148 requests.
+  Each run takes about half a minute: one --import plus three editor launches
+  (session A with no scene, session C with no scene, session B with
+  res://main.tscn), 200 requests. The run order is A, C, B but rows are stored
+  A, B, C: a fresh editor restores the previous session's open scenes, so the
+  second no-scene session must run before the scene session.
 
 WHAT IT DOES
   Session A (requests 1-23, no edited scene): status ok with scene_path null;
@@ -40,29 +44,53 @@ WHAT IT DOES
   deletes), save valid plus wrong project, then a post-mutation query
   (17 nodes) and inspect of the renamed node. Mutations run in fixed order;
   later requests see earlier state by design.
+  Session C (requests 149-200, new editor, no edited scene, extra c_* fixtures
+  that sessions A and B never reference): inspect-class with no scene
+  (149-158: Node, Control with its large reply, Object with empty ancestors,
+  RefCounted, unknown class, empty class, the project's QryScriptClass which
+  is not in ClassDB, non-string class, missing class field, wrong project plus
+  bad class where the project guard answers first); open-scene with no scene
+  (159-176: wrong project plus bad path, missing fields, non-string fields,
+  non-bool save, empty path, missing file, res:// directory, .txt/.gd/.tres
+  files, text .scn, broken script/instance/sub-resource references, nested
+  broken instance, stale uid); valid opens (177-185: first open with
+  saved:false and unsaved [], status, relative path, .. path, canonical
+  absolute path, already-edited no-op, open without the save key, save on a
+  clean scene, uid:// open); dirty phase (186-195: create_node dirt, open
+  without save lists the dirty scene in unsaved, status, dirt the second
+  scene, open with save which saves only the edited scene, status, open
+  without save, dirt again, open without save with a two-entry unsaved list,
+  status); broken-scene rejects on the dirty scene: 196 without save
+  (save:false), 197 status, 198 with save (save:true), 199 status, every
+  reject a structured error and every status showing the edited scene
+  unchanged; inspect-class Node2D with a scene open (200).
 
 NORMALISATION
   The only one: the throwaway project's absolute path is replaced with
   <PROJECT> in stored requests and replies. Replies that carry it are the
-  "project path mismatch" errors (10, 46, 54, 61, 70, 131, 141, 146).
-  Reply text is otherwise verbatim; no sorting, no rounding.
+  "project path mismatch" errors (10, 46, 54, 61, 70, 131, 141, 146, 158,
+  159). Reply text is otherwise verbatim; no sorting, no rounding.
 
 DETERMINISM PROOF
-  baseline.jsonl was recorded three times (runs/run1..3.jsonl); all three
-  are byte-identical (compare.py IDENTICAL, cmp clean). baseline.sha256
-  holds the sha256 of baseline.jsonl: check with
+  baseline.jsonl was recorded three times; all three are byte-identical
+  (compare.py IDENTICAL, cmp clean). Rows 1-148 are byte-identical to the
+  previous baseline (cmp clean on the first 148 lines; their sha256 is still
+  17b67de4a11a1285355a173326b7e72b68a72dd2754b89a12400c3309a3edc1d).
+  baseline.sha256 holds the sha256 of the whole baseline.jsonl: check with
   shasum -a 256 baseline.jsonl.
 
 NEGATIVE CONTROL
-  altered_plugin/ is the baseline plugin with one error string changed by
-  one character ("the scene root cannot be deleted" -> "...deleteD").
-  runs/altered.jsonl differs from baseline.jsonl on exactly request 134
-  (delete_node "."); see compare.py output.
+  Two scratch copies of the plugin, each with one error string changed by one
+  character, each replayed and compared against the baseline: an inspect_class
+  change ("unknown class" -> "unknown clas") differs on exactly requests 153,
+  154, 155 (the unknown-class rows) and nowhere else; an open_scene change
+  ("no such scene" -> "no such scen") differs on exactly requests 166, 167,
+  168, 169, 170, 171 (the missing/dir/type rows) and nowhere else.
 
-COVERAGE (baseline editor_plugin.gd at 2e64eab; request numbers above)
+COVERAGE (request numbers above)
   Covered: incomplete-request #22; malformed #11-13; unknown command #14;
   no-scene #2-9; missing fields #15-21; project mismatch #10,46,54,61,70,
-  131,141,146; rename paths #65-68, not found #62, empty name #64, bad
+  131,141,146,158,159; rename paths #65-68, not found #62, empty name #64, bad
   chars #63; create parent paths #78-81, parent not found #75, instanced
   parent #82, unknown class #71, non-Node class #72, cannot instantiate
   #73, empty name #77, bad chars #76; set paths #126-129, not found #125,
@@ -71,7 +99,14 @@ COVERAGE (baseline editor_plugin.gd at 2e64eab; request numbers above)
   #122, read-only #123, unknown property #124, non-editable (name) #130;
   inspect paths #55-58, not found #59; query unknown class #28, limit
   range #41-43, limit integer #44-45; delete paths #137-140, not found
-  #136, root #134, non-editable instance #135.
+  #136, root #134, non-editable instance #135; inspect-class no-scene
+  #149-158 (valid incl. large Control reply #150 and empty ancestors #151,
+  unknown #153-155, field errors #156-157, guard first #158); open-scene
+  no-scene guards #159-164, missing/dir/type rejects #165-171, broken scenes
+  #172-176; valid opens #177,179-185 (relative, .., absolute, no-op,
+  omitted save key, save-on-clean, uid); dirty opens #187,190,192,194
+  (unsaved lists with one entry #187,190,192 and two entries #194);
+  dirty rejects #196,198; inspect-class with scene #200.
   Not covered, with reason:
   - "request exceeds the maximum size" (>8 MiB without newline): reaching
     it needs an 8 MB write, and the reported byte count varies with TCP
@@ -83,19 +118,27 @@ COVERAGE (baseline editor_plugin.gd at 2e64eab; request numbers above)
   - "the open scene has no file path yet": no command opens an unsaved
     scene, so this branch cannot trigger from outside.
   - "failed to save the scene": needs an IO failure while saving.
+  - genuine imported scenes (.gltf, .glb): the editor's import is not
+    deterministic enough to record byte-identically (a hand-written
+    triangle .gltf was measured: it loads but the editor refuses it).
+  - an absolute path through /tmp (symlink to /private/tmp on macOS):
+    depends on the temp directory, so it cannot be a fixed request.
+  - an untitled dirty scene: making one needs editor-side scripting
+    (close all scenes, then set the edited scene), not a socket request.
 
 NOTES
   The fixture project deliberately has no run/main_scene: otherwise the
-  editor auto-opens main.tscn and session A would have a scene. The port
-  patch is one substitution of "const PORT := 47821" in the copied plugin
+  editor auto-opens main.tscn and sessions A and C would have a scene. The
+  port patch is one substitution of "const PORT := 47821" in the copied plugin
   only. The harness leaves no Godot process and deletes the throwaway
   project every run. Files here: replay.py, compare.py, baseline.jsonl,
   baseline.sha256, README.txt.
-  The baseline is only valid while the plugin's replies for these 148 requests
+  The baseline is only valid while the plugin's replies for these 200 requests
   are supposed to stay the same. A change that adds or alters a command's
   behavior on purpose needs a new baseline, recorded from the last trusted
-  commit, and a fresh determinism check (record twice, compare byte for byte).
-  Negative control: copy the plugin, change one character in one error message,
-  run the harness on the copy; compare.py must report a difference.
+  commit, and a fresh determinism check (record three times, compare byte for
+  byte). Negative control: copy the plugin, change one character in one error
+  message, run the harness on the copy; compare.py must report a difference
+  only on the requests that carry that string.
   The baseline plugin can be recreated with
-  git show 2e64eab:addon/godot_pipeline/editor_plugin.gd (and plugin.cfg).
+  git show d5b8e0c:addon/godot_pipeline (whole directory).
