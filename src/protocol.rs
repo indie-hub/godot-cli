@@ -99,6 +99,16 @@ pub enum Request {
     SaveScene {
         project_path: String,
     },
+    /// Opens a scene in the running editor by path, optionally saving a dirty
+    /// edited scene first (`save` defaults to false). `scene_path` may be a
+    /// res://, relative, absolute-inside-project, "..", or uid:// path, as
+    /// long as it resolves to a scene inside the project. `project_path`
+    /// follows the same rules as [`Request::RenameNode`].
+    OpenScene {
+        project_path: String,
+        scene_path: String,
+        save: bool,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
@@ -401,6 +411,44 @@ mod tests {
         assert_eq!(
             json,
             r#"{"command":"save_scene","project_path":"/tmp/project"}"#
+        );
+    }
+
+    /// Pins the exact wire shape the GDScript plugin matches on
+    /// (`"command":"open_scene"` plus the three snake_case fields, with
+    /// `save` passed through as a JSON bool).
+    #[test]
+    fn open_scene_request_serializes_to_the_documented_wire_shape() {
+        let request = Request::OpenScene {
+            project_path: "/tmp/project".to_string(),
+            scene_path: "scenes/S1.tscn".to_string(),
+            save: true,
+        };
+
+        let json = serde_json::to_string(&request).expect("serialize request");
+
+        assert_eq!(
+            json,
+            r#"{"command":"open_scene","project_path":"/tmp/project","scene_path":"scenes/S1.tscn","save":true}"#
+        );
+    }
+
+    /// Pins the default wire shape when `--save` is not given: `save` is a
+    /// real JSON bool false, not null or absent, so the plugin sees a typed
+    /// field.
+    #[test]
+    fn open_scene_without_save_serializes_save_as_false() {
+        let request = Request::OpenScene {
+            project_path: "/tmp/project".to_string(),
+            scene_path: "scenes/S1.tscn".to_string(),
+            save: false,
+        };
+
+        let json = serde_json::to_string(&request).expect("serialize request");
+
+        assert_eq!(
+            json,
+            r#"{"command":"open_scene","project_path":"/tmp/project","scene_path":"scenes/S1.tscn","save":false}"#
         );
     }
 }
