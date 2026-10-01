@@ -257,7 +257,9 @@ and rejects imported scenes and anything that does not load as a `PackedScene`
 dependency). Without `save` a dirty edited scene stays open as a background
 tab with its edits intact; with `save` it is saved first, and a failed save
 is an `error` that opens nothing. There is no discard option. On success the
-reply is `{"status":"ok","data":{"path":"res://...","saved":false}}`; when
+reply is `{"status":"ok","data":{"path":"res://...","saved":false,"unsaved":[]}}`,
+with `data.unsaved` the scenes that still have unsaved changes after the call
+(an untitled dirty scene appears as an empty string, e.g. `[""]`); when
 the editor refuses the open, the reply is an `error` naming the requested
 scene, and a save that already happened stays saved.
 
@@ -350,8 +352,9 @@ scene at `<path>` in the running editor (see Protocol above); `<path>` may be
 a `res://`, relative, absolute-inside-project, `..`, or `uid://` path the
 editor accepts. Imported scenes (`.gltf` and friends) are rejected before
 anything is saved. Without `--save` a dirty edited scene stays open as a
-background tab; with `--save` it is saved before the open. `--project-path`
-is canonicalized the same way as the other commands.
+background tab; with `--save` it is saved before the open. The success reply
+lists the scenes that still have unsaved changes in `data.unsaved`.
+`--project-path` is canonicalized the same way as the other commands.
 
 ## Verification
 

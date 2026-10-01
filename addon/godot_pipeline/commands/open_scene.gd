@@ -7,6 +7,9 @@ const CommandSupport := preload("command_support.gd")
 ## Opens a scene in the running editor by path, optionally saving a dirty
 ## edited scene first. The reply names the scene that is actually edited
 ## after the call, so a scene the editor silently refuses to open is an error.
+## A success reply also lists the scenes that still have unsaved changes in
+## `unsaved`; an untitled dirty scene shows up there as an empty string,
+## e.g. `[""]`.
 ##
 ## `request` must carry string fields `project_path` and `scene_path`, and an
 ## optional bool `save` (default false). The project-path check runs before
@@ -74,7 +77,7 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 	if edited_after == null or edited_after.scene_file_path != resolved:
 		return CommandSupport.error("scene did not open: %s" % scene_path)
 
-	return CommandSupport.ok({"path": edited_after.scene_file_path, "saved": saved})
+	return CommandSupport.ok({"path": edited_after.scene_file_path, "saved": saved, "unsaved": editor.get_unsaved_scenes()})
 
 
 ## Resolves `scene_path` to the normalized res:// path the editor stores in

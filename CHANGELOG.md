@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `open-scene` command to open a scene in the running editor by path, optionally saving a dirty edited scene first with `--save`; without `--save` a dirty edited scene stays open as a background tab. Only native scenes are opened; imported scenes are rejected before anything is saved. The reply names the scene actually edited after the open, so a scene the editor silently refuses to open is reported as an error.
+- `open-scene` command to open a scene in the running editor by path, optionally saving a dirty edited scene first with `--save`; without `--save` a dirty edited scene stays open as a background tab. Only native scenes are opened; imported scenes are rejected before anything is saved. The reply names the scene actually edited after the open, so a scene the editor silently refuses to open is reported as an error, and lists the scenes that still have unsaved changes in `unsaved` (an untitled dirty scene appears as an empty string, e.g. `[""]`).
 - `inspect-class` command to report an engine class's ClassDB reflection (ancestors, instantiability, Node ancestry, and declared properties, methods, and signals) without changing the scene and without requiring an edited scene.
 - `query-nodes` command to search the edited scene's node tree for nodes matching a class, group, and glob name filter, in tree order, up to a bounded limit, without changing the scene.
 - `inspect-node` command to read a node's class, child count, and the values of its editor-visible properties without changing the scene, including the JSON shape needed to feed a supported value back through `set-property`.

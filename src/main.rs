@@ -408,6 +408,8 @@ fn print_usage() {
     );
     eprintln!("              edited scene first with --save; without --save a dirty edited");
     eprintln!("              scene stays open as a background tab");
+    eprintln!("              A success reply lists the scenes that still have unsaved");
+    eprintln!("              changes in `unsaved`; an untitled scene appears as `[\"\"]`.");
     eprintln!("  --project-path  the project the command targets; required for rename-node,");
     eprintln!(
         "                  create-node, set-property, inspect-node, query-nodes, inspect-class, delete-node, save-scene, and open-scene, rejected"
@@ -872,117 +874,70 @@ mod tests {
     }
 
     /// Pins the CLI's `open-scene` argument parsing: `--scene-path` is passed
-    /// through as given, `--save` sets the bool, and `--project-path` is
-    /// canonicalized the same way as the other commands, then the request is
-    /// sent to the configured `--port`. Runs `run` against a real loopback
-    /// socket that answers with an ok reply, then asserts the received wire
-    /// request, so parsing and transport are both exercised rather than just
-    /// the data types.
+    /// through as given, `--save` sets the bool (absent means false), and
+    /// `--project-path` is canonicalized the same way as the other commands.
+    /// Runs both cases against a real loopback socket that answers with an ok
+    /// reply, then asserts the received wire request, so parsing and transport
+    /// are both exercised rather than just the data types.
     #[test]
-    fn open_scene_cli_sends_canonicalized_project_path_scene_path_and_save() {
-        let listener = TcpListener::bind((HOST, 0)).expect("bind ephemeral port");
-        let port = listener.local_addr().expect("local addr").port();
+    fn open_scene_cli_sends_canonicalized_project_path_scene_path_and_save_flag() {
+        for with_save in [true, false] {
+            let listener = TcpListener::bind((HOST, 0)).expect("bind ephemeral port");
+            let port = listener.local_addr().expect("local addr").port();
 
-        let project_dir = std::env::temp_dir();
-        let canonical = std::fs::canonicalize(&project_dir).expect("canonicalize temp dir");
-        let canonical_arg = canonical.to_str().expect("temp dir is UTF-8").to_string();
+            let project_dir = std::env::temp_dir();
+            let canonical = std::fs::canonicalize(&project_dir).expect("canonicalize temp dir");
+            let canonical_arg = canonical.to_str().expect("temp dir is UTF-8").to_string();
 
-        let server = thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept connection");
-            let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
-            let mut request_line = String::new();
-            reader
-                .read_line(&mut request_line)
-                .expect("read request line");
-            let request: Request =
-                serde_json::from_str(request_line.trim_end()).expect("parse request");
-            assert_eq!(
-                request,
-                Request::OpenScene {
-                    project_path: canonical_arg,
-                    scene_path: "scenes/S1.tscn".to_string(),
-                    save: true,
-                }
+            let server = thread::spawn(move || {
+                let (stream, _) = listener.accept().expect("accept connection");
+                let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+                let mut request_line = String::new();
+                reader
+                    .read_line(&mut request_line)
+                    .expect("read request line");
+                let request: Request =
+                    serde_json::from_str(request_line.trim_end()).expect("parse request");
+                assert_eq!(
+                    request,
+                    Request::OpenScene {
+                        project_path: canonical_arg,
+                        scene_path: "scenes/S1.tscn".to_string(),
+                        save: with_save,
+                    }
+                );
+
+                let mut writer = stream;
+                let mut response_line = serde_json::to_string(&Response::Ok { data: json!({}) })
+                    .expect("serialize reply");
+                response_line.push('\n');
+                writer
+                    .write_all(response_line.as_bytes())
+                    .expect("write reply");
+            });
+
+            let mut args = vec![
+                "godot-pipeline".to_string(),
+                "open-scene".to_string(),
+                "--scene-path".to_string(),
+                "scenes/S1.tscn".to_string(),
+            ];
+            if with_save {
+                args.push("--save".to_string());
+            }
+            args.extend(
+                [
+                    "--project-path".to_string(),
+                    project_dir.to_str().expect("temp dir is UTF-8").to_string(),
+                    "--port".to_string(),
+                    port.to_string(),
+                ]
+                .into_iter(),
             );
+            run(&args).expect("run succeeds");
 
-            let mut writer = stream;
-            let mut response_line =
-                serde_json::to_string(&Response::Ok { data: json!({}) }).expect("serialize reply");
-            response_line.push('\n');
-            writer
-                .write_all(response_line.as_bytes())
-                .expect("write reply");
-        });
-
-        let args = vec![
-            "godot-pipeline".to_string(),
-            "open-scene".to_string(),
-            "--scene-path".to_string(),
-            "scenes/S1.tscn".to_string(),
-            "--save".to_string(),
-            "--project-path".to_string(),
-            project_dir.to_str().expect("temp dir is UTF-8").to_string(),
-            "--port".to_string(),
-            port.to_string(),
-        ];
-        run(&args).expect("run succeeds");
-
-        server.join().expect("server thread does not panic");
-    }
-
-    /// Pins the CLI's `open-scene` default: without `--save` the request
-    /// carries `save: false`. Same loopback shape as the `--save` test above:
-    /// the request is only observable on the wire, so there is no pure
-    /// parsing assertion for the default.
-    #[test]
-    fn open_scene_without_save_sends_save_false() {
-        let listener = TcpListener::bind((HOST, 0)).expect("bind ephemeral port");
-        let port = listener.local_addr().expect("local addr").port();
-
-        let project_dir = std::env::temp_dir();
-        let canonical = std::fs::canonicalize(&project_dir).expect("canonicalize temp dir");
-        let canonical_arg = canonical.to_str().expect("temp dir is UTF-8").to_string();
-
-        let server = thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept connection");
-            let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
-            let mut request_line = String::new();
-            reader
-                .read_line(&mut request_line)
-                .expect("read request line");
-            let request: Request =
-                serde_json::from_str(request_line.trim_end()).expect("parse request");
-            assert_eq!(
-                request,
-                Request::OpenScene {
-                    project_path: canonical_arg,
-                    scene_path: "scenes/S1.tscn".to_string(),
-                    save: false,
-                }
-            );
-
-            let mut writer = stream;
-            let mut response_line =
-                serde_json::to_string(&Response::Ok { data: json!({}) }).expect("serialize reply");
-            response_line.push('\n');
-            writer
-                .write_all(response_line.as_bytes())
-                .expect("write reply");
-        });
-
-        let args = vec![
-            "godot-pipeline".to_string(),
-            "open-scene".to_string(),
-            "--scene-path".to_string(),
-            "scenes/S1.tscn".to_string(),
-            "--project-path".to_string(),
-            project_dir.to_str().expect("temp dir is UTF-8").to_string(),
-            "--port".to_string(),
-            port.to_string(),
-        ];
-        run(&args).expect("run succeeds");
-
-        server.join().expect("server thread does not panic");
+            server.join().expect("server thread does not panic");
+        }
     }
 
     /// Pins the CLI's rejection of `open-scene` without `--scene-path`: it
