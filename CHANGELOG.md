@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-01
+
 ### Added
 
 - `open-scene` command to open a scene in the running editor by path, optionally saving a dirty edited scene first with `--save`; without `--save` a dirty edited scene stays open as a background tab. Only native scenes are opened; imported scenes are rejected before anything is saved. The reply names the scene actually edited after the open, so a scene the editor silently refuses to open is reported as an error, and lists the scenes that still have unsaved changes in `unsaved` (an untitled dirty scene appears as an empty string, e.g. `[""]`).
