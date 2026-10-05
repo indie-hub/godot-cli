@@ -39,6 +39,12 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut query_name: Option<String> = None;
     let mut query_limit: Option<String> = None;
     let mut delete_node_path: Option<String> = None;
+    let mut connect_source_path: Option<String> = None;
+    let mut connect_signal: Option<String> = None;
+    let mut connect_target_path: Option<String> = None;
+    let mut connect_method: Option<String> = None;
+    let mut connect_deferred: bool = false;
+    let mut connect_one_shot: bool = false;
     let mut scene_path: Option<String> = None;
     let mut save: bool = false;
 
@@ -120,6 +126,18 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             "save-scene" => command = Some(argument.clone()),
             "open-scene" => command = Some(argument.clone()),
+            "connect-signal" => {
+                command = Some(argument.clone());
+                let mut next_operand = || {
+                    arguments.next().cloned().ok_or_else(|| {
+                        "connect-signal requires <source-scene-relative-path> <signal> <target-scene-relative-path> <method>".to_string()
+                    })
+                };
+                connect_source_path = Some(next_operand()?);
+                connect_signal = Some(next_operand()?);
+                connect_target_path = Some(next_operand()?);
+                connect_method = Some(next_operand()?);
+            }
             "--port" => {
                 let value = arguments
                     .next()
@@ -153,6 +171,8 @@ fn run(args: &[String]) -> Result<(), String> {
                 scene_path = Some(value.clone());
             }
             "--save" => save = true,
+            "--deferred" => connect_deferred = true,
+            "--one-shot" => connect_one_shot = true,
             "--group" => {
                 let value = arguments
                     .next()
@@ -182,7 +202,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let Some(command) = command else {
         print_usage();
         return Err(
-            "missing command (expected 'status', 'scene-tree', 'rename-node', 'create-node', 'set-property', 'inspect-node', 'query-nodes', 'inspect-class', 'delete-node', 'save-scene', or 'open-scene')"
+            "missing command (expected 'status', 'scene-tree', 'rename-node', 'create-node', 'set-property', 'inspect-node', 'query-nodes', 'inspect-class', 'delete-node', 'connect-signal', 'save-scene', or 'open-scene')"
                 .to_string(),
         );
     };
@@ -284,6 +304,25 @@ fn run(args: &[String]) -> Result<(), String> {
                 project_path: canonicalize_project_path(&project_path)?,
             }
         }
+        "connect-signal" => {
+            let source_path =
+                connect_source_path.expect("parsed together with the connect-signal command");
+            let signal = connect_signal.expect("parsed together with the connect-signal command");
+            let target_path =
+                connect_target_path.expect("parsed together with the connect-signal command");
+            let method = connect_method.expect("parsed together with the connect-signal command");
+            let project_path = project_path
+                .ok_or_else(|| "connect-signal requires --project-path <dir>".to_string())?;
+            Request::ConnectSignal {
+                source_path,
+                signal,
+                target_path,
+                method,
+                deferred: connect_deferred,
+                one_shot: connect_one_shot,
+                project_path: canonicalize_project_path(&project_path)?,
+            }
+        }
         "open-scene" => {
             let scene_path =
                 scene_path.ok_or_else(|| "open-scene requires --scene-path <path>".to_string())?;
@@ -368,6 +407,9 @@ fn print_usage() {
     eprintln!(
         "       godot-pipeline delete-node <scene-relative-path> --project-path <dir> [--port PORT]"
     );
+    eprintln!(
+        "       godot-pipeline connect-signal <source-scene-relative-path> <signal> <target-scene-relative-path> <method> --project-path <dir> [--deferred] [--one-shot] [--port PORT]"
+    );
     eprintln!("       godot-pipeline save-scene --project-path <dir> [--port PORT]");
     eprintln!(
         "       godot-pipeline open-scene --scene-path <path> --project-path <dir> [--save] [--port PORT]"
@@ -401,6 +443,11 @@ fn print_usage() {
     eprintln!("              properties, methods, and signals; no edited scene is required");
     eprintln!("  delete-node remove a node and its subtree from the edited scene through the");
     eprintln!("              editor's undo/redo stack; the scene root ('.') is rejected");
+    eprintln!("  connect-signal connect <signal> on a source node to <method> on a target node");
+    eprintln!("              through the editor's undo/redo stack; --deferred and --one-shot");
+    eprintln!("              add the matching connect flags; nothing saves until save-scene");
+    eprintln!("              The success reply's data names source_path, signal, target_path,");
+    eprintln!("              method, and flags (the engine's connection flags integer).");
     eprintln!("  save-scene  persist the currently edited scene to the file path it already has;");
     eprintln!("              rejected if no scene is open or the open scene has no file path");
     eprintln!(
@@ -412,7 +459,7 @@ fn print_usage() {
     eprintln!("              changes in `unsaved`; an untitled scene appears as `[\"\"]`.");
     eprintln!("  --project-path  the project the command targets; required for rename-node,");
     eprintln!(
-        "                  create-node, set-property, inspect-node, query-nodes, inspect-class, delete-node, save-scene, and open-scene, rejected"
+        "                  create-node, set-property, inspect-node, query-nodes, inspect-class, delete-node, connect-signal, save-scene, and open-scene, rejected"
     );
     eprintln!("                  by the plugin if it does not match the open project");
     eprintln!("  --port      override the default port ({DEFAULT_PORT})");
@@ -970,6 +1017,118 @@ mod tests {
         let error = run(&args).expect_err("open-scene without --project-path must fail");
         assert!(
             error.contains("open-scene requires --project-path"),
+            "{error}"
+        );
+    }
+
+    /// Pins the CLI's `connect-signal` argument parsing: the four operands are
+    /// passed through as given, `--deferred` and `--one-shot` set their bools
+    /// (absent means false), and `--project-path` is canonicalized the same way
+    /// as the other commands. Each flag combination runs against a real
+    /// loopback socket that answers with an ok reply, then asserts the received
+    /// wire request.
+    #[test]
+    fn connect_signal_cli_sends_operands_flags_and_canonicalized_project_path() {
+        for (deferred, one_shot) in [(false, false), (true, false), (false, true), (true, true)] {
+            let listener = TcpListener::bind((HOST, 0)).expect("bind ephemeral port");
+            let port = listener.local_addr().expect("local addr").port();
+
+            let project_dir = std::env::temp_dir();
+            let canonical = std::fs::canonicalize(&project_dir).expect("canonicalize temp dir");
+            let canonical_arg = canonical.to_str().expect("temp dir is UTF-8").to_string();
+
+            let server = thread::spawn(move || {
+                let (stream, _) = listener.accept().expect("accept connection");
+                let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+                let mut request_line = String::new();
+                reader
+                    .read_line(&mut request_line)
+                    .expect("read request line");
+                let request: Request =
+                    serde_json::from_str(request_line.trim_end()).expect("parse request");
+                assert_eq!(
+                    request,
+                    Request::ConnectSignal {
+                        source_path: "Child/Source".to_string(),
+                        signal: "ping".to_string(),
+                        target_path: "Child/Target".to_string(),
+                        method: "on_ping".to_string(),
+                        deferred,
+                        one_shot,
+                        project_path: canonical_arg,
+                    }
+                );
+
+                let mut writer = stream;
+                let mut response_line = serde_json::to_string(&Response::Ok { data: json!({}) })
+                    .expect("serialize reply");
+                response_line.push('\n');
+                writer
+                    .write_all(response_line.as_bytes())
+                    .expect("write reply");
+            });
+
+            let mut args = vec![
+                "godot-pipeline".to_string(),
+                "connect-signal".to_string(),
+                "Child/Source".to_string(),
+                "ping".to_string(),
+                "Child/Target".to_string(),
+                "on_ping".to_string(),
+            ];
+            if deferred {
+                args.push("--deferred".to_string());
+            }
+            if one_shot {
+                args.push("--one-shot".to_string());
+            }
+            args.extend(
+                [
+                    "--project-path".to_string(),
+                    project_dir.to_str().expect("temp dir is UTF-8").to_string(),
+                    "--port".to_string(),
+                    port.to_string(),
+                ]
+                .into_iter(),
+            );
+            run(&args).expect("run succeeds");
+
+            server.join().expect("server thread does not panic");
+        }
+    }
+
+    /// Pins the CLI's rejection of `connect-signal` without `--project-path`:
+    /// it must fail before any request is sent.
+    #[test]
+    fn connect_signal_without_project_path_is_rejected() {
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "connect-signal".to_string(),
+            "Child/Source".to_string(),
+            "ping".to_string(),
+            "Child/Target".to_string(),
+            "on_ping".to_string(),
+        ];
+        let error = run(&args).expect_err("connect-signal without --project-path must fail");
+        assert!(
+            error.contains("connect-signal requires --project-path"),
+            "{error}"
+        );
+    }
+
+    /// Pins the CLI's rejection of `connect-signal` with a missing operand:
+    /// it must fail before any request is sent.
+    #[test]
+    fn connect_signal_without_operands_is_rejected() {
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "connect-signal".to_string(),
+            "Child/Source".to_string(),
+            "ping".to_string(),
+        ];
+        let error = run(&args).expect_err("connect-signal without all operands must fail");
+        assert!(
+            error.contains("connect-signal requires <source-scene-relative-path>"),
             "{error}"
         );
     }

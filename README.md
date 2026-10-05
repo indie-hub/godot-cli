@@ -47,6 +47,8 @@ One TCP connection per request, on `127.0.0.1:47821` by default:
    or
    `{"command":"delete_node","node_path":"...","project_path":"..."}`,
    or
+   `{"command":"connect_signal","source_path":"...","signal":"...","target_path":"...","method":"...","deferred":false,"one_shot":false,"project_path":"..."}`,
+   or
    `{"command":"save_scene","project_path":"..."}`,
    or
    `{"command":"open_scene","project_path":"...","scene_path":"...","save":false}`,
@@ -232,10 +234,36 @@ enabled; otherwise it is rejected up front, because the deletion would not
 be saved. The reply's `data.name` is the removed node's name and
 `data.parent_path` is its parent's path relative to the scene root.
 
+`connect_signal` connects a signal on one node of the currently edited scene
+to a method on another node, through the editor's `EditorUndoRedoManager` as a
+single Undo/Redo step, without saving the scene. `source_path` and
+`target_path` follow the same rules as `rename_node`'s `node_path` ("." for
+the scene root); `signal` must be a signal the source node has
+(`Object.has_signal`); `method` must be a method the target node has
+(`Object.has_method`), because the engine itself never checks the target
+method. The optional bools `deferred` and `one_shot` (default false) add
+`CONNECT_DEFERRED` and `CONNECT_ONE_SHOT` to the `CONNECT_PERSIST` flag the
+connection is always made with. The request is rejected, before any undo
+action is created, when the source or target node is missing, the signal is
+unknown, the method is unknown, or the connection already exists (including a
+connection a sub-scene already defines, which appears with `CONNECT_INHERITED`
+set). The source node must be serializable by the edited scene: a source
+inside an instanced sub-scene is only accepted when every instance between it
+and the edited scene root has Editable Children enabled, because the engine
+silently drops the connection on save otherwise; a target inside a
+non-editable instance is allowed, because the connection is stored on the
+source. The success reply is
+`{"status":"ok","data":{"source_path":"...","signal":"...","target_path":"...","method":"...","flags":<int>}}`,
+with `data.flags` the flags the engine stored (`2` for a plain persistent
+connection, `3` with `--deferred`, `6` with `--one-shot`). An argument-count
+mismatch between the signal and the method is not checked: it connects and the
+engine reports the mismatch only when the signal is emitted.
+
 `save_scene` persists the currently edited scene to the file path it already
 has, using the editor's own save path (the same one Ctrl+S uses), so every
-edit made through `rename_node`, `create_node`, `set_property`, and
-`delete_node` is written to disk and survives a reload. It is the one
+edit made through `rename_node`, `create_node`, `set_property`,
+`delete_node`, and `connect_signal` is written to disk and survives a
+reload. It is the one
 command that writes the scene file; it never prompts for a location, and
 save-as or creating new files are out of scope. `project_path` follows the
 same rules as `rename_node`'s and is checked before anything else, so a
@@ -304,6 +332,8 @@ cargo run -- query-nodes --class Node2D --project-path /path/to/project
 cargo run -- query-nodes --group enemies --name 'Leaf*' --limit 50 --project-path /path/to/project
 cargo run -- inspect-class --class Node --project-path /path/to/project
 cargo run -- delete-node Child/Deep --project-path /path/to/project
+cargo run -- connect-signal Source ping Target on_ping --project-path /path/to/project
+cargo run -- connect-signal Source ping Target on_ping --deferred --project-path /path/to/project
 cargo run -- save-scene --project-path /path/to/project
 cargo run -- open-scene --scene-path scenes/S1.tscn --project-path /path/to/project
 cargo run -- open-scene --scene-path res://scenes/S1.tscn --save --project-path /path/to/project
@@ -343,6 +373,11 @@ and its subtree from the scene (see Protocol above), canonicalizing
 `--project-path` the same way as the other mutating commands. If the plugin is not running
 (editor closed, or plugin disabled), the CLI exits with a nonzero status and
 a message explaining that the plugin could not be reached.
+`connect-signal <source-scene-relative-path> <signal> <target-scene-relative-path> <method> --project-path <dir> [--deferred] [--one-shot]`
+connects the signal on the source node to the method on the target node (see
+Protocol above), canonicalizing `--project-path` the same way as the other
+mutating commands. `--deferred` and `--one-shot` add the matching connect
+flags to `CONNECT_PERSIST`. Nothing is saved until `save-scene` runs.
 `save-scene --project-path <dir>` persists the currently edited scene to the
 file path it already has (see Protocol above), canonicalizing `--project-path`
 the same way as the other mutating commands. The reply's `data.path` is the
@@ -366,7 +401,7 @@ cargo clippy -- -D warnings
 
 `cargo test` includes protocol tests that open a real loopback socket and
 round-trip `Request`/`Response` pairs through the exact wire format, not
-just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `inspect_node`, `query_nodes`, `inspect_class`, `delete_node`, `save_scene`, and `open_scene` wire
+just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `inspect_node`, `query_nodes`, `inspect_class`, `delete_node`, `connect_signal`, `save_scene`, and `open_scene` wire
 shapes and the CLI's `set-property` value parsing.
 
 Live verification against a running Godot editor (status, scene tree,
