@@ -5,7 +5,7 @@ extends EditorPlugin
 ## Listens on a loopback-only TCP socket and answers a single JSON request
 ## per connection. Supported commands: `status`, `scene_tree`, `inspect_node`,
 ## `query_nodes`, `inspect_class`, `rename_node`, `create_node`, `set_property`,
-## `delete_node`, `save_scene`, and `open_scene`. The read commands report the editor's
+## `delete_node`, `connect_signal`, `save_scene`, and `open_scene`. The read commands report the editor's
 ## status, the active edited scene's node tree, a node's class/child
 ## count/property values, the nodes matching a class, group, and name search,
 ## and an engine class's ClassDB reflection (ancestors, properties, methods,
@@ -55,6 +55,7 @@ const COMMANDS := {
 	"query_nodes": preload("commands/query_nodes.gd"),
 	"inspect_class": preload("commands/inspect_class.gd"),
 	"delete_node": preload("commands/delete_node.gd"),
+	"connect_signal": preload("commands/connect_signal.gd"),
 	"save_scene": preload("commands/save_scene.gd"),
 	"open_scene": preload("commands/open_scene.gd"),
 }

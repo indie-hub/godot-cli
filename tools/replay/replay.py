@@ -21,6 +21,7 @@ Stdlib only. Never connects to 47821.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -174,6 +175,76 @@ C_DATA_TRES = """[gd_resource type="StandardMaterial3D" format=3]
 
 C_OLD_SCN = """[gd_scene load_steps=1 format=3]
 [node name="C_Old" type="Node"]
+"""
+
+# Connect-signal fixtures. Sessions A, B and C never reference these paths, so
+# their rows cannot change. connect.tscn is a fresh scene per run: main()
+# rewrites it, so session D always starts from the same bytes.
+CONNECT_FIXTURE_GD = """extends Node
+
+signal ping(value)
+signal plain()
+
+
+func on_ping(value):
+	pass
+
+
+func on_plain():
+	pass
+"""
+
+CONNECT_NOMETHOD_GD = """extends Node
+"""
+
+CONNECT_SUB_GD = """extends Node
+
+signal sub_ping(value)
+
+
+func sub_on_ping(value):
+	pass
+"""
+
+CONNECT_SUB_TSCN = """[gd_scene load_steps=2 format=3 uid="uid://gp024connectsub1"]
+[ext_resource type="Script" path="res://connect_sub.gd" id="1"]
+[node name="SubRoot" type="Node"]
+[node name="SubSource" type="Node" parent="."]
+script = ExtResource("1")
+[node name="SubTarget" type="Node" parent="."]
+script = ExtResource("1")
+[connection signal="sub_ping" from="SubSource" to="SubTarget" method="sub_on_ping"]
+"""
+
+CONNECT_MID_TSCN = """[gd_scene load_steps=2 format=3 uid="uid://gp024connectmid1"]
+[ext_resource type="PackedScene" path="res://connect_sub.tscn" id="1"]
+[node name="MidRoot" type="Node"]
+[node name="Sub" parent="." instance=ExtResource("1")]
+"""
+
+CONNECT_TSCN = """[gd_scene load_steps=6 format=3 uid="uid://gp024connect01"]
+[ext_resource type="Script" path="res://connect_fixture.gd" id="1"]
+[ext_resource type="Script" path="res://connect_nomethod.gd" id="2"]
+[ext_resource type="PackedScene" path="res://connect_sub.tscn" id="3"]
+[ext_resource type="PackedScene" path="res://connect_mid.tscn" id="4"]
+[node name="ConnectRoot" type="Node"]
+script = ExtResource("1")
+[node name="Source" type="Node" parent="."]
+script = ExtResource("1")
+[node name="Target" type="Node" parent="."]
+script = ExtResource("1")
+[node name="Target2" type="Node" parent="."]
+script = ExtResource("1")
+[node name="Target3" type="Node" parent="."]
+script = ExtResource("1")
+[node name="NoMethod" type="Node" parent="."]
+script = ExtResource("2")
+[node name="Bare" type="Node" parent="."]
+[node name="Sub" parent="." instance=ExtResource("3")]
+[node name="Edit" parent="." instance=ExtResource("3")]
+[editable path="Edit"]
+[node name="Mid" parent="." instance=ExtResource("4")]
+[editable path="Mid"]
 """
 
 # Each entry is (kind, text) where kind is "line" (newline-terminated, one
@@ -379,6 +450,88 @@ def build_c():
     return out
 
 
+def cs(source, signal, target, method, project="<PROJ>", deferred=False, one_shot=False):
+    d = {"command": "connect_signal", "source_path": source, "signal": signal,
+         "target_path": target, "method": method, "deferred": deferred,
+         "one_shot": one_shot, "project_path": project}
+    return ("line", json.dumps(d, separators=(",", ":")))
+
+
+def build_e():
+    # Session E: connect-signal rejections that need no edited scene. It runs
+    # before session C, while the editor still has no scene open.
+    return [
+        ("line", '{"command":"status"}'),
+        cs("Source", "ping", "Target", "on_ping"),
+        cs("Source", "ping", "Target", "on_ping", project="/no/replay-mismatch"),
+        ("line", '{"command":"connect_signal"}'),
+        ("line", '{"command":"connect_signal","source_path":7,"signal":"ping","target_path":"Target","method":"on_ping","project_path":"<PROJ>"}'),
+        ("line", '{"command":"connect_signal","source_path":"Source","signal":"ping","target_path":"Target","method":"on_ping","deferred":"yes","one_shot":false,"project_path":"<PROJ>"}'),
+    ]
+
+
+def build_d():
+    # Session D: connect-signal against connect.tscn. Accepted requests run
+    # first; every rejection is bracketed by scene_tree snapshots that must be
+    # identical, so a rejection that changed the scene would show up.
+    accepted = [
+        cs("Source", "ping", "Target", "on_ping"),
+        cs("Source", "ping", ".", "on_ping"),
+        cs(".", "ping", "Target2", "on_ping"),
+        cs("Source", "plain", "Target3", "on_plain", deferred=True),
+        cs("Source", "ping", "Target3", "on_ping", one_shot=True),
+        cs("Edit/SubSource", "sub_ping", "Target", "on_ping"),
+        cs("Source", "ping", "Sub/SubTarget", "sub_on_ping"),
+    ]
+    rejections = [
+        cs("Source", "ping", "Target", "on_ping"),
+        cs("NoSource", "ping", "Target", "on_ping"),
+        cs("Source", "ping", "NoTarget", "on_ping"),
+        cs("Source", "nope", "Target", "on_ping"),
+        cs("Source", "ping", "Target", "nope"),
+        cs("Source", "ping", "Bare", "on_ping"),
+        cs("Sub/SubSource", "sub_ping", "Target", "on_ping"),
+        cs("Mid/Sub/SubSource", "sub_ping", "Target", "on_ping"),
+        cs("Sub/SubSource", "sub_ping", "Sub/SubTarget", "sub_on_ping"),
+        cs("Source", "ping", "Target2", "on_ping", project="/no/replay-mismatch"),
+        ("line", '{"command":"connect_signal","source_path":"Source","signal":"ping","target_path":"Target2","method":"on_ping","deferred":1,"one_shot":false,"project_path":"<PROJ>"}'),
+    ]
+    out = [("line", '{"command":"status"}'), ("file_sha256", "connect.tscn")]
+    out.extend(accepted)
+    for rejection in rejections:
+        out.append(("line", '{"command":"scene_tree"}'))
+        out.append(rejection)
+        out.append(("line", '{"command":"scene_tree"}'))
+    # Nothing is saved implicitly: the file bytes are unchanged since the
+    # session opened, and no connection line exists yet.
+    out.append(("file_sha256", "connect.tscn"))
+    out.append(("file_not_contains", "connect.tscn|[connection"))
+    out.append(("line", '{"command":"save_scene","project_path":"<PROJ>"}'))
+    out.append(("file_contains", 'connect.tscn|[connection signal="ping" from="Source" to="Target" method="on_ping"]'))
+    out.append(("file_contains", 'connect.tscn|[connection signal="plain" from="Source" to="Target3" method="on_plain" flags=3]'))
+    out.append(("file_contains", 'connect.tscn|[connection signal="ping" from="Source" to="Target3" method="on_ping" flags=6]'))
+    out.append(("file_contains", 'connect.tscn|[connection signal="sub_ping" from="Edit/SubSource" to="Target" method="on_ping"]'))
+    out.append(("file_contains", 'connect.tscn|[connection signal="ping" from="Source" to="Sub/SubTarget" method="sub_on_ping"]'))
+    return out
+
+
+def build_f():
+    # Fresh editor process on the saved connect.tscn: four of the seven pairs
+    # accepted in session D are reconnected here and must be duplicates, which
+    # proves those connections survived the save and reload: Source.ping ->
+    # Target.on_ping; Source.ping -> "."; Source.ping ->
+    # Sub/SubTarget.sub_on_ping; Edit/SubSource.sub_ping -> Target.on_ping.
+    # The root-source, --deferred and --one-shot pairs are not rechecked.
+    return [
+        ("line", '{"command":"status"}'),
+        cs("Source", "ping", "Target", "on_ping"),
+        cs("Source", "ping", ".", "on_ping"),
+        cs("Source", "ping", "Sub/SubTarget", "sub_on_ping"),
+        cs("Edit/SubSource", "sub_ping", "Target", "on_ping"),
+        ("line", '{"command":"scene_tree"}'),
+    ]
+
+
 def send_one(port, text, newline, timeout):
     s = socket.create_connection(("127.0.0.1", port), timeout=10)
     try:
@@ -431,14 +584,14 @@ def stop(proc):
         raise RuntimeError("editor process would not die")
 
 
-def run_session(port, proj, scene, requests, expect_scene):
+def run_session(port, proj, scene, requests, expected_scene):
     proc = launch(proj, scene)
     try:
         wait_listener(port)
-        if expect_scene:
+        if expected_scene:
             end = time.time() + 90
             while time.time() < end:
-                if status_scene(port) == "res://main.tscn":
+                if status_scene(port) == expected_scene:
                     break
                 time.sleep(1)
             else:
@@ -449,6 +602,22 @@ def run_session(port, proj, scene, requests, expect_scene):
                 raise RuntimeError("expected no edited scene, one is open")
         rows = []
         for kind, text in requests:
+            if kind == "file_sha256":
+                with open(os.path.join(proj, text), "rb") as f:
+                    digest = hashlib.sha256(f.read()).hexdigest()
+                rows.append(("CHECK file_sha256 %s" % text, digest))
+                continue
+            if kind in ("file_contains", "file_not_contains"):
+                rel, _, needle = text.partition("|")
+                with open(os.path.join(proj, rel)) as f:
+                    content = f.read()
+                present = needle in content
+                if kind == "file_contains" and not present:
+                    raise RuntimeError("expected %r in %s" % (needle, rel))
+                if kind == "file_not_contains" and present:
+                    raise RuntimeError("did not expect %r in %s" % (needle, rel))
+                rows.append(("CHECK %s %s" % (kind, text), "ok"))
+                continue
             wire = text.replace("<PROJ>", proj)
             reply = send_one(port, wire, kind == "line", 25)
             rows.append((wire.replace(proj, "<PROJECT>"),
@@ -495,6 +664,12 @@ def main():
             ("c_script.gd", C_SCRIPT_GD),
             ("c_data.tres", C_DATA_TRES),
             ("c_old.scn", C_OLD_SCN),
+            ("connect_fixture.gd", CONNECT_FIXTURE_GD),
+            ("connect_nomethod.gd", CONNECT_NOMETHOD_GD),
+            ("connect_sub.gd", CONNECT_SUB_GD),
+            ("connect_sub.tscn", CONNECT_SUB_TSCN),
+            ("connect_mid.tscn", CONNECT_MID_TSCN),
+            ("connect.tscn", CONNECT_TSCN),
         ]:
             with open(os.path.join(proj, name), "w") as f:
                 f.write(text)
@@ -513,13 +688,18 @@ def main():
         if r.returncode != 0:
             raise SystemExit("godot --import failed")
         rows = []
-        # Run order is A, C, B: a fresh editor restores the previous session's
-        # open scenes, so session C (no scene, like A) must run before session
-        # B opens main.tscn. Rows are still stored A, B, C.
-        rows_a = run_session(a.port, proj, None, REQ_A, False)
-        rows_c = run_session(a.port, proj, None, build_c(), False)
-        rows_b = run_session(a.port, proj, "res://main.tscn", build_b(), True)
-        rows = rows_a + rows_b + rows_c
+        # Run order is A, E, C, B, D, F: a fresh editor restores the previous
+        # session's open scenes, so the three no-scene sessions (A, E, C) must
+        # run before the scene sessions. Rows are stored A, B, C, E, D, F, so
+        # the first 200 rows are byte-identical to the 0.5.0 baseline and the
+        # new connect-signal rows are appended.
+        rows_a = run_session(a.port, proj, None, REQ_A, None)
+        rows_e = run_session(a.port, proj, None, build_e(), None)
+        rows_c = run_session(a.port, proj, None, build_c(), None)
+        rows_b = run_session(a.port, proj, "res://main.tscn", build_b(), "res://main.tscn")
+        rows_d = run_session(a.port, proj, "res://connect.tscn", build_d(), "res://connect.tscn")
+        rows_f = run_session(a.port, proj, "res://connect.tscn", build_f(), "res://connect.tscn")
+        rows = rows_a + rows_b + rows_c + rows_e + rows_d + rows_f
         with open(a.out, "w") as f:
             for req, rep in rows:
                 f.write(json.dumps({"request": req, "reply": rep}, separators=(",", ":")) + "\n")

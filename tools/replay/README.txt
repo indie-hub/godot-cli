@@ -1,5 +1,6 @@
-Golden replay harness for the Godot Pipeline editor plugin (200 rows:
-1-148 unchanged, 149-200 cover inspect-class and open-scene).
+Golden replay harness for the Godot Pipeline editor plugin (262 rows:
+1-148 unchanged, 149-200 cover inspect-class and open-scene, 201-262 cover
+connect-signal).
 
 HOW TO RUN
   GODOT=/path/to/Godot python3 replay.py --plugin-dir DIR --port PORT --out FILE
@@ -12,11 +13,12 @@ HOW TO RUN
   Prints the first differing request with both replies, or IDENTICAL.
   Exit 0 identical, 1 different.
 
-  Each run takes about half a minute: one --import plus three editor launches
-  (session A with no scene, session C with no scene, session B with
-  res://main.tscn), 200 requests. The run order is A, C, B but rows are stored
-  A, B, C: a fresh editor restores the previous session's open scenes, so the
-  second no-scene session must run before the scene session.
+  Each run takes about a minute: one --import plus six editor launches (in
+  launch order A with no scene, E with no scene, C with no scene, B with
+  res://main.tscn, D and F with res://connect.tscn), 262 requests. Rows are
+  stored A, B, C, E, D, F: a fresh editor restores the previous session's open
+  scenes, so the three no-scene sessions (A, E, C) must run before any scene
+  session. Appending the new sessions keeps rows 1-200 byte-identical.
 
 WHAT IT DOES
   Session A (requests 1-23, no edited scene): status ok with scene_path null;
@@ -64,18 +66,44 @@ WHAT IT DOES
   (save:false), 197 status, 198 with save (save:true), 199 status, every
   reject a structured error and every status showing the edited scene
   unchanged; inspect-class Node2D with a scene open (200).
+  Session E (requests 201-206, no edited scene, runs before session C):
+  connect-signal with no edited scene, a wrong project, missing fields, a
+  non-string source_path, and a non-bool deferred value; each is a structured
+  error before any node is resolved.
+  Session D (requests 207-256, connect.tscn open): status, a file sha256 of
+  connect.tscn, seven accepted connects (both nodes under the root, target
+  ".", source ".", --deferred, --one-shot, a source inside an editable
+  instance, a target inside a non-editable instance), then eleven rejections
+  each bracketed by identical scene_tree before/after snapshots (duplicate,
+  missing source, missing target, unknown signal, unknown method, a target
+  with no script, a source inside a non-editable instance, a nested instance
+  where only the outer ancestor is editable, a duplicate inherited from a
+  sub-scene, a wrong project, a non-bool deferred value), a second file sha256
+  that must equal the first (connect-signal wrote nothing), a file-bytes check
+  that no [connection] line exists yet, save_scene, and file-bytes checks that
+  the persisted [connection ...] lines are present.
+  Session F (requests 257-262, a fresh editor on the saved connect.tscn):
+  four of the seven pairs accepted in session D are reconnected here and must
+  be duplicates after the reload (Source.ping -> Target.on_ping; Source.ping
+  -> "."; Source.ping -> Sub/SubTarget.sub_on_ping; Edit/SubSource.sub_ping
+  -> Target.on_ping), which proves those connections survived the save and
+  reload. The root-source, --deferred and --one-shot pairs are not rechecked
+  in session F.
 
 NORMALISATION
   The only one: the throwaway project's absolute path is replaced with
   <PROJECT> in stored requests and replies. Replies that carry it are the
   "project path mismatch" errors (10, 46, 54, 61, 70, 131, 141, 146, 158,
-  159). Reply text is otherwise verbatim; no sorting, no rounding.
+  159, 203, 244). Reply text is otherwise verbatim; no sorting, no rounding.
 
 DETERMINISM PROOF
   baseline.jsonl was recorded three times; all three are byte-identical
-  (compare.py IDENTICAL, cmp clean). Rows 1-148 are byte-identical to the
-  previous baseline (cmp clean on the first 148 lines; their sha256 is still
-  17b67de4a11a1285355a173326b7e72b68a72dd2754b89a12400c3309a3edc1d).
+  (compare.py IDENTICAL, cmp clean). Rows 1-200 are byte-identical to the
+  0.5.0 baseline (cmp clean on the first 200 lines); that baseline's whole
+  file sha256 was
+  9251fb936b3a736a5a7d9823d66b0f27910072575fad599e331756199c7a6d87, and rows
+  1-148 still have their own sha256
+  17b67de4a11a1285355a173326b7e72b68a72dd2754b89a12400c3309a3edc1d.
   baseline.sha256 holds the sha256 of the whole baseline.jsonl: check with
   shasum -a 256 baseline.jsonl.
 
@@ -107,6 +135,20 @@ COVERAGE (request numbers above)
   omitted save key, save-on-clean, uid); dirty opens #187,190,192,194
   (unsaved lists with one entry #187,190,192 and two entries #194);
   dirty rejects #196,198; inspect-class with scene #200.
+  connect-signal #201-262: no-scene #201-206 (status; no edited scene;
+  wrong project; missing fields; non-string source_path; non-bool deferred);
+  D #207-256: status #207, unchanged-file hash #208, accepted both-under-root
+  #209, target "." #210, source "." #211, --deferred #212, --one-shot #213,
+  source in an editable instance #214, target in a non-editable instance #215;
+  rejections with identical scene_tree pairs (duplicate #216-218, missing
+  source #219-221, missing target #222-224, unknown signal #225-227, unknown
+  method #228-230, target without a script #231-233, source in a non-editable
+  instance #234-236, nested instance where only the outer ancestor is editable
+  #237-239, duplicate inherited from a sub-scene #240-242, wrong project
+  #243-245, non-bool deferred #246-248); unchanged-file hash #249; no
+  [connection] line yet #250; save_scene #251; persisted [connection] checks
+  #252-256. F #257-262: status #257, duplicates after the fresh reload
+  #258-261, scene_tree #262.
   Not covered, with reason:
   - "request exceeds the maximum size" (>8 MiB without newline): reaching
     it needs an 8 MB write, and the reported byte count varies with TCP
@@ -128,12 +170,17 @@ COVERAGE (request numbers above)
 
 NOTES
   The fixture project deliberately has no run/main_scene: otherwise the
-  editor auto-opens main.tscn and sessions A and C would have a scene. The
-  port patch is one substitution of "const PORT := 47821" in the copied plugin
-  only. The harness leaves no Godot process and deletes the throwaway
-  project every run. Files here: replay.py, compare.py, baseline.jsonl,
-  baseline.sha256, README.txt.
-  The baseline is only valid while the plugin's replies for these 200 requests
+  editor would auto-open main.tscn and the no-scene sessions would have a
+  scene. The port patch is one substitution of "const PORT := 47821" in the
+  copied plugin only. The harness leaves no Godot process and deletes the
+  throwaway project every run. Files here: replay.py, compare.py,
+  baseline.jsonl, baseline.sha256, README.txt.
+  Undo and redo are not proved by this harness: it talks over the socket only
+  and cannot trigger the editor's Undo action. As for the earlier commands,
+  one-action Undo/Redo proof lives in the Code4Me task result, from a separate
+  isolated-editor probe that sends a real connect-signal request through the
+  plugin and then triggers the editor's Undo/Redo through the safe route.
+  The baseline is only valid while the plugin's replies for these 262 requests
   are supposed to stay the same. A change that adds or alters a command's
   behavior on purpose needs a new baseline, recorded from the last trusted
   commit, and a fresh determinism check (record three times, compare byte for

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `connect-signal` command to connect a signal on one node of the currently edited scene to a method on another node through the editor's `EditorUndoRedoManager` as a single Undo/Redo step, without saving the scene. The optional `--deferred` and `--one-shot` flags add `CONNECT_DEFERRED` and `CONNECT_ONE_SHOT` to the `CONNECT_PERSIST` flag the connection is always made with. The request is rejected before any change when a node, the signal, or the method is missing, when the connection already exists (including one a sub-scene defines), or when the source node is inside a non-editable instanced sub-scene (where the engine would silently drop it on save); a target inside a non-editable instance is accepted. An argument-count mismatch between the signal and the method is not checked and fails only when the signal is emitted.
+
 ## [0.5.0] - 2026-10-01
 
 ### Added

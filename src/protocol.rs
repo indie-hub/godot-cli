@@ -93,6 +93,20 @@ pub enum Request {
         node_path: String,
         project_path: String,
     },
+    /// Connects a signal from one node to a method on another node in the
+    /// currently edited scene through the editor's undo/redo manager, as one
+    /// Undo/Redo step, without saving. `deferred` and `one_shot` add the
+    /// matching connect flags to `CONNECT_PERSIST`. `project_path` follows the
+    /// same rules as [`Request::RenameNode`].
+    ConnectSignal {
+        source_path: String,
+        signal: String,
+        target_path: String,
+        method: String,
+        deferred: bool,
+        one_shot: bool,
+        project_path: String,
+    },
     /// Persists the currently edited scene to the file path it already has,
     /// so edits made through the other mutating commands survive a reload.
     /// `project_path` follows the same rules as [`Request::RenameNode`].
@@ -393,6 +407,51 @@ mod tests {
         assert_eq!(
             json,
             r#"{"command":"delete_node","node_path":"Child/Deep","project_path":"/tmp/project"}"#
+        );
+    }
+
+    /// Pins the exact wire shape the GDScript plugin matches on
+    /// (`"command":"connect_signal"` plus the seven snake_case fields, with
+    /// `deferred` and `one_shot` as JSON bools).
+    #[test]
+    fn connect_signal_request_serializes_to_the_documented_wire_shape() {
+        let request = Request::ConnectSignal {
+            source_path: "Child/Source".to_string(),
+            signal: "ping".to_string(),
+            target_path: "Child/Target".to_string(),
+            method: "on_ping".to_string(),
+            deferred: false,
+            one_shot: false,
+            project_path: "/tmp/project".to_string(),
+        };
+
+        let json = serde_json::to_string(&request).expect("serialize request");
+
+        assert_eq!(
+            json,
+            r#"{"command":"connect_signal","source_path":"Child/Source","signal":"ping","target_path":"Child/Target","method":"on_ping","deferred":false,"one_shot":false,"project_path":"/tmp/project"}"#
+        );
+    }
+
+    /// Pins that `--deferred` and `--one-shot` reach the wire as real JSON
+    /// bools, not null or absent.
+    #[test]
+    fn connect_signal_with_flags_serializes_them_as_true() {
+        let request = Request::ConnectSignal {
+            source_path: "A".to_string(),
+            signal: "ping".to_string(),
+            target_path: "B".to_string(),
+            method: "on_ping".to_string(),
+            deferred: true,
+            one_shot: true,
+            project_path: "/tmp/project".to_string(),
+        };
+
+        let json = serde_json::to_string(&request).expect("serialize request");
+
+        assert_eq!(
+            json,
+            r#"{"command":"connect_signal","source_path":"A","signal":"ping","target_path":"B","method":"on_ping","deferred":true,"one_shot":true,"project_path":"/tmp/project"}"#
         );
     }
 

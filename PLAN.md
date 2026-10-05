@@ -4,11 +4,11 @@ Godot Pipeline is a Rust CLI plus a GDScript EditorPlugin for stock Godot. An ag
 
 ## Status
 
-- Eleven commands exist: `status`, `scene-tree`, `rename-node`, `create-node`, `set-property`, `delete-node`, `save-scene`, `inspect-node`, `query-nodes`, `inspect-class`, `open-scene`. See `README.md`.
+- Twelve commands exist: `status`, `scene-tree`, `rename-node`, `create-node`, `set-property`, `delete-node`, `connect-signal`, `save-scene`, `inspect-node`, `query-nodes`, `inspect-class`, `open-scene`. See `README.md`.
 - `set-property` accepts 17 value types, ten Packed array types, and typed `Array[T]`. It rejects untyped arrays on purpose.
 - The plugin assembles each request across editor ticks, with an 8 MiB cap and a 5 second idle timeout.
 - Current version is 0.5.0. Phase 1 (read and navigate) is complete.
-- The golden replay harness in `tools/replay/` covers all eleven commands (200 baseline rows).
+- The golden replay harness in `tools/replay/` covers all twelve commands (262 baseline rows).
 - The add-on is a prototype and is not ready for distribution.
 
 ## How this plan was made, and how far to trust it
@@ -53,7 +53,7 @@ Why external writes wait: scene edits go through the editor's undo stack, so Ctr
 
 **Phase 2: Godot scene edits.** Build after Phase 1 discovery exists and each behavior is proved in a throwaway editor.
 
-5. `connect-signal`: serialized signal wiring.
+5. `connect-signal`: serialized signal wiring. Done on the current working tree (next release).
 6. `set-group`: persistent node group membership.
 7. `set-unique-name`: `%` name within owner scope.
 8. `instantiate-scene`: add a PackedScene instance with correct ownership.
@@ -202,7 +202,7 @@ These are Godot concepts, not renamed Unity tools. An agent gets typed discovery
 
 | Capability | What it gives an agent | Checked API or source | Effort | Priority | Decision and trap |
 |---|---|---|---|---|---|
-| Signals and connections | Discover signals; connect and disconnect named callables | `ClassDB.class_get_signal_list` [C], `Object.connect`, `disconnect`, `get_signal_connection_list` [N] | M | P1 | Build `list-signals` and `connect-signal`; confirm serialized connection flags and Undo in 4.7.2. |
+| Signals and connections | Discover signals; connect and disconnect named callables | `ClassDB.class_get_signal_list` [C], `Object.connect`, `disconnect`, `get_signal_connection_list` [N] | M | P1 | `connect-signal` is built (Undo, flags and persistence confirmed in 4.7.2); `list-signals` and `disconnect-signal` are still to build. |
 | Node groups | Query and change semantic sets | `Node.get_groups`, `add_to_group`, `remove_from_group` [N] | S | P1 | Build `set-group`; distinguish persistent from runtime membership. |
 | Unique-name `%` nodes | Stable in-scene references across path changes | `Node.unique_name_in_owner` [N] | S | P1 | Build `set-unique-name`; uniqueness scope is owner, and duplicate handling needs validation. |
 | Autoload singletons | Discover and configure global scenes and scripts | `ProjectSettings` [S] | M | P2 | Project setting mutation; exact autoload key format UNVERIFIED. |
