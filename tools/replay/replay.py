@@ -247,6 +247,46 @@ script = ExtResource("2")
 [editable path="Mid"]
 """
 
+# Set-group fixtures. Sessions A-F never reference these paths, so their rows
+# cannot change. group.tscn is written fresh by main() every run, so the
+# set-group sessions always start from the same bytes.
+GROUP_SUB_TSCN = """[gd_scene load_steps=1 format=3 uid="uid://gp026groupsub1"]
+[node name="SubRoot" type="Node" groups=["subroot"]]
+[node name="Inner" type="Node" parent="." groups=["inner_g"]]
+"""
+
+GROUP_DEEP_TSCN = """[gd_scene load_steps=1 format=3 uid="uid://gp026groupdeep1"]
+[node name="DeepRoot" type="Node"]
+[node name="DeepChild" type="Node" parent="."]
+"""
+
+GROUP_MID_TSCN = """[gd_scene load_steps=2 format=3 uid="uid://gp026groupmid1"]
+[ext_resource type="PackedScene" path="res://group_deep.tscn" id="1"]
+[node name="MidRoot" type="Node"]
+[node name="Deep" parent="." instance=ExtResource("1")]
+"""
+
+# Root carries no groups. Child3 starts with "beta" so an accepted removal has
+# a persistent group to remove; Child2 starts with "alpha" so adding it is an
+# add of an existing local group. Sub is an instance root (Editable Children
+# off) whose source defines "subroot" and "inner_g"; Edit is the same scene
+# with Editable Children on; Mid is an instance with only Mid editable, so
+# Mid/Deep/DeepChild sits under a nested instance that is not editable.
+GROUP_TSCN = """[gd_scene load_steps=3 format=3 uid="uid://gp026group01"]
+[ext_resource type="PackedScene" path="res://group_sub.tscn" id="1"]
+[ext_resource type="PackedScene" path="res://group_mid.tscn" id="2"]
+[node name="GroupRoot" type="Node"]
+[node name="Child" type="Node" parent="."]
+[node name="Child2" type="Node" parent="." groups=["alpha"]]
+[node name="Child3" type="Node" parent="." groups=["beta"]]
+[node name="Ctl" type="Control" parent="."]
+[node name="Sub" parent="." instance=ExtResource("1")]
+[node name="Edit" parent="." instance=ExtResource("1")]
+[editable path="Edit"]
+[node name="Mid" parent="." instance=ExtResource("2")]
+[editable path="Mid"]
+"""
+
 # Each entry is (kind, text) where kind is "line" (newline-terminated, one
 # reply expected at once) or "idle" (sent without newline; the reply arrives
 # after the plugin's 5s idle timeout). "<PROJ>" is replaced with the
@@ -532,6 +572,114 @@ def build_f():
     ]
 
 
+def sg(node, group, remove=False, project="<PROJ>"):
+    d = {"command": "set_group", "node_path": node, "group": group,
+         "remove": remove, "project_path": project}
+    return ("line", json.dumps(d, separators=(",", ":")))
+
+
+def qg(group):
+    return ("line", json.dumps({"command": "query_nodes", "project_path": "<PROJ>",
+                                "class": None, "group": group, "name": None,
+                                "limit": 100}, separators=(",", ":")))
+
+
+def build_g():
+    # Session G: set-group rejections that need no edited scene. It runs before
+    # session C, while the editor still has no scene open.
+    return [
+        ("line", '{"command":"status"}'),
+        sg("Child", "x"),
+        sg("Child", "x", project="/no/replay-mismatch"),
+        ("line", '{"command":"set_group"}'),
+        ("line", '{"command":"set_group","node_path":7,"group":"x","remove":false,"project_path":"<PROJ>"}'),
+        ("line", '{"command":"set_group","node_path":"Child","group":7,"remove":false,"project_path":"<PROJ>"}'),
+        ("line", '{"command":"set_group","node_path":"Child","group":"x","remove":"yes","project_path":"<PROJ>"}'),
+    ]
+
+
+def _bracket(out, group, request):
+    # scene_tree plus a group query before and after a rejection. scene_tree
+    # alone carries no groups, so the query is what proves the membership did
+    # not change; an empty group name means "no group filter" and lists every
+    # node in the scene.
+    out.append(("line", '{"command":"scene_tree"}'))
+    out.append(qg(group))
+    out.append(request)
+    out.append(("line", '{"command":"scene_tree"}'))
+    out.append(qg(group))
+
+
+def build_h():
+    # Session H: set-group against group.tscn. Accepted requests run first,
+    # then each rejection is bracketed by identical scene_tree and group-query
+    # snapshots. Nothing is saved until save_scene.
+    accepted = [
+        sg("Child", "plain_add"),
+        sg("Child3", "beta", remove=True),
+        sg(".", "root_add"),
+        sg("Sub", "sub_add"),
+        sg("Edit/Inner", "edit_add"),
+        sg("Child3", "_under"),
+        sg("Child3", "with space"),
+        sg("Child3", "\u00fcn\u00efc\u00f6d\u00e9"),
+        sg("Child3", "coexist"),
+    ]
+    rejections = [
+        ("x", sg("NoSuch", "x")),
+        ("", sg("Child", "")),
+        ("alpha", sg("Child2", "alpha")),
+        ("subroot", sg("Sub", "subroot")),
+        ("nope", sg("Child", "nope", remove=True)),
+        ("subroot", sg("Sub", "subroot", remove=True)),
+        ("x", sg("Sub/Inner", "x")),
+        ("x", sg("Mid/Deep/DeepChild", "x")),
+        ("x", sg("Child", "x", project="/no/replay-mismatch")),
+        # An escaped NUL in the wire JSON is parsed to U+FFFD, so these two
+        # requests carry the replacement character after parsing; the command
+        # must reject them for an add and a remove.
+        ("x\u0000y", sg("Child", "x\u0000y")),
+        ("x\u0000y", sg("Child", "x\u0000y", remove=True)),
+    ]
+    out = [("line", '{"command":"status"}'), ("file_sha256", "group.tscn")]
+    out.extend(accepted)
+    for group, request in rejections:
+        _bracket(out, group, request)
+    # No implicit save: the file is unchanged since the session opened, and no
+    # accepted group has been written yet.
+    out.append(("file_sha256", "group.tscn"))
+    out.append(("file_not_contains", 'group.tscn|groups=["plain_add"]'))
+    # The post-save file is not hashed: the save adds a generated unique_id to
+    # every node line, so its bytes are not deterministic. The write itself is
+    # proven by the file_not_contains before the save and the file_contains
+    # checks after it.
+    out.append(("line", '{"command":"save_scene","project_path":"<PROJ>"}'))
+    out.append(("file_contains", 'group.tscn|groups=["root_add"]'))
+    out.append(("file_contains", 'group.tscn|groups=["plain_add"]'))
+    out.append(("file_contains", 'group.tscn|groups=["sub_add"] instance=ExtResource("1")'))
+    out.append(("file_contains", 'group.tscn|groups=["edit_add"]'))
+    out.append(("file_contains", 'group.tscn|groups=["_under", "coexist", "with space", "\u00fcn\u00efc\u00f6d\u00e9"]'))
+    out.append(("file_contains", 'group.tscn|groups=["alpha"]'))
+    out.append(("file_not_contains", 'group.tscn|groups=["beta"]'))
+    out.append(("file_not_contains", 'group.tscn|groups=["nope"]'))
+    return out
+
+
+def build_i():
+    # Session I: a fresh editor on the saved group.tscn. The group queries must
+    # list the persisted members, "beta" must be gone, and adding a persisted
+    # group again must still be rejected as a duplicate.
+    out = [("line", '{"command":"status"}')]
+    for group in ["plain_add", "root_add", "sub_add", "edit_add", "_under",
+                  "coexist", "with space", "\u00fcn\u00efc\u00f6d\u00e9", "alpha", "subroot"]:
+        out.append(qg(group))
+    for group in ["beta", "nope", "x"]:
+        out.append(qg(group))
+    out.append(("line", '{"command":"scene_tree"}'))
+    out.append(sg("Child", "plain_add"))
+    return out
+
+
 def send_one(port, text, newline, timeout):
     s = socket.create_connection(("127.0.0.1", port), timeout=10)
     try:
@@ -670,6 +818,10 @@ def main():
             ("connect_sub.tscn", CONNECT_SUB_TSCN),
             ("connect_mid.tscn", CONNECT_MID_TSCN),
             ("connect.tscn", CONNECT_TSCN),
+            ("group_sub.tscn", GROUP_SUB_TSCN),
+            ("group_deep.tscn", GROUP_DEEP_TSCN),
+            ("group_mid.tscn", GROUP_MID_TSCN),
+            ("group.tscn", GROUP_TSCN),
         ]:
             with open(os.path.join(proj, name), "w") as f:
                 f.write(text)
@@ -688,18 +840,22 @@ def main():
         if r.returncode != 0:
             raise SystemExit("godot --import failed")
         rows = []
-        # Run order is A, E, C, B, D, F: a fresh editor restores the previous
-        # session's open scenes, so the three no-scene sessions (A, E, C) must
-        # run before the scene sessions. Rows are stored A, B, C, E, D, F, so
-        # the first 200 rows are byte-identical to the 0.5.0 baseline and the
-        # new connect-signal rows are appended.
+        # Run order is A, E, G, C, B, D, F, H, I: a fresh editor restores the
+        # previous session's open scenes, so the no-scene sessions (A, E, G, C
+        # before it opens anything) must run before the scene sessions. Rows
+        # are stored A, B, C, E, D, F, G, H, I, so the first 262 rows are
+        # byte-identical to the connect-signal baseline and the new set-group
+        # rows are appended.
         rows_a = run_session(a.port, proj, None, REQ_A, None)
         rows_e = run_session(a.port, proj, None, build_e(), None)
+        rows_g = run_session(a.port, proj, None, build_g(), None)
         rows_c = run_session(a.port, proj, None, build_c(), None)
         rows_b = run_session(a.port, proj, "res://main.tscn", build_b(), "res://main.tscn")
         rows_d = run_session(a.port, proj, "res://connect.tscn", build_d(), "res://connect.tscn")
         rows_f = run_session(a.port, proj, "res://connect.tscn", build_f(), "res://connect.tscn")
-        rows = rows_a + rows_b + rows_c + rows_e + rows_d + rows_f
+        rows_h = run_session(a.port, proj, "res://group.tscn", build_h(), "res://group.tscn")
+        rows_i = run_session(a.port, proj, "res://group.tscn", build_i(), "res://group.tscn")
+        rows = rows_a + rows_b + rows_c + rows_e + rows_d + rows_f + rows_g + rows_h + rows_i
         with open(a.out, "w") as f:
             for req, rep in rows:
                 f.write(json.dumps({"request": req, "reply": rep}, separators=(",", ":")) + "\n")

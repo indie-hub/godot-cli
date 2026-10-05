@@ -49,6 +49,8 @@ One TCP connection per request, on `127.0.0.1:47821` by default:
    or
    `{"command":"connect_signal","source_path":"...","signal":"...","target_path":"...","method":"...","deferred":false,"one_shot":false,"project_path":"..."}`,
    or
+   `{"command":"set_group","node_path":"...","group":"...","remove":false,"project_path":"..."}`,
+   or
    `{"command":"save_scene","project_path":"..."}`,
    or
    `{"command":"open_scene","project_path":"...","scene_path":"...","save":false}`,
@@ -259,6 +261,36 @@ connection, `3` with `--deferred`, `6` with `--one-shot`). An argument-count
 mismatch between the signal and the method is not checked: it connects and the
 engine reports the mismatch only when the signal is emitted.
 
+`set_group` adds or removes one persistent group on a node in the currently
+edited scene, through the editor's `EditorUndoRedoManager` as a single
+Undo/Redo step, without saving the scene. `node_path` and `project_path`
+follow the same rules as `rename_node`'s. By default the group is added;
+`remove` (the CLI's `--remove`) removes it instead. `group` must not be empty
+(the engine itself refuses an empty group name). A group only survives a save
+when the edited scene serializes the node: a node inside an instanced
+sub-scene is only accepted when every instance between it and the edited scene
+root has Editable Children enabled; the instance root itself is accepted with
+Editable Children off, because it is owned by the edited scene root. A removal
+is accepted only for a group the node holds persistently and locally, read
+from a packed copy of the edited scene (the node's own row lists its local
+persistent groups, and the owning instance's source scene lists the groups it
+inherits). A group inherited from a sub-scene is rejected because the engine
+brings it back after a reload. A group present only at runtime
+(`add_to_group(name, false)`) or an engine-internal session group (for example
+`_root_canvas...` on a `Control`) is rejected because it is not a persistent
+local group of the node. A removal on a node inside a nested instance whose
+origin cannot be read in one step is also rejected. Adding a
+group the node is already in (locally or by inheritance) is rejected, because
+the no-op action would still mark the scene dirty and add an Undo step. Every
+check runs before the undo action is created, so a rejected request leaves the
+scene, the dirty flag, the undo history, and the file untouched. The success
+reply is
+`{"status":"ok","data":{"node_path":"...","group":"...","action":"add"}}`
+(`"action":"remove"` for a removal). Group names are used verbatim, with one
+exception: a name that contains U+FFFD is rejected, because Godot's JSON
+parser turns an escaped NUL (`\u0000`) into U+FFFD and the plugin cannot tell
+them apart; a user group may start with an underscore.
+
 `save_scene` persists the currently edited scene to the file path it already
 has, using the editor's own save path (the same one Ctrl+S uses), so every
 edit made through `rename_node`, `create_node`, `set_property`,
@@ -334,6 +366,8 @@ cargo run -- inspect-class --class Node --project-path /path/to/project
 cargo run -- delete-node Child/Deep --project-path /path/to/project
 cargo run -- connect-signal Source ping Target on_ping --project-path /path/to/project
 cargo run -- connect-signal Source ping Target on_ping --deferred --project-path /path/to/project
+cargo run -- set-group Child/Deep enemies --project-path /path/to/project
+cargo run -- set-group Child/Deep enemies --remove --project-path /path/to/project
 cargo run -- save-scene --project-path /path/to/project
 cargo run -- open-scene --scene-path scenes/S1.tscn --project-path /path/to/project
 cargo run -- open-scene --scene-path res://scenes/S1.tscn --save --project-path /path/to/project
@@ -378,6 +412,10 @@ connects the signal on the source node to the method on the target node (see
 Protocol above), canonicalizing `--project-path` the same way as the other
 mutating commands. `--deferred` and `--one-shot` add the matching connect
 flags to `CONNECT_PERSIST`. Nothing is saved until `save-scene` runs.
+`set-group <scene-relative-path> <group> --project-path <dir> [--remove]` adds
+the group to that node, or removes it with `--remove`, through the editor's
+undo/redo stack (see Protocol above), canonicalizing `--project-path` the same
+way as the other mutating commands. Nothing is saved until `save-scene` runs.
 `save-scene --project-path <dir>` persists the currently edited scene to the
 file path it already has (see Protocol above), canonicalizing `--project-path`
 the same way as the other mutating commands. The reply's `data.path` is the
@@ -401,7 +439,7 @@ cargo clippy -- -D warnings
 
 `cargo test` includes protocol tests that open a real loopback socket and
 round-trip `Request`/`Response` pairs through the exact wire format, not
-just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `inspect_node`, `query_nodes`, `inspect_class`, `delete_node`, `connect_signal`, `save_scene`, and `open_scene` wire
+just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `inspect_node`, `query_nodes`, `inspect_class`, `delete_node`, `connect_signal`, `set_group`, `save_scene`, and `open_scene` wire
 shapes and the CLI's `set-property` value parsing.
 
 Live verification against a running Godot editor (status, scene tree,

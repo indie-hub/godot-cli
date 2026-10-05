@@ -107,6 +107,19 @@ pub enum Request {
         one_shot: bool,
         project_path: String,
     },
+    /// Adds or removes one persistent group on a node in the currently edited
+    /// scene through the editor's undo/redo manager, as one Undo/Redo step,
+    /// without saving. `remove` false (the default) adds the group; true
+    /// removes it. A group inherited from a sub-scene and a runtime (session)
+    /// group are rejected before any change, because neither survives a save
+    /// or a reload. `project_path` follows the same rules as
+    /// [`Request::RenameNode`].
+    SetGroup {
+        node_path: String,
+        group: String,
+        remove: bool,
+        project_path: String,
+    },
     /// Persists the currently edited scene to the file path it already has,
     /// so edits made through the other mutating commands survive a reload.
     /// `project_path` follows the same rules as [`Request::RenameNode`].
@@ -452,6 +465,45 @@ mod tests {
         assert_eq!(
             json,
             r#"{"command":"connect_signal","source_path":"A","signal":"ping","target_path":"B","method":"on_ping","deferred":true,"one_shot":true,"project_path":"/tmp/project"}"#
+        );
+    }
+
+    /// Pins the exact wire shape the GDScript plugin matches on
+    /// (`"command":"set_group"` plus the four snake_case fields, with `remove`
+    /// as a JSON bool).
+    #[test]
+    fn set_group_request_serializes_to_the_documented_wire_shape() {
+        let request = Request::SetGroup {
+            node_path: "Child/Deep".to_string(),
+            group: "enemies".to_string(),
+            remove: false,
+            project_path: "/tmp/project".to_string(),
+        };
+
+        let json = serde_json::to_string(&request).expect("serialize request");
+
+        assert_eq!(
+            json,
+            r#"{"command":"set_group","node_path":"Child/Deep","group":"enemies","remove":false,"project_path":"/tmp/project"}"#
+        );
+    }
+
+    /// Pins that `--remove` reaches the wire as the real JSON bool true, not
+    /// null or absent.
+    #[test]
+    fn set_group_with_remove_serializes_remove_as_true() {
+        let request = Request::SetGroup {
+            node_path: ".".to_string(),
+            group: "heroes".to_string(),
+            remove: true,
+            project_path: "/tmp/project".to_string(),
+        };
+
+        let json = serde_json::to_string(&request).expect("serialize request");
+
+        assert_eq!(
+            json,
+            r#"{"command":"set_group","node_path":".","group":"heroes","remove":true,"project_path":"/tmp/project"}"#
         );
     }
 

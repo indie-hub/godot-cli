@@ -45,6 +45,9 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut connect_method: Option<String> = None;
     let mut connect_deferred: bool = false;
     let mut connect_one_shot: bool = false;
+    let mut set_group_node_path: Option<String> = None;
+    let mut set_group_name: Option<String> = None;
+    let mut set_group_remove: bool = false;
     let mut scene_path: Option<String> = None;
     let mut save: bool = false;
 
@@ -138,6 +141,16 @@ fn run(args: &[String]) -> Result<(), String> {
                 connect_target_path = Some(next_operand()?);
                 connect_method = Some(next_operand()?);
             }
+            "set-group" => {
+                command = Some(argument.clone());
+                let mut next_operand = || {
+                    arguments.next().cloned().ok_or_else(|| {
+                        "set-group requires <scene-relative-path> <group>".to_string()
+                    })
+                };
+                set_group_node_path = Some(next_operand()?);
+                set_group_name = Some(next_operand()?);
+            }
             "--port" => {
                 let value = arguments
                     .next()
@@ -173,6 +186,7 @@ fn run(args: &[String]) -> Result<(), String> {
             "--save" => save = true,
             "--deferred" => connect_deferred = true,
             "--one-shot" => connect_one_shot = true,
+            "--remove" => set_group_remove = true,
             "--group" => {
                 let value = arguments
                     .next()
@@ -202,7 +216,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let Some(command) = command else {
         print_usage();
         return Err(
-            "missing command (expected 'status', 'scene-tree', 'rename-node', 'create-node', 'set-property', 'inspect-node', 'query-nodes', 'inspect-class', 'delete-node', 'connect-signal', 'save-scene', or 'open-scene')"
+            "missing command (expected 'status', 'scene-tree', 'rename-node', 'create-node', 'set-property', 'inspect-node', 'query-nodes', 'inspect-class', 'delete-node', 'connect-signal', 'set-group', 'save-scene', or 'open-scene')"
                 .to_string(),
         );
     };
@@ -323,6 +337,19 @@ fn run(args: &[String]) -> Result<(), String> {
                 project_path: canonicalize_project_path(&project_path)?,
             }
         }
+        "set-group" => {
+            let node_path =
+                set_group_node_path.expect("parsed together with the set-group command");
+            let group = set_group_name.expect("parsed together with the set-group command");
+            let project_path = project_path
+                .ok_or_else(|| "set-group requires --project-path <dir>".to_string())?;
+            Request::SetGroup {
+                node_path,
+                group,
+                remove: set_group_remove,
+                project_path: canonicalize_project_path(&project_path)?,
+            }
+        }
         "open-scene" => {
             let scene_path =
                 scene_path.ok_or_else(|| "open-scene requires --scene-path <path>".to_string())?;
@@ -410,6 +437,9 @@ fn print_usage() {
     eprintln!(
         "       godot-pipeline connect-signal <source-scene-relative-path> <signal> <target-scene-relative-path> <method> --project-path <dir> [--deferred] [--one-shot] [--port PORT]"
     );
+    eprintln!(
+        "       godot-pipeline set-group <scene-relative-path> <group> --project-path <dir> [--remove] [--port PORT]"
+    );
     eprintln!("       godot-pipeline save-scene --project-path <dir> [--port PORT]");
     eprintln!(
         "       godot-pipeline open-scene --scene-path <path> --project-path <dir> [--save] [--port PORT]"
@@ -448,6 +478,10 @@ fn print_usage() {
     eprintln!("              add the matching connect flags; nothing saves until save-scene");
     eprintln!("              The success reply's data names source_path, signal, target_path,");
     eprintln!("              method, and flags (the engine's connection flags integer).");
+    eprintln!("  set-group   add a persistent group to a node in the edited scene through the");
+    eprintln!("              editor's undo/redo stack, or remove one with --remove; nothing saves");
+    eprintln!("              until save-scene. The success reply's data names node_path, group,");
+    eprintln!("              and action (\"add\" or \"remove\").");
     eprintln!("  save-scene  persist the currently edited scene to the file path it already has;");
     eprintln!("              rejected if no scene is open or the open scene has no file path");
     eprintln!(
@@ -459,7 +493,7 @@ fn print_usage() {
     eprintln!("              changes in `unsaved`; an untitled scene appears as `[\"\"]`.");
     eprintln!("  --project-path  the project the command targets; required for rename-node,");
     eprintln!(
-        "                  create-node, set-property, inspect-node, query-nodes, inspect-class, delete-node, connect-signal, save-scene, and open-scene, rejected"
+        "                  create-node, set-property, inspect-node, query-nodes, inspect-class, delete-node, connect-signal, set-group, save-scene, and open-scene, rejected"
     );
     eprintln!("                  by the plugin if it does not match the open project");
     eprintln!("  --port      override the default port ({DEFAULT_PORT})");
@@ -1129,6 +1163,106 @@ mod tests {
         let error = run(&args).expect_err("connect-signal without all operands must fail");
         assert!(
             error.contains("connect-signal requires <source-scene-relative-path>"),
+            "{error}"
+        );
+    }
+
+    /// Pins the CLI's `set-group` argument parsing: the two operands are passed
+    /// through as given, `--remove` sets its bool (absent means false), and
+    /// `--project-path` is canonicalized the same way as the other commands.
+    /// Both flag states run against a real loopback socket that answers with an
+    /// ok reply, then assert the received wire request.
+    #[test]
+    fn set_group_cli_sends_operands_remove_flag_and_canonicalized_project_path() {
+        for remove in [false, true] {
+            let listener = TcpListener::bind((HOST, 0)).expect("bind ephemeral port");
+            let port = listener.local_addr().expect("local addr").port();
+
+            let project_dir = std::env::temp_dir();
+            let canonical = std::fs::canonicalize(&project_dir).expect("canonicalize temp dir");
+            let canonical_arg = canonical.to_str().expect("temp dir is UTF-8").to_string();
+
+            let server = thread::spawn(move || {
+                let (stream, _) = listener.accept().expect("accept connection");
+                let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+                let mut request_line = String::new();
+                reader
+                    .read_line(&mut request_line)
+                    .expect("read request line");
+                let request: Request =
+                    serde_json::from_str(request_line.trim_end()).expect("parse request");
+                assert_eq!(
+                    request,
+                    Request::SetGroup {
+                        node_path: "Child/Deep".to_string(),
+                        group: "enemies".to_string(),
+                        remove,
+                        project_path: canonical_arg,
+                    }
+                );
+
+                let mut writer = stream;
+                let mut response_line = serde_json::to_string(&Response::Ok { data: json!({}) })
+                    .expect("serialize reply");
+                response_line.push('\n');
+                writer
+                    .write_all(response_line.as_bytes())
+                    .expect("write reply");
+            });
+
+            let mut args = vec![
+                "godot-pipeline".to_string(),
+                "set-group".to_string(),
+                "Child/Deep".to_string(),
+                "enemies".to_string(),
+            ];
+            if remove {
+                args.push("--remove".to_string());
+            }
+            args.extend(
+                [
+                    "--project-path".to_string(),
+                    project_dir.to_str().expect("temp dir is UTF-8").to_string(),
+                    "--port".to_string(),
+                    port.to_string(),
+                ]
+                .into_iter(),
+            );
+            run(&args).expect("run succeeds");
+
+            server.join().expect("server thread does not panic");
+        }
+    }
+
+    /// Pins the CLI's rejection of `set-group` without `--project-path`: it
+    /// must fail before any request is sent.
+    #[test]
+    fn set_group_without_project_path_is_rejected() {
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "set-group".to_string(),
+            "Child".to_string(),
+            "enemies".to_string(),
+        ];
+        let error = run(&args).expect_err("set-group without --project-path must fail");
+        assert!(
+            error.contains("set-group requires --project-path"),
+            "{error}"
+        );
+    }
+
+    /// Pins the CLI's rejection of `set-group` with a missing operand: it must
+    /// fail before any request is sent.
+    #[test]
+    fn set_group_without_operands_is_rejected() {
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "set-group".to_string(),
+            "Child".to_string(),
+        ];
+        let error = run(&args).expect_err("set-group without all operands must fail");
+        assert!(
+            error.contains("set-group requires <scene-relative-path>"),
             "{error}"
         );
     }
