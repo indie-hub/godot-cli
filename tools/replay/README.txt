@@ -1,6 +1,6 @@
-Golden replay harness for the Godot Pipeline editor plugin (362 rows:
+Golden replay harness for the Godot Pipeline editor plugin (413 rows:
 1-148 unchanged, 149-200 cover inspect-class and open-scene, 201-262 cover
-connect-signal, 263-362 cover set-group).
+connect-signal, 263-362 cover set-group, 363-413 cover set-unique-name).
 
 HOW TO RUN
   GODOT=/path/to/Godot python3 replay.py --plugin-dir DIR --port PORT --out FILE
@@ -13,13 +13,15 @@ HOW TO RUN
   Prints the first differing request with both replies, or IDENTICAL.
   Exit 0 identical, 1 different.
 
-  Each run takes about two minutes: one --import plus nine editor launches (in
-  launch order A with no scene, E with no scene, G with no scene, C with no
-  scene, B with res://main.tscn, D and F with res://connect.tscn, H and I with
-  res://group.tscn), 362 requests. Rows are stored A, B, C, E, D, F, G, H, I:
-  a fresh editor restores the previous session's open scenes, so the no-scene
-  sessions (A, E, G, and C before it opens anything) must run before any scene
-  session. Appending the new sessions keeps rows 1-262 byte-identical.
+  Each run takes about two minutes: one --import plus twelve editor launches
+  (in launch order A with no scene, E with no scene, G with no scene, J with no
+  scene, C with no scene, B with res://main.tscn, D and F with
+  res://connect.tscn, H and I with res://group.tscn, K and L with
+  res://unique.tscn), 413 requests. Rows are stored A, B, C, E, D, F, G, H, I,
+  J, K, L: a fresh editor restores the previous session's open scenes, so the
+  no-scene sessions (A, E, G, J, and C before it opens anything) must run
+  before any scene session. Appending the new sessions keeps rows 1-362
+  byte-identical.
 
 WHAT IT DOES
   Session A (requests 1-23, no edited scene): status ok with scene_path null;
@@ -114,30 +116,52 @@ WHAT IT DOES
   group queries must list the persisted members (including the instance-root
   member saved with Editable Children off), "beta" must be gone, and adding a
   persisted group again must still be rejected as a duplicate.
+  Session J (requests 363-368, no edited scene, runs before session C):
+  set-unique-name with no edited scene, a wrong project (guard first), missing
+  fields, a non-string node_path, and a non-bool remove; each is a structured
+  error before any node is resolved.
+  Session K (requests 369-404, unique.tscn open): status, a file sha256 of
+  unique.tscn, four accepted edits (set the flag on a plain child, on an
+  instance root with Editable Children off, and on an inner node with Editable
+  Children on, and clear it on a node that already had it), then nine rejections
+  each bracketed by identical inspect_node before/after snapshots (the scene
+  root, a node in a non-editable instance, a node that is already unique, an
+  inherited flag for an add and for a remove, a removal of a node that is not
+  unique, a removal on a node inside a nested instance whose origin cannot be
+  read in one step, a same-owner name collision, and a wrong project), a second
+  file sha256 that must equal the first (set-unique-name wrote nothing), then
+  save_scene and a file-bytes check that a flag line was written.
+  Session L (requests 405-413, a fresh editor on the saved unique.tscn):
+  inspect_node of seven nodes must show the flag true for the accepted adds and
+  the untouched claimant, false for the unset and removed nodes, and setting a
+  persisted flag again must be rejected as a no-op.
 
 NORMALISATION
   The only one: the throwaway project's absolute path is replaced with
   <PROJECT> in stored requests and replies. Replies that carry it are the
   "project path mismatch" errors (10, 46, 54, 61, 70, 131, 141, 146, 158,
-  159, 203, 244). Reply text is otherwise verbatim; no sorting, no rounding.
+  159, 203, 244, 365, 400). Reply text is otherwise verbatim; no sorting, no
+  rounding.
 
 DETERMINISM PROOF
-  baseline.jsonl was recorded three times; all three are byte-identical
-  (compare.py IDENTICAL, cmp clean). Rows 1-262 are byte-identical to the
-  connect-signal baseline (cmp clean on the first 262 lines); that baseline's
-  whole file sha256 was
+  The set-unique-name rows were recorded twice; the two full runs are
+  byte-identical (compare.py IDENTICAL, cmp clean, 413 pairs). Rows 1-362 are
+  byte-identical to the set-group baseline (cmp clean on the first 362 lines);
+  that baseline's whole file sha256 was
+  63deb099fac0ebc04345af0e0ea5cf8e3d17bf5ffabae8a8e5abc71d779ae798. Rows
+  1-262 remain byte-identical to the connect-signal baseline, whose whole file
+  sha256 was
   1b1cd260ce425d710525620e8fa4384e0c58b374665a4875ae813c6a3f6c4877. Rows
-  1-200 remain byte-identical to the 0.5.0 baseline, whose whole file sha256
-  was
+  1-200 are byte-identical to the 0.5.0 baseline, whose whole file sha256 was
   9251fb936b3a736a5a7d9823d66b0f27910072575fad599e331756199c7a6d87, and rows
   1-148 still have their own sha256
   17b67de4a11a1285355a173326b7e72b68a72dd2754b89a12400c3309a3edc1d.
   baseline.sha256 holds the sha256 of the whole baseline.jsonl: check with
   shasum -a 256 baseline.jsonl.
   A saved scene file is hashed only before a save. After save_scene the editor
-  writes a generated unique_id into every node line, so the post-save bytes
-  are not deterministic; the write is proven by the file_contains checks
-  instead.
+  may write generated unique_id values into saved node declarations, and an
+  override-only declaration can omit it. So the post-save bytes are not
+  deterministic; the write is proven by the file_contains checks instead.
 
 NEGATIVE CONTROL
   Two scratch copies of the plugin, each with one error string changed by one
@@ -195,6 +219,15 @@ COVERAGE (request numbers above)
   checks #339-346; I #347-362: status #347, persisted members #348-357,
   removed and rejected groups absent #358-360, scene_tree #361, duplicate add
   after the reload #362.
+  set-unique-name #363-413: no-scene #363-368 (status; no edited scene; wrong
+  project first; missing fields; non-string node_path; non-bool remove);
+  K #369-404: status #369, unchanged-file hash #370, accepted add/remove
+  #371-374, rejections with identical inspect_node pairs (scene root #375-377,
+  non-editable instance #378-380, already unique #381-383, inherited add
+  #384-386, remove not unique #387-389, inherited remove #390-392, nested
+  origin #393-395, collision #396-398, wrong project #399-401), unchanged-file
+  hash #402, save_scene #403, flag-line check #404; L #405-413: status #405,
+  flag state after the reload #406-412, duplicate add #413.
   Not covered, with reason:
   - "request exceeds the maximum size" (>8 MiB without newline): reaching
     it needs an 8 MB write, and the reported byte count varies with TCP
@@ -218,6 +251,9 @@ COVERAGE (request numbers above)
     engine-internal name carries a generated object id that is not
     byte-stable. The rejection of both is proved in the isolated undo probe
     instead (it adds a runtime group with add_to_group(name, false)).
+  - live `%` name resolution (`get_node("%Name")`): it is engine lookup
+    behavior inside a running scene, and this harness records the saved flag
+    state instead.
 
 NOTES
   The fixture project deliberately has no run/main_scene: otherwise the
@@ -231,7 +267,7 @@ NOTES
   one-action Undo/Redo proof lives in the Code4Me task result, from a separate
   isolated-editor probe that sends a real connect-signal request through the
   plugin and then triggers the editor's Undo/Redo through the safe route.
-  The baseline is only valid while the plugin's replies for these 362 requests
+  The baseline is only valid while the plugin's replies for these 413 requests
   are supposed to stay the same. A change that adds or alters a command's
   behavior on purpose needs a new baseline, recorded from the last trusted
   commit, and a fresh determinism check (record three times, compare byte for

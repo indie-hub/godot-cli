@@ -48,6 +48,8 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut set_group_node_path: Option<String> = None;
     let mut set_group_name: Option<String> = None;
     let mut set_group_remove: bool = false;
+    let mut set_unique_name_node_path: Option<String> = None;
+    let mut set_unique_name_remove: bool = false;
     let mut scene_path: Option<String> = None;
     let mut save: bool = false;
 
@@ -151,6 +153,13 @@ fn run(args: &[String]) -> Result<(), String> {
                 set_group_node_path = Some(next_operand()?);
                 set_group_name = Some(next_operand()?);
             }
+            "set-unique-name" => {
+                command = Some(argument.clone());
+                set_unique_name_node_path =
+                    Some(arguments.next().cloned().ok_or_else(|| {
+                        "set-unique-name requires <scene-relative-path>".to_string()
+                    })?);
+            }
             "--port" => {
                 let value = arguments
                     .next()
@@ -186,7 +195,10 @@ fn run(args: &[String]) -> Result<(), String> {
             "--save" => save = true,
             "--deferred" => connect_deferred = true,
             "--one-shot" => connect_one_shot = true,
-            "--remove" => set_group_remove = true,
+            "--remove" => {
+                set_group_remove = true;
+                set_unique_name_remove = true;
+            }
             "--group" => {
                 let value = arguments
                     .next()
@@ -216,7 +228,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let Some(command) = command else {
         print_usage();
         return Err(
-            "missing command (expected 'status', 'scene-tree', 'rename-node', 'create-node', 'set-property', 'inspect-node', 'query-nodes', 'inspect-class', 'delete-node', 'connect-signal', 'set-group', 'save-scene', or 'open-scene')"
+            "missing command (expected 'status', 'scene-tree', 'rename-node', 'create-node', 'set-property', 'inspect-node', 'query-nodes', 'inspect-class', 'delete-node', 'connect-signal', 'set-group', 'set-unique-name', 'save-scene', or 'open-scene')"
                 .to_string(),
         );
     };
@@ -350,6 +362,17 @@ fn run(args: &[String]) -> Result<(), String> {
                 project_path: canonicalize_project_path(&project_path)?,
             }
         }
+        "set-unique-name" => {
+            let node_path = set_unique_name_node_path
+                .expect("parsed together with the set-unique-name command");
+            let project_path = project_path
+                .ok_or_else(|| "set-unique-name requires --project-path <dir>".to_string())?;
+            Request::SetUniqueName {
+                node_path,
+                remove: set_unique_name_remove,
+                project_path: canonicalize_project_path(&project_path)?,
+            }
+        }
         "open-scene" => {
             let scene_path =
                 scene_path.ok_or_else(|| "open-scene requires --scene-path <path>".to_string())?;
@@ -440,6 +463,9 @@ fn print_usage() {
     eprintln!(
         "       godot-pipeline set-group <scene-relative-path> <group> --project-path <dir> [--remove] [--port PORT]"
     );
+    eprintln!(
+        "       godot-pipeline set-unique-name <scene-relative-path> --project-path <dir> [--remove] [--port PORT]"
+    );
     eprintln!("       godot-pipeline save-scene --project-path <dir> [--port PORT]");
     eprintln!(
         "       godot-pipeline open-scene --scene-path <path> --project-path <dir> [--save] [--port PORT]"
@@ -482,6 +508,10 @@ fn print_usage() {
     eprintln!("              editor's undo/redo stack, or remove one with --remove; nothing saves");
     eprintln!("              until save-scene. The success reply's data names node_path, group,");
     eprintln!("              and action (\"add\" or \"remove\").");
+    eprintln!("  set-unique-name set the % unique name of a node in the edited scene through the");
+    eprintln!("              editor's undo/redo stack, or clear it with --remove; nothing saves");
+    eprintln!("              until save-scene. The success reply's data names node_path, name,");
+    eprintln!("              and action (\"add\" or \"remove\").");
     eprintln!("  save-scene  persist the currently edited scene to the file path it already has;");
     eprintln!("              rejected if no scene is open or the open scene has no file path");
     eprintln!(
@@ -493,7 +523,7 @@ fn print_usage() {
     eprintln!("              changes in `unsaved`; an untitled scene appears as `[\"\"]`.");
     eprintln!("  --project-path  the project the command targets; required for rename-node,");
     eprintln!(
-        "                  create-node, set-property, inspect-node, query-nodes, inspect-class, delete-node, connect-signal, set-group, save-scene, and open-scene, rejected"
+        "                  create-node, set-property, inspect-node, query-nodes, inspect-class, delete-node, connect-signal, set-group, set-unique-name, save-scene, and open-scene, rejected"
     );
     eprintln!("                  by the plugin if it does not match the open project");
     eprintln!("  --port      override the default port ({DEFAULT_PORT})");
@@ -1263,6 +1293,99 @@ mod tests {
         let error = run(&args).expect_err("set-group without all operands must fail");
         assert!(
             error.contains("set-group requires <scene-relative-path>"),
+            "{error}"
+        );
+    }
+
+    /// Pins the CLI's `set-unique-name` argument parsing: the node path is
+    /// passed through as given, `--remove` sets its bool (absent means false),
+    /// and `--project-path` is canonicalized the same way as the other
+    /// commands. Both flag states run against a real loopback socket that
+    /// answers with an ok reply, then assert the received wire request.
+    #[test]
+    fn set_unique_name_cli_sends_node_path_remove_flag_and_canonicalized_project_path() {
+        for remove in [false, true] {
+            let listener = TcpListener::bind((HOST, 0)).expect("bind ephemeral port");
+            let port = listener.local_addr().expect("local addr").port();
+
+            let project_dir = std::env::temp_dir();
+            let canonical = std::fs::canonicalize(&project_dir).expect("canonicalize temp dir");
+            let canonical_arg = canonical.to_str().expect("temp dir is UTF-8").to_string();
+
+            let server = thread::spawn(move || {
+                let (stream, _) = listener.accept().expect("accept connection");
+                let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+                let mut request_line = String::new();
+                reader
+                    .read_line(&mut request_line)
+                    .expect("read request line");
+                let request: Request =
+                    serde_json::from_str(request_line.trim_end()).expect("parse request");
+                assert_eq!(
+                    request,
+                    Request::SetUniqueName {
+                        node_path: "Child/Deep".to_string(),
+                        remove,
+                        project_path: canonical_arg,
+                    }
+                );
+
+                let mut writer = stream;
+                let mut response_line = serde_json::to_string(&Response::Ok { data: json!({}) })
+                    .expect("serialize reply");
+                response_line.push('\n');
+                writer
+                    .write_all(response_line.as_bytes())
+                    .expect("write reply");
+            });
+
+            let mut args = vec![
+                "godot-pipeline".to_string(),
+                "set-unique-name".to_string(),
+                "Child/Deep".to_string(),
+            ];
+            if remove {
+                args.push("--remove".to_string());
+            }
+            args.extend(
+                [
+                    "--project-path".to_string(),
+                    project_dir.to_str().expect("temp dir is UTF-8").to_string(),
+                    "--port".to_string(),
+                    port.to_string(),
+                ]
+                .into_iter(),
+            );
+            run(&args).expect("run succeeds");
+
+            server.join().expect("server thread does not panic");
+        }
+    }
+
+    /// Pins the CLI's rejection of `set-unique-name` without `--project-path`:
+    /// it must fail before any request is sent.
+    #[test]
+    fn set_unique_name_without_project_path_is_rejected() {
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "set-unique-name".to_string(),
+            "Child".to_string(),
+        ];
+        let error = run(&args).expect_err("set-unique-name without --project-path must fail");
+        assert!(
+            error.contains("set-unique-name requires --project-path"),
+            "{error}"
+        );
+    }
+
+    /// Pins the CLI's rejection of `set-unique-name` without the node path: it
+    /// must fail before any request is sent.
+    #[test]
+    fn set_unique_name_without_node_path_is_rejected() {
+        let args = vec!["godot-pipeline".to_string(), "set-unique-name".to_string()];
+        let error = run(&args).expect_err("set-unique-name without the node path must fail");
+        assert!(
+            error.contains("set-unique-name requires <scene-relative-path>"),
             "{error}"
         );
     }

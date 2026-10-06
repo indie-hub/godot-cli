@@ -287,6 +287,54 @@ GROUP_TSCN = """[gd_scene load_steps=3 format=3 uid="uid://gp026group01"]
 [editable path="Mid"]
 """
 
+# Set-unique-name fixtures. Sessions A-I never reference these paths, so their
+# rows cannot change. unique.tscn is written fresh by main() every run.
+UNIQUE_SUB_TSCN = """[gd_scene load_steps=1 format=3 uid="uid://gp028uniquesub1"]
+[node name="SubRoot" type="Node"]
+[node name="Inner" type="Node" parent="."]
+[node name="Inherited" type="Node" parent="."]
+unique_name_in_owner = true
+"""
+
+UNIQUE_DEEP_TSCN = """[gd_scene load_steps=1 format=3 uid="uid://gp028uniquedeep1"]
+[node name="DeepRoot" type="Node"]
+[node name="DeepChild" type="Node" parent="."]
+unique_name_in_owner = true
+"""
+
+UNIQUE_MID_TSCN = """[gd_scene load_steps=2 format=3 uid="uid://gp028uniquemid1"]
+[ext_resource type="PackedScene" path="res://unique_deep.tscn" id="1"]
+[node name="MidRoot" type="Node"]
+[node name="Deep" parent="." instance=ExtResource("1")]
+"""
+
+# Already holds a local flag, so an accepted removal has one to clear; P1/Dup
+# holds a local flag that collides with P2/Dup; Sub is an instance root with
+# Editable Children off; Edit is the same scene editable, so Edit/Inherited
+# inherits its flag and Edit/Inner can take a local one; Mid/Deep is a nested
+# instance with both ancestors editable, so Mid/Deep/DeepChild inherits a flag
+# whose origin the packed route cannot read in one step.
+UNIQUE_TSCN = """[gd_scene load_steps=3 format=3 uid="uid://gp028unique01"]
+[ext_resource type="PackedScene" path="res://unique_sub.tscn" id="1"]
+[ext_resource type="PackedScene" path="res://unique_mid.tscn" id="2"]
+[node name="UniqueRoot" type="Node"]
+[node name="Child" type="Node" parent="."]
+[node name="Plain" type="Node" parent="."]
+[node name="Already" type="Node" parent="."]
+unique_name_in_owner = true
+[node name="P1" type="Node" parent="."]
+[node name="Dup" type="Node" parent="P1"]
+unique_name_in_owner = true
+[node name="P2" type="Node" parent="."]
+[node name="Dup" type="Node" parent="P2"]
+[node name="Sub" parent="." instance=ExtResource("1")]
+[node name="Edit" parent="." instance=ExtResource("1")]
+[editable path="Edit"]
+[node name="Mid" parent="." instance=ExtResource("2")]
+[editable path="Mid"]
+[editable path="Mid/Deep"]
+"""
+
 # Each entry is (kind, text) where kind is "line" (newline-terminated, one
 # reply expected at once) or "idle" (sent without newline; the reply arrives
 # after the plugin's 5s idle timeout). "<PROJ>" is replaced with the
@@ -680,6 +728,86 @@ def build_i():
     return out
 
 
+def un(node, remove=False, project="<PROJ>"):
+    d = {"command": "set_unique_name", "node_path": node, "remove": remove,
+         "project_path": project}
+    return ("line", json.dumps(d, separators=(",", ":")))
+
+
+def ins(node, project="<PROJ>"):
+    return ("line", json.dumps({"command": "inspect_node", "node_path": node,
+                                "project_path": project}, separators=(",", ":")))
+
+
+def _bracket_u(out, node, request):
+    # inspect_node of the target before and after a rejection. It reports the
+    # unique_name_in_owner property value, so a changed flag would show; the
+    # two replies must be identical.
+    out.append(ins(node))
+    out.append(request)
+    out.append(ins(node))
+
+
+def build_j():
+    # Session J: set-unique-name rejections that need no edited scene. It runs
+    # before session C, while the editor still has no scene open.
+    return [
+        ("line", '{"command":"status"}'),
+        un("Child"),
+        un("Child", project="/no/replay-mismatch"),
+        ("line", '{"command":"set_unique_name"}'),
+        ("line", '{"command":"set_unique_name","node_path":7,"remove":false,"project_path":"<PROJ>"}'),
+        ("line", '{"command":"set_unique_name","node_path":"Child","remove":"yes","project_path":"<PROJ>"}'),
+    ]
+
+
+def build_k():
+    # Session K: set-unique-name against unique.tscn. Accepted requests run
+    # first, then each rejection is bracketed by identical inspect_node
+    # snapshots. Nothing is saved until save_scene.
+    accepted = [
+        un("Child"),
+        un("Sub"),
+        un("Edit/Inner"),
+        un("Already", remove=True),
+    ]
+    rejections = [
+        (".", un(".")),
+        ("Sub/Inner", un("Sub/Inner")),
+        ("P1/Dup", un("P1/Dup")),
+        ("Edit/Inherited", un("Edit/Inherited")),
+        ("Plain", un("Plain", remove=True)),
+        ("Edit/Inherited", un("Edit/Inherited", remove=True)),
+        ("Mid/Deep/DeepChild", un("Mid/Deep/DeepChild", remove=True)),
+        ("P2/Dup", un("P2/Dup")),
+        ("Plain", un("Plain", project="/no/replay-mismatch")),
+    ]
+    out = [("line", '{"command":"status"}'), ("file_sha256", "unique.tscn")]
+    out.extend(accepted)
+    for node, request in rejections:
+        _bracket_u(out, node, request)
+    # No implicit save: the file is unchanged since the session opened.
+    out.append(("file_sha256", "unique.tscn"))
+    out.append(("line", '{"command":"save_scene","project_path":"<PROJ>"}'))
+    # The save writes at least one flag line. The per-node state is read back
+    # by session L, because a node line carries a generated unique_id.
+    out.append(("file_contains", 'unique.tscn|unique_name_in_owner = true'))
+    return out
+
+
+def build_l():
+    # Session L: a fresh editor on the saved unique.tscn. inspect_node reports
+    # unique_name_in_owner for each node: Child, Sub and Edit/Inner must be
+    # true; Plain and P2/Dup must be false; Already must be false after the
+    # accepted removal; P1/Dup stays true. Re-adding a persisted flag must
+    # still be rejected as a no-op.
+    out = [("line", '{"command":"status"}')]
+    for node in ["Child", "Plain", "Already", "Sub", "Edit/Inner", "P1/Dup", "P2/Dup"]:
+        out.append(ins(node))
+    out.append(un("Child"))
+    return out
+
+
 def send_one(port, text, newline, timeout):
     s = socket.create_connection(("127.0.0.1", port), timeout=10)
     try:
@@ -822,6 +950,10 @@ def main():
             ("group_deep.tscn", GROUP_DEEP_TSCN),
             ("group_mid.tscn", GROUP_MID_TSCN),
             ("group.tscn", GROUP_TSCN),
+            ("unique_sub.tscn", UNIQUE_SUB_TSCN),
+            ("unique_deep.tscn", UNIQUE_DEEP_TSCN),
+            ("unique_mid.tscn", UNIQUE_MID_TSCN),
+            ("unique.tscn", UNIQUE_TSCN),
         ]:
             with open(os.path.join(proj, name), "w") as f:
                 f.write(text)
@@ -840,22 +972,26 @@ def main():
         if r.returncode != 0:
             raise SystemExit("godot --import failed")
         rows = []
-        # Run order is A, E, G, C, B, D, F, H, I: a fresh editor restores the
-        # previous session's open scenes, so the no-scene sessions (A, E, G, C
-        # before it opens anything) must run before the scene sessions. Rows
-        # are stored A, B, C, E, D, F, G, H, I, so the first 262 rows are
-        # byte-identical to the connect-signal baseline and the new set-group
-        # rows are appended.
+        # Run order is A, E, G, J, C, B, D, F, H, I, K, L: a fresh editor
+        # restores the previous session's open scenes, so the no-scene sessions
+        # (A, E, G, J, and C before it opens anything) must run before the scene
+        # sessions. Rows are stored A, B, C, E, D, F, G, H, I, J, K, L, so the
+        # first 362 rows stay byte-identical to the set-group baseline and the
+        # new set-unique-name rows are appended.
         rows_a = run_session(a.port, proj, None, REQ_A, None)
         rows_e = run_session(a.port, proj, None, build_e(), None)
         rows_g = run_session(a.port, proj, None, build_g(), None)
+        rows_j = run_session(a.port, proj, None, build_j(), None)
         rows_c = run_session(a.port, proj, None, build_c(), None)
         rows_b = run_session(a.port, proj, "res://main.tscn", build_b(), "res://main.tscn")
         rows_d = run_session(a.port, proj, "res://connect.tscn", build_d(), "res://connect.tscn")
         rows_f = run_session(a.port, proj, "res://connect.tscn", build_f(), "res://connect.tscn")
         rows_h = run_session(a.port, proj, "res://group.tscn", build_h(), "res://group.tscn")
         rows_i = run_session(a.port, proj, "res://group.tscn", build_i(), "res://group.tscn")
-        rows = rows_a + rows_b + rows_c + rows_e + rows_d + rows_f + rows_g + rows_h + rows_i
+        rows_k = run_session(a.port, proj, "res://unique.tscn", build_k(), "res://unique.tscn")
+        rows_l = run_session(a.port, proj, "res://unique.tscn", build_l(), "res://unique.tscn")
+        rows = (rows_a + rows_b + rows_c + rows_e + rows_d + rows_f + rows_g
+                + rows_h + rows_i + rows_j + rows_k + rows_l)
         with open(a.out, "w") as f:
             for req, rep in rows:
                 f.write(json.dumps({"request": req, "reply": rep}, separators=(",", ":")) + "\n")

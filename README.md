@@ -51,6 +51,8 @@ One TCP connection per request, on `127.0.0.1:47821` by default:
    or
    `{"command":"set_group","node_path":"...","group":"...","remove":false,"project_path":"..."}`,
    or
+   `{"command":"set_unique_name","node_path":"...","remove":false,"project_path":"..."}`,
+   or
    `{"command":"save_scene","project_path":"..."}`,
    or
    `{"command":"open_scene","project_path":"...","scene_path":"...","save":false}`,
@@ -291,6 +293,29 @@ exception: a name that contains U+FFFD is rejected, because Godot's JSON
 parser turns an escaped NUL (`\u0000`) into U+FFFD and the plugin cannot tell
 them apart; a user group may start with an underscore.
 
+`set_unique_name` sets or clears `Node.unique_name_in_owner` (the `%` name) on
+a node in the currently edited scene, through the editor's
+`EditorUndoRedoManager` as a single Undo/Redo step, without saving the scene.
+`node_path` and `project_path` follow the same rules as `rename_node`'s. By
+default the flag is set; `remove` (the CLI's `--remove`) clears it instead. A
+unique name is scoped to the node's owner, so the scene root is rejected (it
+has no owner and `%Root` never resolves). The flag only survives a save when
+the edited scene serializes the node: a node inside an instanced sub-scene is
+only accepted when every instance between it and the edited scene root has
+Editable Children enabled; the instance root itself is accepted with Editable
+Children off. A removal is accepted only for a flag the node holds locally and
+persistently: removing a flag inherited from a sub-scene is rejected, and a
+removal on a node inside a nested instance is rejected because the origin
+cannot be read in one step. Setting the flag is rejected when the node already
+has a unique name, and when another node in the same owner scope already
+claims the same name (the engine refuses the second claim and that refusal
+would still dirty the scene); the collision error names the claiming node. The
+success reply is
+`{"status":"ok","data":{"node_path":"...","name":"...","action":"add"}}`
+(`"action":"remove"` for a removal; `name` is the node's name). Every check
+runs before the undo action is created, so a rejected request leaves the
+scene, the dirty flag, the undo history, and the file untouched.
+
 `save_scene` persists the currently edited scene to the file path it already
 has, using the editor's own save path (the same one Ctrl+S uses), so every
 edit made through `rename_node`, `create_node`, `set_property`,
@@ -368,6 +393,8 @@ cargo run -- connect-signal Source ping Target on_ping --project-path /path/to/p
 cargo run -- connect-signal Source ping Target on_ping --deferred --project-path /path/to/project
 cargo run -- set-group Child/Deep enemies --project-path /path/to/project
 cargo run -- set-group Child/Deep enemies --remove --project-path /path/to/project
+cargo run -- set-unique-name Child/Deep --project-path /path/to/project
+cargo run -- set-unique-name Child/Deep --remove --project-path /path/to/project
 cargo run -- save-scene --project-path /path/to/project
 cargo run -- open-scene --scene-path scenes/S1.tscn --project-path /path/to/project
 cargo run -- open-scene --scene-path res://scenes/S1.tscn --save --project-path /path/to/project
@@ -416,6 +443,11 @@ flags to `CONNECT_PERSIST`. Nothing is saved until `save-scene` runs.
 the group to that node, or removes it with `--remove`, through the editor's
 undo/redo stack (see Protocol above), canonicalizing `--project-path` the same
 way as the other mutating commands. Nothing is saved until `save-scene` runs.
+`set-unique-name <scene-relative-path> --project-path <dir> [--remove]` sets
+the `%` unique name of that node, or clears it with `--remove`, through the
+editor's undo/redo stack (see Protocol above), canonicalizing `--project-path`
+the same way as the other mutating commands. Nothing is saved until
+`save-scene` runs.
 `save-scene --project-path <dir>` persists the currently edited scene to the
 file path it already has (see Protocol above), canonicalizing `--project-path`
 the same way as the other mutating commands. The reply's `data.path` is the
@@ -439,7 +471,7 @@ cargo clippy -- -D warnings
 
 `cargo test` includes protocol tests that open a real loopback socket and
 round-trip `Request`/`Response` pairs through the exact wire format, not
-just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `inspect_node`, `query_nodes`, `inspect_class`, `delete_node`, `connect_signal`, `set_group`, `save_scene`, and `open_scene` wire
+just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `inspect_node`, `query_nodes`, `inspect_class`, `delete_node`, `connect_signal`, `set_group`, `set_unique_name`, `save_scene`, and `open_scene` wire
 shapes and the CLI's `set-property` value parsing.
 
 Live verification against a running Godot editor (status, scene tree,
