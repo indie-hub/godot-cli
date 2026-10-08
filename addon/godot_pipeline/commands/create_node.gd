@@ -14,9 +14,9 @@ const CommandSupport := preload("command_support.gd")
 ## `name`, and `project_path` (the canonical, symlink-resolved absolute path
 ## of the project the caller intends to edit). The project-path check runs
 ## before anything else is resolved, so a mismatched caller can never cause a
-## mutation. create-node keeps its own project, scene and path checks because
-## its messages say "parent path" rather than "node path", so it does not use
-## the shared guard.
+## mutation. The project-path check stays in this file; the scene, parent-path
+## and parent-eligibility checks are shared with instantiate_scene through
+## CommandSupport.resolve_new_child_parent.
 static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 	var parent_path_value: Variant = request.get("parent_path")
 	var class_name_value: Variant = request.get("class_name")
@@ -32,38 +32,12 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 			"project path mismatch: this editor has %s open, not %s" % [current_project_path, requested_project_path]
 		)
 
-	var scene_root := plugin.get_editor_interface().get_edited_scene_root()
-	if scene_root == null:
-		return CommandSupport.error("no scene is currently being edited")
-
-	var parent_path: String = parent_path_value
-	if parent_path.is_empty():
-		return CommandSupport.error("parent path must not be empty; use \".\" for the scene root")
-	if parent_path.begins_with("/"):
-		return CommandSupport.error("parent path must be relative to the scene root; absolute paths are rejected")
-	if parent_path.contains(":"):
-		return CommandSupport.error("parent path must not contain ':'")
-	if parent_path != "." and ".." in parent_path.split("/"):
-		return CommandSupport.error("parent path must not contain '..'")
-
-	# Resolving relative to scene_root (rather than any absolute NodePath)
-	# confines the target to the edited scene's own node tree, which is the
-	# only part of the running editor this command may touch.
-	var parent: Node = scene_root if parent_path == "." else scene_root.get_node_or_null(NodePath(parent_path))
-	if parent == null:
-		return CommandSupport.error("parent node not found: %s" % parent_path)
-
-	# A new child only saves correctly if Godot will actually serialize it as
-	# part of the edited scene: the scene root itself, or any node directly
-	# owned by it, both work; a node inside an instanced sub-scene's own
-	# internal structure is owned by that instance's own root instead (not
-	# by scene_root), and a new_node.owner = scene_root child added under it
-	# can appear in the live tree but silently vanish on save. Reject those
-	# parents up front rather than mutate the scene and lose the result.
-	if parent != scene_root and parent.owner != scene_root:
-		return CommandSupport.error(
-			"parent is not eligible for a new persisted child: %s is not the scene root and is not owned by it (it is likely inside an instanced sub-scene's internal structure); only the scene root or a node it owns is supported" % parent_path
-		)
+	var parent_guarded: Variant = CommandSupport.resolve_new_child_parent(plugin, parent_path_value)
+	if parent_guarded is String:
+		return CommandSupport.error(parent_guarded)
+	var scene_root: Node = parent_guarded["scene_root"]
+	var parent_path: String = parent_guarded["parent_path"]
+	var parent: Node = parent_guarded["parent"]
 
 	var requested_class: String = class_name_value
 	if not ClassDB.class_exists(requested_class):

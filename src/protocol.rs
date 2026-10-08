@@ -133,6 +133,19 @@ pub enum Request {
         remove: bool,
         project_path: String,
     },
+    /// Adds an instance of the scene at `scene_path` under `parent_path` in the
+    /// currently edited scene through the editor's undo/redo manager, as one
+    /// Undo/Redo step, without saving. `scene_path` must be a `res://` `.tscn`
+    /// or `.scn` path that loads as a `PackedScene`; a scene that depends on a
+    /// missing resource or would make the edited scene contain itself is
+    /// rejected before any change. `parent_path` must resolve to the scene root
+    /// or a node owned by it. `project_path` follows the same rules as
+    /// [`Request::RenameNode`].
+    InstantiateScene {
+        scene_path: String,
+        parent_path: String,
+        project_path: String,
+    },
     /// Persists the currently edited scene to the file path it already has,
     /// so edits made through the other mutating commands survive a reload.
     /// `project_path` follows the same rules as [`Request::RenameNode`].
@@ -554,6 +567,26 @@ mod tests {
         assert_eq!(
             json,
             r#"{"command":"set_unique_name","node_path":"Child","remove":true,"project_path":"/tmp/project"}"#
+        );
+    }
+
+    /// Pins the exact wire shape the GDScript plugin matches on
+    /// (`"command":"instantiate_scene"` plus the three snake_case fields); a
+    /// silent rename in `#[serde(...)]` here would desync the two sides
+    /// without either one failing to compile.
+    #[test]
+    fn instantiate_scene_request_serializes_to_the_documented_wire_shape() {
+        let request = Request::InstantiateScene {
+            scene_path: "res://scenes/S1.tscn".to_string(),
+            parent_path: "Child/Deep".to_string(),
+            project_path: "/tmp/project".to_string(),
+        };
+
+        let json = serde_json::to_string(&request).expect("serialize request");
+
+        assert_eq!(
+            json,
+            r#"{"command":"instantiate_scene","scene_path":"res://scenes/S1.tscn","parent_path":"Child/Deep","project_path":"/tmp/project"}"#
         );
     }
 

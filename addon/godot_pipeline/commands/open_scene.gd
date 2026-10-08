@@ -107,17 +107,9 @@ static func _dependencies_exist(path: String) -> bool:
 			continue
 		visited[current] = true
 		for dependency in ResourceLoader.get_dependencies(current):
-			var dependency_path := _dependency_path(dependency)
+			var dependency_path := CommandSupport.dependency_path(dependency)
 			if not ResourceLoader.exists(dependency_path):
 				return false
 			if dependency_path.ends_with(".tscn") or dependency_path.ends_with(".scn"):
 				pending.append(dependency_path)
 	return true
-
-
-## Strips the "uid://xxxx::::" prefix from an instanced-scene dependency, so
-## the remaining res:// path can be checked with `ResourceLoader.exists`.
-static func _dependency_path(dependency: String) -> String:
-	if dependency.contains("::::"):
-		return dependency.substr(dependency.rfind("::::") + 4)
-	return dependency

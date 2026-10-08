@@ -50,6 +50,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut set_group_remove: bool = false;
     let mut set_unique_name_node_path: Option<String> = None;
     let mut set_unique_name_remove: bool = false;
+    let mut instantiate_parent_path: Option<String> = None;
     let mut scene_path: Option<String> = None;
     let mut save: bool = false;
 
@@ -160,6 +161,7 @@ fn run(args: &[String]) -> Result<(), String> {
                         "set-unique-name requires <scene-relative-path>".to_string()
                     })?);
             }
+            "instantiate-scene" => command = Some(argument.clone()),
             "--port" => {
                 let value = arguments
                     .next()
@@ -179,6 +181,12 @@ fn run(args: &[String]) -> Result<(), String> {
                     .next()
                     .ok_or_else(|| "--node-path requires a value".to_string())?;
                 inspect_node_path = Some(value.clone());
+            }
+            "--parent-path" => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| "--parent-path requires a value".to_string())?;
+                instantiate_parent_path = Some(value.clone());
             }
             "--class" => {
                 let value = arguments
@@ -228,7 +236,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let Some(command) = command else {
         print_usage();
         return Err(
-            "missing command (expected 'status', 'scene-tree', 'rename-node', 'create-node', 'set-property', 'inspect-node', 'query-nodes', 'inspect-class', 'delete-node', 'connect-signal', 'set-group', 'set-unique-name', 'save-scene', or 'open-scene')"
+            "missing command (expected 'status', 'scene-tree', 'rename-node', 'create-node', 'set-property', 'inspect-node', 'query-nodes', 'inspect-class', 'delete-node', 'connect-signal', 'set-group', 'set-unique-name', 'instantiate-scene', 'save-scene', or 'open-scene')"
                 .to_string(),
         );
     };
@@ -373,6 +381,20 @@ fn run(args: &[String]) -> Result<(), String> {
                 project_path: canonicalize_project_path(&project_path)?,
             }
         }
+        "instantiate-scene" => {
+            let scene_path = scene_path
+                .ok_or_else(|| "instantiate-scene requires --scene-path <path>".to_string())?;
+            let parent_path = instantiate_parent_path.ok_or_else(|| {
+                "instantiate-scene requires --parent-path <scene-relative-path>".to_string()
+            })?;
+            let project_path = project_path
+                .ok_or_else(|| "instantiate-scene requires --project-path <dir>".to_string())?;
+            Request::InstantiateScene {
+                scene_path,
+                parent_path,
+                project_path: canonicalize_project_path(&project_path)?,
+            }
+        }
         "open-scene" => {
             let scene_path =
                 scene_path.ok_or_else(|| "open-scene requires --scene-path <path>".to_string())?;
@@ -466,6 +488,9 @@ fn print_usage() {
     eprintln!(
         "       godot-pipeline set-unique-name <scene-relative-path> --project-path <dir> [--remove] [--port PORT]"
     );
+    eprintln!(
+        "       godot-pipeline instantiate-scene --scene-path <path> --parent-path <scene-relative-path> --project-path <dir> [--port PORT]"
+    );
     eprintln!("       godot-pipeline save-scene --project-path <dir> [--port PORT]");
     eprintln!(
         "       godot-pipeline open-scene --scene-path <path> --project-path <dir> [--save] [--port PORT]"
@@ -512,6 +537,16 @@ fn print_usage() {
     eprintln!("              editor's undo/redo stack, or clear it with --remove; nothing saves");
     eprintln!("              until save-scene. The success reply's data names node_path, name,");
     eprintln!("              and action (\"add\" or \"remove\").");
+    eprintln!("  instantiate-scene add an instance of a scene under a node in the edited scene");
+    eprintln!(
+        "              through the editor's undo/redo stack; --parent-path must be the scene"
+    );
+    eprintln!(
+        "              root ('.') or a node owned by it; the instance keeps the scene root's"
+    );
+    eprintln!("              name, uniquified on a sibling collision; nothing saves until");
+    eprintln!("              save-scene. The success reply's data names node_path, name, and");
+    eprintln!("              scene_path.");
     eprintln!("  save-scene  persist the currently edited scene to the file path it already has;");
     eprintln!("              rejected if no scene is open or the open scene has no file path");
     eprintln!(
@@ -523,7 +558,7 @@ fn print_usage() {
     eprintln!("              changes in `unsaved`; an untitled scene appears as `[\"\"]`.");
     eprintln!("  --project-path  the project the command targets; required for rename-node,");
     eprintln!(
-        "                  create-node, set-property, inspect-node, query-nodes, inspect-class, delete-node, connect-signal, set-group, set-unique-name, save-scene, and open-scene, rejected"
+        "                  create-node, set-property, inspect-node, query-nodes, inspect-class, delete-node, connect-signal, set-group, set-unique-name, instantiate-scene, save-scene, and open-scene, rejected"
     );
     eprintln!("                  by the plugin if it does not match the open project");
     eprintln!("  --port      override the default port ({DEFAULT_PORT})");
@@ -1388,5 +1423,130 @@ mod tests {
             error.contains("set-unique-name requires <scene-relative-path>"),
             "{error}"
         );
+    }
+
+    /// Pins the CLI's `instantiate-scene` argument parsing: `--scene-path` and
+    /// `--parent-path` are passed through as given and `--project-path` is
+    /// canonicalized the same way as the other commands, then the request is
+    /// sent to the configured `--port`. Runs `run` against a real loopback
+    /// socket that answers with an ok reply, then asserts the received wire
+    /// request, so parsing and transport are both exercised rather than just
+    /// the data types.
+    #[test]
+    fn instantiate_scene_cli_sends_scene_path_parent_path_and_canonicalized_project_path() {
+        let listener = TcpListener::bind((HOST, 0)).expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+
+        let project_dir = std::env::temp_dir();
+        let canonical = std::fs::canonicalize(&project_dir).expect("canonicalize temp dir");
+        let canonical_arg = canonical.to_str().expect("temp dir is UTF-8").to_string();
+
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept connection");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+            let mut request_line = String::new();
+            reader
+                .read_line(&mut request_line)
+                .expect("read request line");
+            let request: Request =
+                serde_json::from_str(request_line.trim_end()).expect("parse request");
+            assert_eq!(
+                request,
+                Request::InstantiateScene {
+                    scene_path: "res://scenes/S1.tscn".to_string(),
+                    parent_path: "Child/Deep".to_string(),
+                    project_path: canonical_arg,
+                }
+            );
+
+            let mut writer = stream;
+            let mut response_line =
+                serde_json::to_string(&Response::Ok { data: json!({}) }).expect("serialize reply");
+            response_line.push('\n');
+            writer
+                .write_all(response_line.as_bytes())
+                .expect("write reply");
+        });
+
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "instantiate-scene".to_string(),
+            "--scene-path".to_string(),
+            "res://scenes/S1.tscn".to_string(),
+            "--parent-path".to_string(),
+            "Child/Deep".to_string(),
+            "--project-path".to_string(),
+            project_dir.to_str().expect("temp dir is UTF-8").to_string(),
+            "--port".to_string(),
+            port.to_string(),
+        ];
+        run(&args).expect("run succeeds");
+
+        server.join().expect("server thread does not panic");
+    }
+
+    /// Pins the CLI's rejection of `instantiate-scene` without `--project-path`:
+    /// it must fail before any request is sent.
+    #[test]
+    fn instantiate_scene_without_project_path_is_rejected() {
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "instantiate-scene".to_string(),
+            "--scene-path".to_string(),
+            "res://scenes/S1.tscn".to_string(),
+            "--parent-path".to_string(),
+            ".".to_string(),
+        ];
+        let error = run(&args).expect_err("instantiate-scene without --project-path must fail");
+        assert!(
+            error.contains("instantiate-scene requires --project-path"),
+            "{error}"
+        );
+    }
+
+    /// Pins the CLI's rejection of `instantiate-scene` without `--scene-path`:
+    /// it must fail before any request is sent.
+    #[test]
+    fn instantiate_scene_without_scene_path_is_rejected() {
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "instantiate-scene".to_string(),
+            "--parent-path".to_string(),
+            ".".to_string(),
+            "--project-path".to_string(),
+            "/tmp".to_string(),
+        ];
+        let error = run(&args).expect_err("instantiate-scene without --scene-path must fail");
+        assert!(
+            error.contains("instantiate-scene requires --scene-path"),
+            "{error}"
+        );
+    }
+
+    /// Pins the CLI's rejection of `instantiate-scene` without `--parent-path`:
+    /// it must fail before any request is sent.
+    #[test]
+    fn instantiate_scene_without_parent_path_is_rejected() {
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "instantiate-scene".to_string(),
+            "--scene-path".to_string(),
+            "res://scenes/S1.tscn".to_string(),
+            "--project-path".to_string(),
+            "/tmp".to_string(),
+        ];
+        let error = run(&args).expect_err("instantiate-scene without --parent-path must fail");
+        assert!(
+            error.contains("instantiate-scene requires --parent-path"),
+            "{error}"
+        );
+    }
+
+    /// Pins that `--help` prints the usage block and returns success without
+    /// sending a request.
+    #[test]
+    fn help_flag_succeeds() {
+        let args = vec!["godot-pipeline".to_string(), "--help".to_string()];
+        run(&args).expect("--help must succeed");
     }
 }

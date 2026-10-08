@@ -53,6 +53,8 @@ One TCP connection per request, on `127.0.0.1:47821` by default:
    or
    `{"command":"set_unique_name","node_path":"...","remove":false,"project_path":"..."}`,
    or
+   `{"command":"instantiate_scene","scene_path":"...","parent_path":"...","project_path":"..."}`,
+   or
    `{"command":"save_scene","project_path":"..."}`,
    or
    `{"command":"open_scene","project_path":"...","scene_path":"...","save":false}`,
@@ -348,6 +350,55 @@ success reply is
 runs before the undo action is created, so a rejected request leaves the
 scene, the dirty flag, the undo history, and the file untouched.
 
+`instantiate_scene` adds an instance of a `PackedScene` under a node of the
+currently edited scene, through the editor's `EditorUndoRedoManager` as a
+single Undo/Redo step, without saving the scene. `scene_path` must be a
+`res://` path to a `.tscn` or `.scn` file; `parent_path` and `project_path`
+follow the same rules as `create_node`'s. `project_path` is checked first, so a
+mismatched caller can never cause a change. No `name` argument is taken: the
+instance keeps the scene root's name, made unique by the engine when a sibling
+collides, and the reply's `data.name` is the name actually applied. The reply
+is
+`{"status":"ok","data":{"node_path":"...","name":"...","scene_path":"..."}}`,
+with `node_path` the instance's path relative to the edited scene root.
+Instantiating a scene runs its `@tool` scripts' `_init` and `_enter_tree` in the
+editor, so a rejected request must not instantiate anything; every check below
+runs before the instance is created, and the only failure after instantiation
+is a null result, which needs no cleanup. A rejected request leaves the scene,
+the dirty flag, the undo history, and the file untouched, and nothing is saved
+until `save_scene` runs. The editor selection is left unchanged. The scene
+file is read from disk with the resource cache bypassed, so a scene file
+changed on disk after the editor loaded it is the version that is
+instantiated. Both accepted extensions were measured: the replay baseline
+covers `.tscn`, and a probe outside the repository created a `.scn` with
+`ResourceSaver.save`, instantiated it into a scene, saved that scene and found
+the instance again after a fresh editor reload.
+
+The scene path is rejected, in this order, when it is not a string, does not
+start with `res://`, has a `..` path segment, does not end with `.tscn` or
+`.scn`, does not exist, does not load as a `PackedScene`, or cannot be
+instantiated. It is then rejected when the scene depends, directly or through
+nested instances or scene inheritance, on a resource that does not exist,
+because the saved instance would reference a broken file. When the edited
+scene has a file path, the same walk rejects a scene whose dependency closure
+contains the edited scene path, or the edited scene path itself: the instance
+would make the edited scene contain itself, directly, through a nested
+instance, or through scene inheritance. The walk continues only into `.tscn`
+and `.scn` dependencies and guards against repeated files with a visited set.
+The walk reads every scene file in the closure, so its cost grows with the
+number of nested scene files.
+
+`parent_path` must resolve to the scene root or to a node owned by it, exactly
+as `create_node` requires. An instance added under a node inside an instanced
+sub-scene's own internal structure would appear in the live tree but silently
+disappear on save, so such a parent is rejected up front; this includes an
+inner node of an instance whose Editable Children is on. The instance root
+itself is accepted, and a local node owned by the edited scene root under an
+editable instance is accepted, but adding under an inner node of any instance
+is not supported. That last rejection is conservative: the persistence of an
+instance added under an editable inner node is not proven. A parent node with
+no owner is rejected for the same reason.
+
 `save_scene` persists the currently edited scene to the file path it already
 has, using the editor's own save path (the same one Ctrl+S uses), so every
 edit made through `rename_node`, `create_node`, `set_property`,
@@ -427,6 +478,8 @@ cargo run -- set-group Child/Deep enemies --project-path /path/to/project
 cargo run -- set-group Child/Deep enemies --remove --project-path /path/to/project
 cargo run -- set-unique-name Child/Deep --project-path /path/to/project
 cargo run -- set-unique-name Child/Deep --remove --project-path /path/to/project
+cargo run -- instantiate-scene --scene-path res://scenes/S1.tscn --parent-path . --project-path /path/to/project
+cargo run -- instantiate-scene --scene-path res://scenes/S1.tscn --parent-path Child/Deep --project-path /path/to/project
 cargo run -- save-scene --project-path /path/to/project
 cargo run -- open-scene --scene-path scenes/S1.tscn --project-path /path/to/project
 cargo run -- open-scene --scene-path res://scenes/S1.tscn --save --project-path /path/to/project
@@ -480,6 +533,11 @@ the `%` unique name of that node, or clears it with `--remove`, through the
 editor's undo/redo stack (see Protocol above), canonicalizing `--project-path`
 the same way as the other mutating commands. Nothing is saved until
 `save-scene` runs.
+`instantiate-scene --scene-path <path> --parent-path <scene-relative-path> --project-path <dir>`
+adds an instance of the scene at `<path>` under the parent node through the
+editor's undo/redo stack (see Protocol above), canonicalizing `--project-path`
+the same way as the other mutating commands. `<parent-path>` must be the scene
+root (`.`) or a node owned by it. Nothing is saved until `save-scene` runs.
 `save-scene --project-path <dir>` persists the currently edited scene to the
 file path it already has (see Protocol above), canonicalizing `--project-path`
 the same way as the other mutating commands. The reply's `data.path` is the
@@ -503,7 +561,7 @@ cargo clippy -- -D warnings
 
 `cargo test` includes protocol tests that open a real loopback socket and
 round-trip `Request`/`Response` pairs through the exact wire format, not
-just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `inspect_node`, `query_nodes`, `inspect_class`, `delete_node`, `connect_signal`, `set_group`, `set_unique_name`, `save_scene`, and `open_scene` wire
+just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `inspect_node`, `query_nodes`, `inspect_class`, `delete_node`, `connect_signal`, `set_group`, `set_unique_name`, `instantiate_scene`, `save_scene`, and `open_scene` wire
 shapes and the CLI's `set-property` value parsing.
 
 Live verification against a running Godot editor (status, scene tree,

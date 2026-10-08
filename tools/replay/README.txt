@@ -1,9 +1,11 @@
-Golden replay harness for the Godot Pipeline editor plugin (630 rows:
+Golden replay harness for the Godot Pipeline editor plugin (729 rows:
 1-148 unchanged, 149-200 cover inspect-class and open-scene, 201-262 cover
 connect-signal, 263-362 cover set-group, 363-413 cover set-unique-name,
 414-477 cover the rename unique-flag fix, 478-530 cover the rename option C
 cases, 531-619 cover the inherited-rename rejection, 620-630 cover the fresh
-reloads of the accepted inherited-rename cases).
+reloads of the accepted inherited-rename cases, 631-636 cover the
+instantiate-scene no-scene guards, 637-719 cover instantiate-scene accepted and
+rejected cases, and 720-729 cover the fresh reloads of the accepted instances).
 
 HOW TO RUN
   GODOT=/path/to/Godot python3 replay.py --plugin-dir DIR --port PORT --out FILE
@@ -16,17 +18,18 @@ HOW TO RUN
   Prints the first differing request with both replies, or IDENTICAL.
   Exit 0 identical, 1 different.
 
-  Each run takes about two minutes: one --import plus eighteen editor launches
+  Each run takes about two minutes: one --import plus twenty-one editor launches
   (in launch order A with no scene, E with no scene, G with no scene, J with no
-  scene, C with no scene, B with res://main.tscn, D and F with
+  scene, T with no scene, C with no scene, B with res://main.tscn, D and F with
   res://connect.tscn, H and I with res://group.tscn, K and L with
   res://unique.tscn, N, O, P and Q with the rename_*.tscn fixtures, R with
-  res://inherit_i3.tscn and S with res://inherit_i1.tscn), 630
-  requests. The plugin has fourteen commands, a different count. Rows are
-  stored A, B, C, E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S: a fresh editor
-  restores the previous session's open scenes, so the no-scene sessions (A, E,
-  G, J, and C before it opens anything) must run before any scene session.
-  Appending the new sessions keeps rows 1-413 byte-identical.
+  res://inherit_i3.tscn, S with res://inherit_i1.tscn, and U and V with
+  res://inst_base.tscn), 729
+  requests. The plugin has fifteen commands, a different count. Rows are
+  stored A, B, C, E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, T, U, V: a fresh
+  editor restores the previous session's open scenes, so the no-scene sessions
+  (A, E, G, J, T, and C before it opens anything) must run before any scene
+  session. Appending the new sessions keeps rows 1-630 byte-identical.
 
 WHAT IT DOES
   Session A (requests 1-23, no edited scene): status ok with scene_path null;
@@ -191,24 +194,55 @@ WHAT IT DOES
   local node under the editable instance, the renamed local node under the
   nested instance), and reopens the unique inherited scene to read name A with
   the flag true (the rejected rename changed nothing).
+  Session T (requests 631-636, no edited scene, runs before session C):
+  instantiate-scene with no edited scene, a wrong project, missing fields, and a
+  non-string scene_path and parent_path; each is a structured error before any
+  scene is resolved.
+  Session U (requests 637-719, inst_base.tscn open): status, a file sha256 of
+  inst_base.tscn, eight accepted instantiations (a plain scene, S under the
+  root, S under the root again so a sibling collision applies R2, S under an
+  instance root with Editable Children off and on, S under a local node owned
+  by the root inside an editable instance, a scene that itself instances S, and
+  a Control-root scene under a plain Node), then seventeen rejections each
+  bracketed by identical scene_tree snapshots (an inner node of a non-editable
+  instance and of an editable instance, a missing parent, four bad parent-path
+  shapes, a scene path that is not res://, has "..", has the wrong extension is
+  a .gd file, is missing, fails to parse, and has a missing dependency, a self
+  cycle, a wrong project, and a wrong project with other invalid fields where
+  the project guard answers first), a second file sha256 equal to the first, a
+  file_not_contains that no added instance is on disk yet, save_scene, and
+  file_contains checks that the accepted instances were written. It then opens
+  inst_plain.tscn for the self-cycle rejection and inst_e.tscn for the
+  transitive cycle (inst_t.tscn instances the edited scene) and the inheritance
+  cycle (inst_derived_e.tscn inherits the edited scene), each bracketed by an
+  equal before/after hash of its own fixture.
+  Session V (requests 720-729, a fresh editor on the saved inst_base.tscn):
+  status, scene_tree and query_nodes, then inspect_node of the applied instance
+  nodes (R2, PlainRoot, SubOff/R, SubOn/LocalUnderOn/R, OfSubRoot, CtlRoot),
+  and a file_contains that the R2 instance row is on disk. This proves the
+  accepted instances survive a save and a fresh reload.
 
 NORMALISATION
   The only one: the throwaway project's absolute path is replaced with
   <PROJECT> in stored requests and replies. Replies that carry it are the
   "project path mismatch" errors (10, 46, 54, 61, 70, 131, 141, 146, 158,
-  159, 203, 244, 365, 400). Reply text is otherwise verbatim; no sorting, no
-  rounding.
+  159, 203, 244, 265, 323, 365, 400, 606, 633, 693, 696). Reply text is
+  otherwise verbatim; no sorting, no rounding.
 
 DETERMINISM PROOF
-  The inherited-rename rows were recorded twice; the two full runs are
-  byte-identical (compare.py IDENTICAL, cmp clean, 630 pairs). Rows 1-530 are
-  byte-identical to the committed baseline (git show HEAD) except row 460,
-  whose inherited inner rename now replies with the rejection; rows 1-362
-  remain byte-identical to the main baseline. Rows 363-530 are unchanged from
-  the prior rename-flag baseline except row 460. Rows 531-619 are the new
+  The instantiate-scene rows were recorded twice; the two full runs are
+  byte-identical (compare.py IDENTICAL, cmp clean, 729 pairs). Rows 1-630 are
+  byte-identical to the 630-row baseline that preceded this change (git show
+  HEAD) and to the baseline on main. Rows 631-636 are the instantiate-scene
+  no-scene guards, 637-719 the accepted and rejected cases, and 720-729 the
+  fresh reloads of the accepted instances.
+  The inherited-rename stretch was recorded twice and was byte-identical (630
+  pairs). At that recording, rows 1-530 matched the then-current baseline
+  except row 460, whose inherited inner rename now replies with the rejection;
+  rows 1-362 matched the main baseline. Rows 363-530 were unchanged from the
+  prior rename-flag baseline except row 460. Rows 531-619 are the
   inherited-rename cases, and rows 620-630 are the fresh reloads of the
-  accepted ones; rows 1-413 also remain byte-identical to the
-  set-unique-name baseline, whose
+  accepted ones; rows 1-413 also matched the set-unique-name baseline, whose
   whole file sha256 was
   0d3de504f4313386f4f58525c2fc139dfa2604781d5a5ad30b2efb9f692312e1. Rows
   1-362 remain byte-identical to the set-group baseline, whose whole file
@@ -327,6 +361,26 @@ COVERAGE (request numbers above)
   editable instance #625-626, renamed local under the nested instance
   #627-628, rejected unique inherited scene unchanged #629-630 (name A, flag
   true).
+  instantiate-scene #631-729: T #631-636 (status; no edited scene; wrong
+  project first; missing fields; non-string scene_path; non-string parent_path);
+  U #637-719: status #637, unchanged-file hash #638, accepted plain #639, S
+  applied R #640 and R2 after a sibling collision #641, S under an instance root
+  with Editable Children off #642 and on #643, S under a local node in an
+  editable instance #644, a scene that instances S #645, a Control root under a
+  plain Node #646; rejections with identical scene_tree pairs (inner node of a
+  non-editable instance #647-649, inner node of an editable instance #650-652,
+  missing parent #653-655, empty parent #656-658, absolute parent #659-661,
+  colon parent #662-664, ".." parent #665-667, not res:// #668-670, ".." scene
+  #671-673, wrong extension #674-676, .gd scene #677-679, missing scene
+  #680-682, unparsable scene #683-685, missing dependency #686-688, self cycle
+  #689-691, wrong project #692-694, wrong project with invalid fields
+  #695-697); unchanged-file hash #698; no instance on disk yet #699; save_scene
+  #700; written instances #701-706; self cycle on inst_plain #707-712 (hash,
+  open, scene_tree, reject, scene_tree, hash); transitive and inheritance
+  cycles on inst_e #713-719 (hash, open, scene_tree, reject, reject, scene_tree,
+  hash); V #720-729: status #720, scene_tree #721, query_nodes #722,
+  inspect_node of R2 #723, PlainRoot #724, SubOff/R #725, SubOn/LocalUnderOn/R
+  #726, OfSubRoot #727, CtlRoot #728, and the R2 instance row on disk #729.
   Not covered, with reason:
   - "request exceeds the maximum size" (>8 MiB without newline): reaching
     it needs an 8 MB write, and the reported byte count varies with TCP
@@ -344,7 +398,13 @@ COVERAGE (request numbers above)
   - an absolute path through /tmp (symlink to /private/tmp on macOS):
     depends on the temp directory, so it cannot be a fixed request.
   - an untitled dirty scene: making one needs editor-side scripting
-    (close all scenes, then set the edited scene), not a socket request.
+    (close all scenes, then set the edited scene), not a socket request. The
+    instantiate-scene cycle check compares the edited scene path, which such a
+    scene does not have; the missing-dependency walk still runs.
+  - a parent node with no owner that is not the scene root: a scene file
+    declares an owner for every node, and an unowned child can only be made by
+    editor-side scripting. The rejection is proved by the shared parent helper
+    that create-node and instantiate-scene call.
   - remove of a session (runtime) group or an engine-internal group such as
     _root_canvas<digits>: the socket cannot create a runtime group, and the
     engine-internal name carries a generated object id that is not
@@ -366,7 +426,7 @@ NOTES
   one-action Undo/Redo proof lives in the Code4Me task result, from a separate
   isolated-editor probe that sends a real connect-signal request through the
   plugin and then triggers the editor's Undo/Redo through the safe route.
-  The baseline is only valid while the plugin's replies for these 630 requests
+  The baseline is only valid while the plugin's replies for these 729 requests
   are supposed to stay the same. A change that adds or alters a command's
   behavior on purpose needs a new baseline, recorded from the last trusted
   commit, and a fresh determinism check (record three times, compare byte for
