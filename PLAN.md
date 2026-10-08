@@ -8,7 +8,7 @@ Godot Pipeline is a Rust CLI plus a GDScript EditorPlugin for stock Godot. An ag
 - `set-property` accepts 17 value types, ten Packed array types, and typed `Array[T]`. It rejects untyped arrays on purpose.
 - The plugin assembles each request across editor ticks, with an 8 MiB cap and a 5 second idle timeout.
 - Current version is 0.5.0. Phase 1 (read and navigate) is complete.
-- The golden replay harness in `tools/replay/` covers all fourteen commands (530 baseline rows).
+- The golden replay harness in `tools/replay/` covers all fourteen commands (630 baseline rows).
 - The add-on is a prototype and is not ready for distribution.
 
 ## How this plan was made, and how far to trust it

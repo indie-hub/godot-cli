@@ -1,8 +1,9 @@
-Golden replay harness for the Godot Pipeline editor plugin (530 rows:
+Golden replay harness for the Godot Pipeline editor plugin (630 rows:
 1-148 unchanged, 149-200 cover inspect-class and open-scene, 201-262 cover
 connect-signal, 263-362 cover set-group, 363-413 cover set-unique-name,
 414-477 cover the rename unique-flag fix, 478-530 cover the rename option C
-cases).
+cases, 531-619 cover the inherited-rename rejection, 620-630 cover the fresh
+reloads of the accepted inherited-rename cases).
 
 HOW TO RUN
   GODOT=/path/to/Godot python3 replay.py --plugin-dir DIR --port PORT --out FILE
@@ -15,13 +16,14 @@ HOW TO RUN
   Prints the first differing request with both replies, or IDENTICAL.
   Exit 0 identical, 1 different.
 
-  Each run takes about two minutes: one --import plus sixteen editor launches
+  Each run takes about two minutes: one --import plus eighteen editor launches
   (in launch order A with no scene, E with no scene, G with no scene, J with no
   scene, C with no scene, B with res://main.tscn, D and F with
   res://connect.tscn, H and I with res://group.tscn, K and L with
-  res://unique.tscn, N, O, P and Q with the rename_*.tscn fixtures), 530
+  res://unique.tscn, N, O, P and Q with the rename_*.tscn fixtures, R with
+  res://inherit_i3.tscn and S with res://inherit_i1.tscn), 630
   requests. The plugin has fourteen commands, a different count. Rows are
-  stored A, B, C, E, D, F, G, H, I, J, K, L, N, O, P, Q: a fresh editor
+  stored A, B, C, E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S: a fresh editor
   restores the previous session's open scenes, so the no-scene sessions (A, E,
   G, J, and C before it opens anything) must run before any scene session.
   Appending the new sessions keeps rows 1-413 byte-identical.
@@ -145,17 +147,19 @@ WHAT IT DOES
   (rename_r1: a unique claimant in the owner scope; rename_r6: a sibling N
   forces the applied name N2, which Q/N2 holds; rename_r7: a claimant in the
   instance scope; rename_r9: an instance-root node renamed onto a claimed
-  name). Six accepted renames each reply ok and are saved: rename_r2 (target
+  name). Five non-bracketed renames reply ok and are saved: rename_r2 (target
   not unique), rename_r3 (unique, no clash), rename_r4 and rename_r5 (a
-  sibling N forces the applied name N2, which no unique node holds),
-  rename_r8 (the claimant is only in the outer scope), rename_r10 (the scene
-  root, which has no owner).
+  sibling N forces the applied name N2, which no unique node holds), and
+  rename_r10 (the scene root, which has no owner). rename_r8 (claimed only
+  in the outer scope, so the unique-name check passes) is in this list too,
+  but now replies with the inherited-rename rejection before the undo action,
+  so its save_scene writes the untouched fixture.
   Session O (requests 465-477, a fresh editor): opens each saved accepted
   scene and inspects the applied node: P/N in rename_r2 (flag false) and
   rename_r3 (flag true), P/N2 in rename_r4 and rename_r5 (flag true), and the
-  root renamed to N in rename_r10. The inner rename in rename_r8 is read at
-  its original path Sub/P/T (flag true): the engine did not persist that
-  rename for this action.
+  root renamed to N in rename_r10. The rejected rename_r8 scene is read at
+  Sub/P/T (name T, flag true): the inherited rename was rejected, so nothing
+  was applied and the file row and the inspected state are unchanged.
   Session P (requests 478-519, the option C rename scenes in one editor):
   status, then four rejections each bracketed by identical scene_tree and
   inspect_node snapshots with the file sha256 equal before and after, and three
@@ -170,6 +174,23 @@ WHAT IT DOES
   and reads P/N, P/N2 and P/N02 with the flag true, and opens the two rejected
   scenes and reads P/Old with the flag true (the rejections left them
   unchanged).
+  Session R (requests 531-619, inherit_i3.tscn then one inherit_i*.tscn scene
+  per case): status, then nine rejections each bracketed by identical
+  scene_tree and inspect_node snapshots with equal before/after file hashes
+  (an inherited child A with Editable Children on and off, an inherited
+  grandchild B, the nested instance root and the nested inner A, a rename back
+  to the node's own name, the same rename twice in a row, and an inherited
+  node that holds a unique name), then a wrong-project rename on an inherited
+  target whose project guard replies first, then four accepted renames each
+  followed by
+  save_scene: two instance-root renames (Editable Children off and on), an
+  outer-owned local node under an editable instance, and an outer-owned local
+  node under a nested editable instance.
+  Session S (requests 620-630, a fresh editor): opens each saved accepted scene
+  and reads the renamed node (SubX in both instance-root scenes, the renamed
+  local node under the editable instance, the renamed local node under the
+  nested instance), and reopens the unique inherited scene to read name A with
+  the flag true (the rejected rename changed nothing).
 
 NORMALISATION
   The only one: the throwaway project's absolute path is replaced with
@@ -179,14 +200,15 @@ NORMALISATION
   rounding.
 
 DETERMINISM PROOF
-  The option C rename rows were recorded twice; the two full runs are
-  byte-identical (compare.py IDENTICAL, cmp clean, 530 pairs). Rows 1-413 are
-  byte-identical to the committed baseline (git show HEAD) and rows 1-362 to
-  the main baseline. Rows 414-477 are this branch's own uncommitted rename
-  rows; they are byte-identical to the pre-repair baseline except row 427,
-  whose Case 2 rejection message gained the clause that the requested name is
-  held by a sibling. Rows 478-530 are the option C cases added by this repair.
-  Rows 1-413 also remain byte-identical to the set-unique-name baseline, whose
+  The inherited-rename rows were recorded twice; the two full runs are
+  byte-identical (compare.py IDENTICAL, cmp clean, 630 pairs). Rows 1-530 are
+  byte-identical to the committed baseline (git show HEAD) except row 460,
+  whose inherited inner rename now replies with the rejection; rows 1-362
+  remain byte-identical to the main baseline. Rows 363-530 are unchanged from
+  the prior rename-flag baseline except row 460. Rows 531-619 are the new
+  inherited-rename cases, and rows 620-630 are the fresh reloads of the
+  accepted ones; rows 1-413 also remain byte-identical to the
+  set-unique-name baseline, whose
   whole file sha256 was
   0d3de504f4313386f4f58525c2fc139dfa2604781d5a5ad30b2efb9f692312e1. Rows
   1-362 remain byte-identical to the set-group baseline, whose whole file
@@ -275,8 +297,10 @@ COVERAGE (request numbers above)
   open_scene plus the rename. Rejections with identical scene_tree and
   inspect_node pairs and equal before/after file hashes (r1 #415-422, r6
   #423-430, r7 #431-438, r9 #439-446); accepted renames and save_scene (r2
-  #447-449, r3 #450-452, r4 #453-455, r5 #456-458, r8 #459-461, r10
-  #462-464); O #465-477: status #465, then the applied node in each saved
+  #447-449, r3 #450-452, r4 #453-455, r5 #456-458, r10
+  #462-464); r8 #459-461 now replies with the inherited-rename rejection,
+  so its save_scene writes the unchanged scene; O #465-477:
+  status #465, then the applied node in each saved
   scene (r2 #466-467, r3 #468-469, r4 #470-471, r5 #472-473, r8 #474-475, r10
   #476-477).
   rename option C #478-530: P #478-519: status #478; rejected Case 1 #479-486,
@@ -289,6 +313,20 @@ COVERAGE (request numbers above)
   rename_stem_accept #523-524 and rename_pad_accept #525-526, and the
   unchanged rejected scenes rename_case1_reject #527-528 and
   rename_conservative #529-530.
+  inherited-rename #531-630: R #531-619: status #531; rejected inherited child
+  A editable on #532-539 and off #548-555, inherited grandchild B #540-547,
+  nested instance root #556-563, nested inner A #564-571, rename to the node's
+  own name #572-579, the same rename twice in a row #580-587 and #588-595,
+  inherited unique node #596-603, each with identical scene_tree and
+  inspect_node pairs and an equal before/after file hash; wrong-project rename
+  on an inherited target #604-607 (project guard answers first); accepted
+  instance-root rename editable off #608-610 and on #611-613, outer-owned
+  local under an editable instance #614-616, outer-owned local under a nested
+  editable instance #617-619; S #620-630: status #620, renamed instance root
+  after reload editable off #621-622 and on #623-624, renamed local under the
+  editable instance #625-626, renamed local under the nested instance
+  #627-628, rejected unique inherited scene unchanged #629-630 (name A, flag
+  true).
   Not covered, with reason:
   - "request exceeds the maximum size" (>8 MiB without newline): reaching
     it needs an 8 MB write, and the reported byte count varies with TCP
@@ -328,7 +366,7 @@ NOTES
   one-action Undo/Redo proof lives in the Code4Me task result, from a separate
   isolated-editor probe that sends a real connect-signal request through the
   plugin and then triggers the editor's Undo/Redo through the safe route.
-  The baseline is only valid while the plugin's replies for these 530 requests
+  The baseline is only valid while the plugin's replies for these 630 requests
   are supposed to stay the same. A change that adds or alters a command's
   behavior on purpose needs a new baseline, recorded from the last trusted
   commit, and a fresh determinism check (record three times, compare byte for
