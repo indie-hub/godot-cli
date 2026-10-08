@@ -120,6 +120,19 @@ pub enum Request {
         remove: bool,
         project_path: String,
     },
+    /// Sets or clears `Node.unique_name_in_owner` (the `%` name) on a node in
+    /// the currently edited scene through the editor's undo/redo manager, as
+    /// one Undo/Redo step, without saving. `remove` false (the default) sets
+    /// the flag on the node; true clears it. The scene root, a node inside a
+    /// non-editable instance, and a request that would do nothing or collide
+    /// with another unique name in the same owner scope are rejected before
+    /// any change. `project_path` follows the same rules as
+    /// [`Request::RenameNode`].
+    SetUniqueName {
+        node_path: String,
+        remove: bool,
+        project_path: String,
+    },
     /// Persists the currently edited scene to the file path it already has,
     /// so edits made through the other mutating commands survive a reload.
     /// `project_path` follows the same rules as [`Request::RenameNode`].
@@ -504,6 +517,43 @@ mod tests {
         assert_eq!(
             json,
             r#"{"command":"set_group","node_path":".","group":"heroes","remove":true,"project_path":"/tmp/project"}"#
+        );
+    }
+
+    /// Pins the exact wire shape the GDScript plugin matches on
+    /// (`"command":"set_unique_name"` plus the three snake_case fields, with
+    /// `remove` as a JSON bool).
+    #[test]
+    fn set_unique_name_request_serializes_to_the_documented_wire_shape() {
+        let request = Request::SetUniqueName {
+            node_path: "Child/Deep".to_string(),
+            remove: false,
+            project_path: "/tmp/project".to_string(),
+        };
+
+        let json = serde_json::to_string(&request).expect("serialize request");
+
+        assert_eq!(
+            json,
+            r#"{"command":"set_unique_name","node_path":"Child/Deep","remove":false,"project_path":"/tmp/project"}"#
+        );
+    }
+
+    /// Pins that `--remove` reaches the wire as the real JSON bool true, not
+    /// null or absent.
+    #[test]
+    fn set_unique_name_with_remove_serializes_remove_as_true() {
+        let request = Request::SetUniqueName {
+            node_path: "Child".to_string(),
+            remove: true,
+            project_path: "/tmp/project".to_string(),
+        };
+
+        let json = serde_json::to_string(&request).expect("serialize request");
+
+        assert_eq!(
+            json,
+            r#"{"command":"set_unique_name","node_path":"Child","remove":true,"project_path":"/tmp/project"}"#
         );
     }
 
