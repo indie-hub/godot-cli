@@ -517,6 +517,100 @@ unique_name_in_owner = true
 unique_name_in_owner = true
 """
 
+# Inherited-rename fixtures. One sub-scene S with root R, child A and
+# grandchild B; a unique variant for i9; a sub-scene T that instances S for the
+# nested case. Each outer scene is a separate file so a saved accepted rename
+# never changes a later case's fixture. Sessions A-Q never reference them.
+INHERIT_SUB_TSCN = """[gd_scene format=3 uid="uid://gp030ihsub1"]
+[node name="R" type="Node"]
+[node name="A" type="Node" parent="."]
+[node name="B" type="Node" parent="A"]
+"""
+
+INHERIT_SUB_U_TSCN = """[gd_scene format=3 uid="uid://gp030ihsub2"]
+[node name="R" type="Node"]
+[node name="A" type="Node" parent="."]
+unique_name_in_owner = true
+[node name="B" type="Node" parent="A"]
+"""
+
+INHERIT_T_TSCN = """[gd_scene format=3 uid="uid://gp030iht1"]
+[ext_resource type="PackedScene" path="res://inherit_sub.tscn" id="1"]
+[node name="TRoot" type="Node"]
+[node name="S" parent="." instance=ExtResource("1")]
+"""
+
+# i1/i6: outer scene with the S instance, Editable Children off.
+# (The per-case files below repeat the same shapes with per-case uids.)
+
+# One editable-instance outer scene per replay case, each with its own uid so
+# a saved accepted rename never changes a later case's fixture bytes.
+INHERIT_I1_TSCN = """[gd_scene format=3 uid="uid://gp030ihi01"]
+[ext_resource type="PackedScene" path="res://inherit_sub.tscn" id="1"]
+[node name="Root" type="Node"]
+[node name="Sub" parent="." instance=ExtResource("1")]
+"""
+
+INHERIT_I2_TSCN = """[gd_scene format=3 uid="uid://gp030ihi02"]
+[ext_resource type="PackedScene" path="res://inherit_sub.tscn" id="1"]
+[node name="Root" type="Node"]
+[node name="Sub" parent="." instance=ExtResource("1")]
+[editable path="Sub"]
+"""
+
+INHERIT_I3_TSCN = """[gd_scene format=3 uid="uid://gp030ihi03"]
+[ext_resource type="PackedScene" path="res://inherit_sub.tscn" id="1"]
+[node name="Root" type="Node"]
+[node name="Sub" parent="." instance=ExtResource("1")]
+[editable path="Sub"]
+"""
+
+INHERIT_I4_TSCN = """[gd_scene format=3 uid="uid://gp030ihi04"]
+[ext_resource type="PackedScene" path="res://inherit_sub.tscn" id="1"]
+[node name="Root" type="Node"]
+[node name="Sub" parent="." instance=ExtResource("1")]
+[editable path="Sub"]
+"""
+
+INHERIT_I5_TSCN = """[gd_scene format=3 uid="uid://gp030ihi05"]
+[ext_resource type="PackedScene" path="res://inherit_sub.tscn" id="1"]
+[node name="Root" type="Node"]
+[node name="Sub" parent="." instance=ExtResource("1")]
+[editable path="Sub"]
+[node name="L" type="Node" parent="Sub/A"]
+owner="."
+"""
+
+INHERIT_I6_TSCN = """[gd_scene format=3 uid="uid://gp030ihi06"]
+[ext_resource type="PackedScene" path="res://inherit_sub.tscn" id="1"]
+[node name="Root" type="Node"]
+[node name="Sub" parent="." instance=ExtResource("1")]
+"""
+
+INHERIT_I7_TSCN = """[gd_scene format=3 uid="uid://gp030ihi07"]
+[ext_resource type="PackedScene" path="res://inherit_t.tscn" id="1"]
+[node name="Root" type="Node"]
+[node name="TInst" parent="." instance=ExtResource("1")]
+[editable path="TInst"]
+[editable path="TInst/S"]
+[node name="L2" type="Node" parent="TInst/S/A"]
+owner="."
+"""
+
+INHERIT_I8_TSCN = """[gd_scene format=3 uid="uid://gp030ihi08"]
+[ext_resource type="PackedScene" path="res://inherit_sub.tscn" id="1"]
+[node name="Root" type="Node"]
+[node name="Sub" parent="." instance=ExtResource("1")]
+[editable path="Sub"]
+"""
+
+INHERIT_I9_TSCN = """[gd_scene format=3 uid="uid://gp030ihi09"]
+[ext_resource type="PackedScene" path="res://inherit_sub_u.tscn" id="1"]
+[node name="Root" type="Node"]
+[node name="Sub" parent="." instance=ExtResource("1")]
+[editable path="Sub"]
+"""
+
 # Each entry is (kind, text) where kind is "line" (newline-terminated, one
 # reply expected at once) or "idle" (sent without newline; the reply arrives
 # after the plugin's 5s idle timeout). "<PROJ>" is replaced with the
@@ -1105,6 +1199,67 @@ def build_q():
     return out
 
 
+def build_r():
+    # Session R: the inherited-rename cases, one scene per case. Rejections
+    # (an inherited node inside an editable or non-editable
+    # instance) are bracketed by identical scene_tree and inspect_node
+    # snapshots with an equal before and after file hash; the accepted outer
+    # renames (instance root, outer-owned local node) are saved.
+    out = [("line", '{"command":"status"}')]
+    rejections = [
+        ("inherit_i3.tscn", "Sub/A", "ANew"),        # inherited child, editable on
+        ("inherit_i4.tscn", "Sub/A/B", "BNew"),      # inherited grandchild, editable on
+        ("inherit_i6.tscn", "Sub/A", "AOff"),        # inherited child, editable off
+        ("inherit_i7.tscn", "TInst/S", "SNest"),     # nested instance root
+        ("inherit_i7.tscn", "TInst/S/A", "ANest"),   # nested inner A
+        ("inherit_i8.tscn", "Sub/A", "A"),           # rename back to its own name
+        ("inherit_i8.tscn", "Sub/A", "X1"),          # twice in a row, first
+        ("inherit_i8.tscn", "Sub/A", "X2"),          # twice in a row, second
+        ("inherit_i9.tscn", "Sub/A", "AZed"),        # inherited unique node
+    ]
+    for scene, node, requested in rejections:
+        out.append(("file_sha256", scene))
+        out.append(os_("res://%s" % scene))
+        out.append(("line", '{"command":"scene_tree"}'))
+        out.append(ins(node))
+        out.append(rn(node, requested))
+        out.append(("line", '{"command":"scene_tree"}'))
+        out.append(ins(node))
+        out.append(("file_sha256", scene))
+    # Wrong project on an inherited target: the project guard answers first.
+    out.append(("file_sha256", "inherit_i3.tscn"))
+    out.append(os_("res://inherit_i3.tscn"))
+    out.append(rn("Sub/A", "XWrong", project="/no/replay-mismatch"))
+    out.append(("file_sha256", "inherit_i3.tscn"))
+    accepted = [
+        ("inherit_i1.tscn", "Sub", "SubX"),          # instance root, editable off
+        ("inherit_i2.tscn", "Sub", "SubX"),          # instance root, editable on
+        ("inherit_i5.tscn", "Sub/A/L", "LNew"),      # outer-owned local node
+        ("inherit_i7.tscn", "TInst/S/A/L2", "L2Nest"),  # outer-owned local in nested
+    ]
+    for scene, node, requested in accepted:
+        out.append(os_("res://%s" % scene))
+        out.append(rn(node, requested))
+        out.append(("line", '{"command":"save_scene","project_path":"<PROJ>"}'))
+    return out
+
+
+def build_s():
+    # Session S: a fresh editor on each saved accepted scene, to read back the
+    # applied name after reload. The rejected scenes are unchanged (covered by
+    # the identical snapshots in session R); the unique inherited node in i9 is
+    # read to confirm its name and flag are untouched.
+    out = [("line", '{"command":"status"}')]
+    for scene, node in [("inherit_i1.tscn", "SubX"),
+                        ("inherit_i2.tscn", "SubX"),
+                        ("inherit_i5.tscn", "Sub/A/LNew"),
+                        ("inherit_i7.tscn", "TInst/S/A/L2Nest"),
+                        ("inherit_i9.tscn", "Sub/A")]:
+        out.append(os_("res://%s" % scene))
+        out.append(ins(node))
+    return out
+
+
 def send_one(port, text, newline, timeout):
     s = socket.create_connection(("127.0.0.1", port), timeout=10)
     try:
@@ -1270,6 +1425,18 @@ def main():
             ("rename_pad_reject.tscn", RENAME_PAD_REJECT_TSCN),
             ("rename_pad_accept.tscn", RENAME_PAD_ACCEPT_TSCN),
             ("rename_conservative.tscn", RENAME_CONSERVATIVE_TSCN),
+            ("inherit_sub.tscn", INHERIT_SUB_TSCN),
+            ("inherit_sub_u.tscn", INHERIT_SUB_U_TSCN),
+            ("inherit_t.tscn", INHERIT_T_TSCN),
+            ("inherit_i1.tscn", INHERIT_I1_TSCN),
+            ("inherit_i2.tscn", INHERIT_I2_TSCN),
+            ("inherit_i3.tscn", INHERIT_I3_TSCN),
+            ("inherit_i4.tscn", INHERIT_I4_TSCN),
+            ("inherit_i5.tscn", INHERIT_I5_TSCN),
+            ("inherit_i6.tscn", INHERIT_I6_TSCN),
+            ("inherit_i7.tscn", INHERIT_I7_TSCN),
+            ("inherit_i8.tscn", INHERIT_I8_TSCN),
+            ("inherit_i9.tscn", INHERIT_I9_TSCN),
         ]:
             with open(os.path.join(proj, name), "w") as f:
                 f.write(text)
@@ -1310,9 +1477,11 @@ def main():
         rows_o = run_session(a.port, proj, "res://rename_r2.tscn", build_o(), "res://rename_r2.tscn")
         rows_p = run_session(a.port, proj, "res://rename_case1_reject.tscn", build_p(), "res://rename_case1_reject.tscn")
         rows_q = run_session(a.port, proj, "res://rename_case1_accept.tscn", build_q(), "res://rename_case1_accept.tscn")
+        rows_r = run_session(a.port, proj, "res://inherit_i3.tscn", build_r(), "res://inherit_i3.tscn")
+        rows_s = run_session(a.port, proj, "res://inherit_i1.tscn", build_s(), "res://inherit_i1.tscn")
         rows = (rows_a + rows_b + rows_c + rows_e + rows_d + rows_f + rows_g
                 + rows_h + rows_i + rows_j + rows_k + rows_l + rows_n + rows_o
-                + rows_p + rows_q)
+                + rows_p + rows_q + rows_r + rows_s)
         with open(a.out, "w") as f:
             for req, rep in rows:
                 f.write(json.dumps({"request": req, "reply": rep}, separators=(",", ":")) + "\n")

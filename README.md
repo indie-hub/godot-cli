@@ -147,11 +147,21 @@ its trailing digits followed by digits (for example a requested `N01` next to a
 sibling `N01` is tested against every `N` followed by digits). That second
 case is deliberately conservative: it can reject a rename the engine would
 allow (a sibling holds `N` and a unique `N7` exists, while the engine would
-apply `N2`). A target without a unique flag, or one whose owner is null (the
-scene root), is never rejected. A rename of an instance-owned (inherited) node
-inside an editable instance is still accepted and can revert on a reload; an
-outer-owned local node under an editable instance renames and persists. The
-check reads the scene as it is before the rename. A script, a setter or a
+apply `N2`). The unique-name check does not apply to a target without a
+unique flag or to one whose owner is null (the scene root). A second check
+then rejects a target that is neither the scene root nor owned by the edited
+scene root: the engine accepts its rename in the open editor, but the name is
+not kept after a save and a fresh reload, so such a rename would not persist.
+The rejected targets are instance-owned descendants of an instanced
+sub-scene, the roots of nested instances, and nodes with no owner. Instance
+roots owned by the edited scene, local nodes under an editable instance, and
+plain nodes rename and persist. The unique-name check runs first: an
+inherited unique node renamed onto a claimed name gets the unique-name
+collision message. When the edited scene itself derives from a base scene,
+renaming a base-scene child (whose owner is the edited root) is accepted and,
+after a save and reload, shows the new name as a new local node and the
+original child again. That behavior is outside this check and unchanged.
+The check reads the scene as it is before the rename. A script, a setter or a
 renamed-signal observer can change the node's name during the real rename to
 a different name that another unique node in the same owner scope holds. The
 engine then clears the flag of the renamed node and the reply is still ok.
