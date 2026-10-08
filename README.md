@@ -134,7 +134,29 @@ match the running editor's own project. `new_name` is rejected up front if
 it is empty or contains a character Godot reserves for node names
 (`. : @ / " %`); the reply's `data.name` is the name actually applied, which
 can differ from `data.requested_name` if it collided with a sibling and
-Godot uniquified it.
+Godot uniquified it. When the target holds a unique name
+(`unique_name_in_owner`) and the rename would make the engine clear that flag,
+the rename is rejected before the undo action, naming the claimant. The check
+only reads the scene; it never renames the live node, so a rejected request
+runs no callback and changes nothing; an accepted request runs the engine's
+own rename callbacks. When no sibling of the target holds the requested name
+the engine applies it exactly, and that exact name is tested.
+When a sibling holds it the engine numbers it, and the check then rejects a
+unique node in the same owner scope whose name is the requested name without
+its trailing digits followed by digits (for example a requested `N01` next to a
+sibling `N01` is tested against every `N` followed by digits). That second
+case is deliberately conservative: it can reject a rename the engine would
+allow (a sibling holds `N` and a unique `N7` exists, while the engine would
+apply `N2`). A target without a unique flag, or one whose owner is null (the
+scene root), is never rejected. A rename of an instance-owned (inherited) node
+inside an editable instance is still accepted and can revert on a reload; an
+outer-owned local node under an editable instance renames and persists. The
+check reads the scene as it is before the rename. A script, a setter or a
+renamed-signal observer can change the node's name during the real rename to
+a different name that another unique node in the same owner scope holds. The
+engine then clears the flag of the renamed node and the reply is still ok.
+No check made before the rename can detect this. The reply reports the
+applied name in `data.name` but not the flag; `inspect-node` reads the flag.
 
 `create_node` creates a new child under a node in the currently edited
 scene, also through the editor's `EditorUndoRedoManager` as a single

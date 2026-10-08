@@ -1,6 +1,8 @@
-Golden replay harness for the Godot Pipeline editor plugin (413 rows:
+Golden replay harness for the Godot Pipeline editor plugin (530 rows:
 1-148 unchanged, 149-200 cover inspect-class and open-scene, 201-262 cover
-connect-signal, 263-362 cover set-group, 363-413 cover set-unique-name).
+connect-signal, 263-362 cover set-group, 363-413 cover set-unique-name,
+414-477 cover the rename unique-flag fix, 478-530 cover the rename option C
+cases).
 
 HOW TO RUN
   GODOT=/path/to/Godot python3 replay.py --plugin-dir DIR --port PORT --out FILE
@@ -13,15 +15,16 @@ HOW TO RUN
   Prints the first differing request with both replies, or IDENTICAL.
   Exit 0 identical, 1 different.
 
-  Each run takes about two minutes: one --import plus twelve editor launches
+  Each run takes about two minutes: one --import plus sixteen editor launches
   (in launch order A with no scene, E with no scene, G with no scene, J with no
   scene, C with no scene, B with res://main.tscn, D and F with
   res://connect.tscn, H and I with res://group.tscn, K and L with
-  res://unique.tscn), 413 requests. Rows are stored A, B, C, E, D, F, G, H, I,
-  J, K, L: a fresh editor restores the previous session's open scenes, so the
-  no-scene sessions (A, E, G, J, and C before it opens anything) must run
-  before any scene session. Appending the new sessions keeps rows 1-362
-  byte-identical.
+  res://unique.tscn, N, O, P and Q with the rename_*.tscn fixtures), 530
+  requests. The plugin has fourteen commands, a different count. Rows are
+  stored A, B, C, E, D, F, G, H, I, J, K, L, N, O, P, Q: a fresh editor
+  restores the previous session's open scenes, so the no-scene sessions (A, E,
+  G, J, and C before it opens anything) must run before any scene session.
+  Appending the new sessions keeps rows 1-413 byte-identical.
 
 WHAT IT DOES
   Session A (requests 1-23, no edited scene): status ok with scene_path null;
@@ -135,6 +138,38 @@ WHAT IT DOES
   inspect_node of seven nodes must show the flag true for the accepted adds and
   the untouched claimant, false for the unset and removed nodes, and setting a
   persisted flag again must be rejected as a no-op.
+  Session N (requests 414-464, rename_r1.tscn then one rename_*.tscn scene per
+  case): one editor opens each scene in turn and renames P/T (or Sub/P/T, Sub,
+  .) to "N". Four rejections are each bracketed by identical scene_tree and
+  inspect_node snapshots, with the scene file sha256 equal before and after
+  (rename_r1: a unique claimant in the owner scope; rename_r6: a sibling N
+  forces the applied name N2, which Q/N2 holds; rename_r7: a claimant in the
+  instance scope; rename_r9: an instance-root node renamed onto a claimed
+  name). Six accepted renames each reply ok and are saved: rename_r2 (target
+  not unique), rename_r3 (unique, no clash), rename_r4 and rename_r5 (a
+  sibling N forces the applied name N2, which no unique node holds),
+  rename_r8 (the claimant is only in the outer scope), rename_r10 (the scene
+  root, which has no owner).
+  Session O (requests 465-477, a fresh editor): opens each saved accepted
+  scene and inspects the applied node: P/N in rename_r2 (flag false) and
+  rename_r3 (flag true), P/N2 in rename_r4 and rename_r5 (flag true), and the
+  root renamed to N in rename_r10. The inner rename in rename_r8 is read at
+  its original path Sub/P/T (flag true): the engine did not persist that
+  rename for this action.
+  Session P (requests 478-519, the option C rename scenes in one editor):
+  status, then four rejections each bracketed by identical scene_tree and
+  inspect_node snapshots with the file sha256 equal before and after, and three
+  accepted renames each followed by save_scene. Rejected: Case 1 (Q/N holds the
+  requested N), Case 2 with a unique same-stem claimant (Q/N2), zero-padded
+  (a sibling N01 makes the engine apply N02, held by Q/N02), and the
+  conservative example (a sibling N holds N, a unique Q/N7 exists, the engine
+  would apply N2 but the check rejects). Accepted: Case 1 (applied N), Case 2
+  with no same-stem claimant (applied N2), and zero-padded with a unique Q/K
+  (applied N02).
+  Session Q (requests 520-530, a fresh editor): opens the three accepted scenes
+  and reads P/N, P/N2 and P/N02 with the flag true, and opens the two rejected
+  scenes and reads P/Old with the flag true (the rejections left them
+  unchanged).
 
 NORMALISATION
   The only one: the throwaway project's absolute path is replaced with
@@ -144,12 +179,20 @@ NORMALISATION
   rounding.
 
 DETERMINISM PROOF
-  The set-unique-name rows were recorded twice; the two full runs are
-  byte-identical (compare.py IDENTICAL, cmp clean, 413 pairs). Rows 1-362 are
-  byte-identical to the set-group baseline (cmp clean on the first 362 lines);
-  that baseline's whole file sha256 was
+  The option C rename rows were recorded twice; the two full runs are
+  byte-identical (compare.py IDENTICAL, cmp clean, 530 pairs). Rows 1-413 are
+  byte-identical to the committed baseline (git show HEAD) and rows 1-362 to
+  the main baseline. Rows 414-477 are this branch's own uncommitted rename
+  rows; they are byte-identical to the pre-repair baseline except row 427,
+  whose Case 2 rejection message gained the clause that the requested name is
+  held by a sibling. Rows 478-530 are the option C cases added by this repair.
+  Rows 1-413 also remain byte-identical to the set-unique-name baseline, whose
+  whole file sha256 was
+  0d3de504f4313386f4f58525c2fc139dfa2604781d5a5ad30b2efb9f692312e1. Rows
+  1-362 remain byte-identical to the set-group baseline, whose whole file
+  sha256 was
   63deb099fac0ebc04345af0e0ea5cf8e3d17bf5ffabae8a8e5abc71d779ae798. Rows
-  1-262 remain byte-identical to the connect-signal baseline, whose whole file
+  1-262 are byte-identical to the connect-signal baseline, whose whole file
   sha256 was
   1b1cd260ce425d710525620e8fa4384e0c58b374665a4875ae813c6a3f6c4877. Rows
   1-200 are byte-identical to the 0.5.0 baseline, whose whole file sha256 was
@@ -228,6 +271,24 @@ COVERAGE (request numbers above)
   origin #393-395, collision #396-398, wrong project #399-401), unchanged-file
   hash #402, save_scene #403, flag-line check #404; L #405-413: status #405,
   flag state after the reload #406-412, duplicate add #413.
+  rename unique-flag #414-477: N #414-464: status #414, then per case an
+  open_scene plus the rename. Rejections with identical scene_tree and
+  inspect_node pairs and equal before/after file hashes (r1 #415-422, r6
+  #423-430, r7 #431-438, r9 #439-446); accepted renames and save_scene (r2
+  #447-449, r3 #450-452, r4 #453-455, r5 #456-458, r8 #459-461, r10
+  #462-464); O #465-477: status #465, then the applied node in each saved
+  scene (r2 #466-467, r3 #468-469, r4 #470-471, r5 #472-473, r8 #474-475, r10
+  #476-477).
+  rename option C #478-530: P #478-519: status #478; rejected Case 1 #479-486,
+  rejected Case 2 same-stem #487-494, rejected zero-padded #495-502, rejected
+  conservative same-stem #503-510, each with identical scene_tree and
+  inspect_node pairs and an equal before/after file hash; accepted Case 1
+  #511-513, accepted Case 2 no same-stem claimant #514-516, accepted
+  zero-padded with a unique K #517-519; Q #520-530: status #520, applied name
+  and flag after the reload for rename_case1_accept #521-522,
+  rename_stem_accept #523-524 and rename_pad_accept #525-526, and the
+  unchanged rejected scenes rename_case1_reject #527-528 and
+  rename_conservative #529-530.
   Not covered, with reason:
   - "request exceeds the maximum size" (>8 MiB without newline): reaching
     it needs an 8 MB write, and the reported byte count varies with TCP
@@ -267,7 +328,7 @@ NOTES
   one-action Undo/Redo proof lives in the Code4Me task result, from a separate
   isolated-editor probe that sends a real connect-signal request through the
   plugin and then triggers the editor's Undo/Redo through the safe route.
-  The baseline is only valid while the plugin's replies for these 413 requests
+  The baseline is only valid while the plugin's replies for these 530 requests
   are supposed to stay the same. A change that adds or alters a command's
   behavior on purpose needs a new baseline, recorded from the last trusted
   commit, and a fresh determinism check (record three times, compare byte for

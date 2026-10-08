@@ -72,3 +72,86 @@ static func guard_request(plugin: EditorPlugin, project_path_value: Variant, nod
 	if target == null:
 		return "node not found: %s" % node_path
 	return {"scene_root": scene_root, "node_path": node_path, "target": target}
+
+
+## Returns the first node in the edited scene, other than `target`, that holds
+## a unique flag (the `%` name) for `name` and has the same owner as `target`,
+## or null when there is none. That node is what the engine refuses a second
+## claimant for in one owner scope. A null owner (the scene root, or an unowned
+## node) is not a usable scope and always returns null. The walk includes
+## internal children, which take part in the engine's sibling naming and can
+## hold owner-scoped unique names. Shared by `set_unique_name` (which tests the
+## target's current name) and `rename_node`.
+static func unique_claimant(target: Node, name: String, scene_root: Node) -> Node:
+	return _first_claimant(target, scene_root, name, false)
+
+
+## Reports whether renaming `target` to `name` would clear its unique flag
+## because another unique node in the same owner scope already holds the name
+## the engine would apply. Returns {} when the rename is allowed, or
+## {"claimant": node, "sibling": bool} when it must be rejected. `sibling` is
+## true when a sibling of `target` already holds `name`, so the engine numbers
+## it and the test is the conservative stem-plus-digits superset.
+static func unique_name_conflict(target: Node, name: String, scene_root: Node) -> Dictionary:
+	if target.owner == null:
+		return {}
+	var sibling_holds := false
+	var parent := target.get_parent()
+	if parent != null:
+		for child in parent.get_children(true):
+			if child != target and str(child.name) == name:
+				sibling_holds = true
+				break
+	if not sibling_holds:
+		var claimant := unique_claimant(target, name, scene_root)
+		if claimant != null:
+			return {"claimant": claimant, "sibling": false}
+		return {}
+	var stem_claimant := _first_claimant(target, scene_root, _name_stem(name), true)
+	if stem_claimant != null:
+		return {"claimant": stem_claimant, "sibling": true}
+	return {}
+
+
+## The name without its trailing ASCII digits. The engine numbers the requested
+## name when a sibling holds it; the width and size of that number are the
+## engine's business, so only the stem is used here.
+static func _name_stem(name: String) -> String:
+	var position := name.length()
+	while position > 0 and "0123456789".contains(name[position - 1]):
+		position -= 1
+	return name.substr(0, position)
+
+
+## First node other than `target` in `target`'s owner scope with a unique flag
+## whose name equals `name_or_stem`, or starts with it and continues with one
+## or more ASCII digits when `stem_digits` is true. A null owner returns null.
+static func _first_claimant(target: Node, scene_root: Node, name_or_stem: String, stem_digits: bool) -> Node:
+	var owner: Node = target.owner
+	if owner == null:
+		return null
+	var stack: Array = [scene_root]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		if node != target and node.owner == owner and node.unique_name_in_owner:
+			var node_name := str(node.name)
+			if (stem_digits and _is_stem_digits(node_name, name_or_stem)) or (not stem_digits and node_name == name_or_stem):
+				return node
+		for child in node.get_children(true):
+			stack.append(child)
+	return null
+
+
+## Whether `name` is `stem` followed by one or more ASCII digits. An empty stem
+## matches any name that is only digits, which is the conservative superset for
+## a requested name that is itself all digits.
+static func _is_stem_digits(name: String, stem: String) -> bool:
+	if not name.begins_with(stem):
+		return false
+	var rest := name.substr(stem.length())
+	if rest.is_empty():
+		return false
+	for index in rest.length():
+		if not "0123456789".contains(rest[index]):
+			return false
+	return true
