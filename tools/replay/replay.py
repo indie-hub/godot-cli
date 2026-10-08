@@ -335,6 +335,188 @@ unique_name_in_owner = true
 [editable path="Mid/Deep"]
 """
 
+# Rename/unique-flag fixtures, one scene per Gate 1 case. Sessions A-L never
+# reference these paths, so their rows cannot change. Each scene holds a
+# unique target named T under P and, in the colliding cases, a unique claimant
+# named N under Q; the requested new name is always "N".
+RENAME_SUB_TSCN = """[gd_scene format=3 uid="uid://gp029renamesub1"]
+[node name="SubRoot" type="Node"]
+[node name="P" type="Node" parent="."]
+[node name="T" type="Node" parent="P"]
+unique_name_in_owner = true
+[node name="Q" type="Node" parent="."]
+[node name="N" type="Node" parent="Q"]
+unique_name_in_owner = true
+"""
+
+RENAME_SUB_PLAIN_TSCN = """[gd_scene format=3 uid="uid://gp029renamesub2"]
+[node name="SubRoot" type="Node"]
+[node name="P" type="Node" parent="."]
+[node name="T" type="Node" parent="P"]
+unique_name_in_owner = true
+"""
+
+RENAME_R1_TSCN = """[gd_scene format=3 uid="uid://gp029renamer1"]
+[node name="Root" type="Node"]
+[node name="P" type="Node" parent="."]
+[node name="T" type="Node" parent="P"]
+unique_name_in_owner = true
+[node name="Q" type="Node" parent="."]
+[node name="N" type="Node" parent="Q"]
+unique_name_in_owner = true
+"""
+
+RENAME_R2_TSCN = """[gd_scene format=3 uid="uid://gp029renamer2"]
+[node name="Root" type="Node"]
+[node name="P" type="Node" parent="."]
+[node name="T" type="Node" parent="P"]
+[node name="Q" type="Node" parent="."]
+[node name="N" type="Node" parent="Q"]
+unique_name_in_owner = true
+"""
+
+RENAME_R3_TSCN = """[gd_scene format=3 uid="uid://gp029renamer3"]
+[node name="Root" type="Node"]
+[node name="P" type="Node" parent="."]
+[node name="T" type="Node" parent="P"]
+unique_name_in_owner = true
+[node name="Q" type="Node" parent="."]
+[node name="N" type="Node" parent="Q"]
+"""
+
+RENAME_R4_TSCN = """[gd_scene format=3 uid="uid://gp029renamer4"]
+[node name="Root" type="Node"]
+[node name="P" type="Node" parent="."]
+[node name="T" type="Node" parent="P"]
+unique_name_in_owner = true
+[node name="N" type="Node" parent="P"]
+unique_name_in_owner = true
+"""
+
+RENAME_R5_TSCN = """[gd_scene format=3 uid="uid://gp029renamer5"]
+[node name="Root" type="Node"]
+[node name="P" type="Node" parent="."]
+[node name="T" type="Node" parent="P"]
+unique_name_in_owner = true
+[node name="N" type="Node" parent="P"]
+[node name="Q" type="Node" parent="."]
+[node name="N" type="Node" parent="Q"]
+unique_name_in_owner = true
+"""
+
+RENAME_R6_TSCN = """[gd_scene format=3 uid="uid://gp029renamer6"]
+[node name="Root" type="Node"]
+[node name="P" type="Node" parent="."]
+[node name="T" type="Node" parent="P"]
+unique_name_in_owner = true
+[node name="N" type="Node" parent="P"]
+[node name="Q" type="Node" parent="."]
+[node name="N2" type="Node" parent="Q"]
+unique_name_in_owner = true
+"""
+
+RENAME_R7_TSCN = """[gd_scene load_steps=2 format=3 uid="uid://gp029renamer7"]
+[ext_resource type="PackedScene" path="res://rename_sub.tscn" id="1"]
+[node name="Root" type="Node"]
+[node name="Sub" parent="." instance=ExtResource("1")]
+[editable path="Sub"]
+"""
+
+RENAME_R8_TSCN = """[gd_scene load_steps=2 format=3 uid="uid://gp029renamer8"]
+[ext_resource type="PackedScene" path="res://rename_sub_plain.tscn" id="1"]
+[node name="Root" type="Node"]
+[node name="N" type="Node" parent="."]
+unique_name_in_owner = true
+[node name="Sub" parent="." instance=ExtResource("1")]
+[editable path="Sub"]
+"""
+
+RENAME_R9_TSCN = """[gd_scene load_steps=2 format=3 uid="uid://gp029renamer9"]
+[ext_resource type="PackedScene" path="res://rename_sub_plain.tscn" id="1"]
+[node name="Root" type="Node"]
+[node name="Q" type="Node" parent="."]
+[node name="N" type="Node" parent="Q"]
+unique_name_in_owner = true
+[node name="Sub" parent="." instance=ExtResource("1")]
+unique_name_in_owner = true
+"""
+
+RENAME_R10_TSCN = """[gd_scene format=3 uid="uid://gp029renamer10"]
+[node name="Root" type="Node"]
+"""
+
+# Option C fixtures, one scene per check. Case 1 (no sibling holds the
+# requested name) tests the exact name; Case 2 (a sibling holds it) tests the
+# stem plus digits, a conservative superset of the names the engine can apply.
+RENAME_CASE1_REJECT_TSCN = """[gd_scene format=3 uid="uid://gp029c1reject"]
+[node name="Root" type="Node"]
+[node name="P" type="Node" parent="."]
+[node name="Old" type="Node" parent="P"]
+unique_name_in_owner = true
+[node name="Q" type="Node" parent="."]
+[node name="N" type="Node" parent="Q"]
+unique_name_in_owner = true
+"""
+
+RENAME_CASE1_ACCEPT_TSCN = """[gd_scene format=3 uid="uid://gp029c1accept"]
+[node name="Root" type="Node"]
+[node name="P" type="Node" parent="."]
+[node name="Old" type="Node" parent="P"]
+unique_name_in_owner = true
+"""
+
+RENAME_STEM_REJECT_TSCN = """[gd_scene format=3 uid="uid://gp029stemreject"]
+[node name="Root" type="Node"]
+[node name="P" type="Node" parent="."]
+[node name="Old" type="Node" parent="P"]
+unique_name_in_owner = true
+[node name="N" type="Node" parent="P"]
+[node name="Q" type="Node" parent="."]
+[node name="N2" type="Node" parent="Q"]
+unique_name_in_owner = true
+"""
+
+RENAME_STEM_ACCEPT_TSCN = """[gd_scene format=3 uid="uid://gp029stemaccept"]
+[node name="Root" type="Node"]
+[node name="P" type="Node" parent="."]
+[node name="Old" type="Node" parent="P"]
+unique_name_in_owner = true
+[node name="N" type="Node" parent="P"]
+"""
+
+RENAME_PAD_REJECT_TSCN = """[gd_scene format=3 uid="uid://gp029padreject"]
+[node name="Root" type="Node"]
+[node name="P" type="Node" parent="."]
+[node name="Old" type="Node" parent="P"]
+unique_name_in_owner = true
+[node name="N01" type="Node" parent="P"]
+[node name="Q" type="Node" parent="."]
+[node name="N02" type="Node" parent="Q"]
+unique_name_in_owner = true
+"""
+
+RENAME_PAD_ACCEPT_TSCN = """[gd_scene format=3 uid="uid://gp029padaccept"]
+[node name="Root" type="Node"]
+[node name="P" type="Node" parent="."]
+[node name="Old" type="Node" parent="P"]
+unique_name_in_owner = true
+[node name="N01" type="Node" parent="P"]
+[node name="Q" type="Node" parent="."]
+[node name="K" type="Node" parent="Q"]
+unique_name_in_owner = true
+"""
+
+RENAME_CONSERVATIVE_TSCN = """[gd_scene format=3 uid="uid://gp029conservative"]
+[node name="Root" type="Node"]
+[node name="P" type="Node" parent="."]
+[node name="Old" type="Node" parent="P"]
+unique_name_in_owner = true
+[node name="N" type="Node" parent="P"]
+[node name="Q" type="Node" parent="."]
+[node name="N7" type="Node" parent="Q"]
+unique_name_in_owner = true
+"""
+
 # Each entry is (kind, text) where kind is "line" (newline-terminated, one
 # reply expected at once) or "idle" (sent without newline; the reply arrives
 # after the plugin's 5s idle timeout). "<PROJ>" is replaced with the
@@ -808,6 +990,121 @@ def build_l():
     return out
 
 
+def rn(node, new_name, project="<PROJ>"):
+    d = {"command": "rename_node", "node_path": node, "new_name": new_name,
+         "project_path": project}
+    return ("line", json.dumps(d, separators=(",", ":")))
+
+
+def _bracket_r(out, node, request):
+    # scene_tree plus inspect_node of the target before and after a rejected
+    # rename; the two snapshots must be identical.
+    out.append(("line", '{"command":"scene_tree"}'))
+    out.append(ins(node))
+    out.append(request)
+    out.append(("line", '{"command":"scene_tree"}'))
+    out.append(ins(node))
+
+
+def build_n():
+    # Session N: one editor, one scene per Gate 1 case. Each rejection is
+    # bracketed by identical scene_tree and inspect_node snapshots and must
+    # leave the file unchanged; each accepted rename is followed by save_scene.
+    out = [("line", '{"command":"status"}')]
+    rejections = [
+        ("r1", "P/T", rn("P/T", "N")),          # unique claimant in the same owner scope
+        ("r6", "P/T", rn("P/T", "N")),          # sibling N forces N2, which Q/N2 holds
+        ("r7", "Sub/P/T", rn("Sub/P/T", "N")),  # claimant in the instance scope
+        ("r9", "Sub", rn("Sub", "N")),          # instance-root node renamed onto a claimed name
+    ]
+    for case, node, request in rejections:
+        out.append(("file_sha256", "rename_%s.tscn" % case))
+        out.append(os_("res://rename_%s.tscn" % case))
+        out.append(("line", '{"command":"scene_tree"}'))
+        out.append(ins(node))
+        out.append(request)
+        out.append(("line", '{"command":"scene_tree"}'))
+        out.append(ins(node))
+        out.append(("file_sha256", "rename_%s.tscn" % case))
+    accepted = [
+        ("r2", "P/T"),       # target not unique: never rejected
+        ("r3", "P/T"),       # unique, no sibling clash, no claimant
+        ("r4", "P/T"),       # unique sibling N: the engine applies N2
+        ("r5", "P/T"),       # non-unique sibling N: the engine applies N2
+        ("r8", "Sub/P/T"),   # claimant only in the outer scope
+        ("r10", "."),        # the scene root, which has no owner
+    ]
+    for case, node in accepted:
+        out.append(os_("res://rename_%s.tscn" % case))
+        out.append(rn(node, "N"))
+        out.append(("line", '{"command":"save_scene","project_path":"<PROJ>"}'))
+    return out
+
+
+def build_o():
+    # Session O: a fresh editor on each saved accepted scene, to read back the
+    # applied name and the flag. The rejected scenes are covered by the
+    # identical snapshots in session N. The inner rename in r8 is read at its
+    # original path: the engine did not persist that rename for this action.
+    out = [("line", '{"command":"status"}')]
+    for case, node in [("r2", "P/N"), ("r3", "P/N"), ("r4", "P/N2"),
+                       ("r5", "P/N2"), ("r8", "Sub/P/T"), ("r10", ".")]:
+        out.append(os_("res://rename_%s.tscn" % case))
+        out.append(ins(node))
+    return out
+
+
+def build_p():
+    # Session P: the option C rename cases. Rejections are bracketed by
+    # identical scene_tree and inspect_node snapshots with an equal before and
+    # after file hash; accepted renames are saved. Case 1 tests the exact
+    # requested name; Case 2 tests the stem plus digits (conservative), so the
+    # stem-reject and conservative scenes reject although the engine would
+    # apply N2, and the pad-accept scene accepts because no unique node is the
+    # stem plus digits.
+    out = [("line", '{"command":"status"}')]
+    rejections = [
+        ("rename_case1_reject.tscn", "P/Old", "N"),
+        ("rename_stem_reject.tscn", "P/Old", "N"),
+        ("rename_pad_reject.tscn", "P/Old", "N01"),
+        ("rename_conservative.tscn", "P/Old", "N"),
+    ]
+    for scene, node, requested in rejections:
+        out.append(("file_sha256", scene))
+        out.append(os_("res://%s" % scene))
+        out.append(("line", '{"command":"scene_tree"}'))
+        out.append(ins(node))
+        out.append(rn(node, requested))
+        out.append(("line", '{"command":"scene_tree"}'))
+        out.append(ins(node))
+        out.append(("file_sha256", scene))
+    accepted = [
+        ("rename_case1_accept.tscn", "P/Old", "N"),
+        ("rename_stem_accept.tscn", "P/Old", "N"),
+        ("rename_pad_accept.tscn", "P/Old", "N01"),
+    ]
+    for scene, node, requested in accepted:
+        out.append(os_("res://%s" % scene))
+        out.append(rn(node, requested))
+        out.append(("line", '{"command":"save_scene","project_path":"<PROJ>"}'))
+    return out
+
+
+def build_q():
+    # Session Q: a fresh editor on the saved accepted scenes and the rejected
+    # ones. The accepted renames applied N, N2 and N02 and kept the flag; the
+    # rejected scenes are unchanged.
+    out = [("line", '{"command":"status"}')]
+    for scene, node in [("rename_case1_accept.tscn", "P/N"),
+                        ("rename_stem_accept.tscn", "P/N2"),
+                        ("rename_pad_accept.tscn", "P/N02"),
+                        ("rename_case1_reject.tscn", "P/Old"),
+                        ("rename_conservative.tscn", "P/Old")]:
+        out.append(os_("res://%s" % scene))
+        out.append(ins(node))
+    return out
+
+
 def send_one(port, text, newline, timeout):
     s = socket.create_connection(("127.0.0.1", port), timeout=10)
     try:
@@ -954,6 +1251,25 @@ def main():
             ("unique_deep.tscn", UNIQUE_DEEP_TSCN),
             ("unique_mid.tscn", UNIQUE_MID_TSCN),
             ("unique.tscn", UNIQUE_TSCN),
+            ("rename_sub.tscn", RENAME_SUB_TSCN),
+            ("rename_sub_plain.tscn", RENAME_SUB_PLAIN_TSCN),
+            ("rename_r1.tscn", RENAME_R1_TSCN),
+            ("rename_r2.tscn", RENAME_R2_TSCN),
+            ("rename_r3.tscn", RENAME_R3_TSCN),
+            ("rename_r4.tscn", RENAME_R4_TSCN),
+            ("rename_r5.tscn", RENAME_R5_TSCN),
+            ("rename_r6.tscn", RENAME_R6_TSCN),
+            ("rename_r7.tscn", RENAME_R7_TSCN),
+            ("rename_r8.tscn", RENAME_R8_TSCN),
+            ("rename_r9.tscn", RENAME_R9_TSCN),
+            ("rename_r10.tscn", RENAME_R10_TSCN),
+            ("rename_case1_reject.tscn", RENAME_CASE1_REJECT_TSCN),
+            ("rename_case1_accept.tscn", RENAME_CASE1_ACCEPT_TSCN),
+            ("rename_stem_reject.tscn", RENAME_STEM_REJECT_TSCN),
+            ("rename_stem_accept.tscn", RENAME_STEM_ACCEPT_TSCN),
+            ("rename_pad_reject.tscn", RENAME_PAD_REJECT_TSCN),
+            ("rename_pad_accept.tscn", RENAME_PAD_ACCEPT_TSCN),
+            ("rename_conservative.tscn", RENAME_CONSERVATIVE_TSCN),
         ]:
             with open(os.path.join(proj, name), "w") as f:
                 f.write(text)
@@ -990,8 +1306,13 @@ def main():
         rows_i = run_session(a.port, proj, "res://group.tscn", build_i(), "res://group.tscn")
         rows_k = run_session(a.port, proj, "res://unique.tscn", build_k(), "res://unique.tscn")
         rows_l = run_session(a.port, proj, "res://unique.tscn", build_l(), "res://unique.tscn")
+        rows_n = run_session(a.port, proj, "res://rename_r1.tscn", build_n(), "res://rename_r1.tscn")
+        rows_o = run_session(a.port, proj, "res://rename_r2.tscn", build_o(), "res://rename_r2.tscn")
+        rows_p = run_session(a.port, proj, "res://rename_case1_reject.tscn", build_p(), "res://rename_case1_reject.tscn")
+        rows_q = run_session(a.port, proj, "res://rename_case1_accept.tscn", build_q(), "res://rename_case1_accept.tscn")
         rows = (rows_a + rows_b + rows_c + rows_e + rows_d + rows_f + rows_g
-                + rows_h + rows_i + rows_j + rows_k + rows_l)
+                + rows_h + rows_i + rows_j + rows_k + rows_l + rows_n + rows_o
+                + rows_p + rows_q)
         with open(a.out, "w") as f:
             for req, rep in rows:
                 f.write(json.dumps({"request": req, "reply": rep}, separators=(",", ":")) + "\n")

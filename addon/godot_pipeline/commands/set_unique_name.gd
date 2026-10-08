@@ -74,7 +74,7 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 			if inherited and not local:
 				return CommandSupport.error("unique name is inherited from a sub-scene: %s already has a unique name" % node_path)
 			return CommandSupport.error("node already has a unique name: %s" % node_path)
-		var claimant := _collision(scene_root, target)
+		var claimant := CommandSupport.unique_claimant(target, str(target.name), scene_root)
 		if claimant != null:
 			return CommandSupport.error(
 				"unique name collision: %s is already set on %s" % [str(target.name), str(scene_root.get_path_to(claimant))]
@@ -100,23 +100,6 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 		"name": str(target.name),
 		"action": "remove" if remove else "add",
 	})
-
-
-## Returns the first node in the edited scene tree, other than `target`, that
-## has the same owner and name as `target` and already holds a unique flag.
-## That is the claimant the engine would refuse a second one for. Null when
-## there is none.
-static func _collision(scene_root: Node, target: Node) -> Node:
-	var owner: Node = target.owner
-	var name := str(target.name)
-	var stack: Array = [scene_root]
-	while not stack.is_empty():
-		var node: Node = stack.pop_back()
-		if node != target and node.owner == owner and str(node.name) == name and node.unique_name_in_owner:
-			return node
-		for child in node.get_children():
-			stack.append(child)
-	return null
 
 
 ## Reports how the unique flag relates to `target` in a packed copy of the
