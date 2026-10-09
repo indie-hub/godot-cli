@@ -74,6 +74,48 @@ static func guard_request(plugin: EditorPlugin, project_path_value: Variant, nod
 	return {"scene_root": scene_root, "node_path": node_path, "target": target}
 
 
+## Resolves the `parent_path` of a command that creates a new persisted child
+## in the edited scene: the parent-path shape checks, the resolution against
+## the edited scene root, and the eligibility check that the parent is
+## serialized by the edited scene. Returns the error message String on the
+## first failure, or {"scene_root": ..., "parent_path": ..., "parent": ...} on
+## success. Shared by `create_node` and `instantiate_scene`, which must produce
+## the same messages in the same order.
+##
+## A new child only saves correctly when Godot serializes it as part of the
+## edited scene: the scene root itself, or any node directly owned by it. A
+## node inside an instanced sub-scene's own internal structure is owned by that
+## instance's own root instead, so a child added under it can appear in the
+## live tree but silently vanish on save. Reject those parents up front rather
+## than mutate the scene and lose the result.
+static func resolve_new_child_parent(plugin: EditorPlugin, parent_path_value: Variant) -> Variant:
+	var scene_root := plugin.get_editor_interface().get_edited_scene_root()
+	if scene_root == null:
+		return "no scene is currently being edited"
+
+	var parent_path: String = parent_path_value
+	if parent_path.is_empty():
+		return "parent path must not be empty; use \".\" for the scene root"
+	if parent_path.begins_with("/"):
+		return "parent path must be relative to the scene root; absolute paths are rejected"
+	if parent_path.contains(":"):
+		return "parent path must not contain ':'"
+	if parent_path != "." and ".." in parent_path.split("/"):
+		return "parent path must not contain '..'"
+
+	# Resolving relative to scene_root (rather than any absolute NodePath)
+	# confines the target to the edited scene's own node tree, which is the
+	# only part of the running editor this command may touch.
+	var parent: Node = scene_root if parent_path == "." else scene_root.get_node_or_null(NodePath(parent_path))
+	if parent == null:
+		return "parent node not found: %s" % parent_path
+
+	if parent != scene_root and parent.owner != scene_root:
+		return "parent is not eligible for a new persisted child: %s is not the scene root and is not owned by it (it is likely inside an instanced sub-scene's internal structure); only the scene root or a node it owns is supported" % parent_path
+
+	return {"scene_root": scene_root, "parent_path": parent_path, "parent": parent}
+
+
 ## Returns the first node in the edited scene, other than `target`, that holds
 ## a unique flag (the `%` name) for `name` and has the same owner as `target`,
 ## or null when there is none. That node is what the engine refuses a second
@@ -155,3 +197,13 @@ static func _is_stem_digits(name: String, stem: String) -> bool:
 		if not "0123456789".contains(rest[index]):
 			return false
 	return true
+
+
+## Strips the "uid://xxxx::::" prefix a `ResourceLoader.get_dependencies` string
+## carries when the editor wrote a uid attribute on its `ext_resource` line, so
+## the remaining res:// path can be checked with `ResourceLoader.exists` and
+## compared with another path. Shared by `instantiate_scene` and `open_scene`.
+static func dependency_path(dependency: String) -> String:
+	if dependency.contains("::::"):
+		return dependency.substr(dependency.rfind("::::") + 4)
+	return dependency

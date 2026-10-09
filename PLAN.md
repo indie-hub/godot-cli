@@ -4,11 +4,11 @@ Godot Pipeline is a Rust CLI plus a GDScript EditorPlugin for stock Godot. An ag
 
 ## Status
 
-- Fourteen commands exist: `status`, `scene-tree`, `rename-node`, `create-node`, `set-property`, `delete-node`, `connect-signal`, `set-group`, `set-unique-name`, `save-scene`, `inspect-node`, `query-nodes`, `inspect-class`, `open-scene`. See `README.md`.
+- Fifteen commands exist: `status`, `scene-tree`, `rename-node`, `create-node`, `set-property`, `delete-node`, `connect-signal`, `set-group`, `set-unique-name`, `instantiate-scene`, `save-scene`, `inspect-node`, `query-nodes`, `inspect-class`, `open-scene`. See `README.md`.
 - `set-property` accepts 17 value types, ten Packed array types, and typed `Array[T]`. It rejects untyped arrays on purpose.
 - The plugin assembles each request across editor ticks, with an 8 MiB cap and a 5 second idle timeout.
 - Current version is 0.5.0. Phase 1 (read and navigate) is complete.
-- The golden replay harness in `tools/replay/` covers all fourteen commands (630 baseline rows).
+- The golden replay harness in `tools/replay/` covers all fifteen commands (729 baseline rows).
 - The add-on is a prototype and is not ready for distribution.
 
 ## How this plan was made, and how far to trust it
@@ -56,7 +56,7 @@ Why external writes wait: scene edits go through the editor's undo stack, so Ctr
 5. `connect-signal`: serialized signal wiring. Done on the current working tree (next release).
 6. `set-group`: persistent node group membership. Done on the current working tree (next release).
 7. `set-unique-name`: `%` name within owner scope. Done on the current working tree (next release).
-8. `instantiate-scene`: add a PackedScene instance with correct ownership.
+8. `instantiate-scene`: add a PackedScene instance with correct ownership. Done on the current working tree (next release).
 
 **Phase 3: resources and the project boundary.**
 

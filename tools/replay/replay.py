@@ -611,6 +611,83 @@ INHERIT_I9_TSCN = """[gd_scene format=3 uid="uid://gp030ihi09"]
 [editable path="Sub"]
 """
 
+# Instantiate-scene fixtures. Sessions A-S never reference these paths, so
+# their rows cannot change. inst_base.tscn is written fresh by main() every
+# run. inst_sub.tscn is S (root R, child A, grandchild B, one unique node);
+# inst_of_sub.tscn contains an instance of S; inst_e.tscn is the edited scene
+# for the cycle cases (inst_t.tscn instances it, inst_derived_e.tscn inherits
+# from it); inst_missing_dep.tscn instances a file that does not exist.
+INST_PLAIN_TSCN = """[gd_scene load_steps=1 format=3 uid="uid://gp031instplain1"]
+[node name="PlainRoot" type="Node"]
+[node name="Kid" type="Node" parent="."]
+"""
+
+INST_SUB_TSCN = """[gd_scene load_steps=1 format=3 uid="uid://gp031instsub1"]
+[node name="R" type="Node"]
+[node name="A" type="Node2D" parent="."]
+[node name="B" type="Node" parent="A"]
+[node name="U" type="Node" parent="."]
+unique_name_in_owner = true
+"""
+
+INST_CONTROL_TSCN = """[gd_scene load_steps=1 format=3 uid="uid://gp031instctl1"]
+[node name="CtlRoot" type="Control"]
+[node name="Btn" type="Button" parent="."]
+"""
+
+INST_OF_SUB_TSCN = """[gd_scene load_steps=2 format=3 uid="uid://gp031instofsub1"]
+[ext_resource type="PackedScene" path="res://inst_sub.tscn" id="1"]
+[node name="OfSubRoot" type="Node"]
+[node name="Inner" parent="." instance=ExtResource("1")]
+"""
+
+INST_E_TSCN = """[gd_scene load_steps=1 format=3 uid="uid://gp031inste1"]
+[node name="ERoot" type="Node"]
+[node name="X" type="Node" parent="."]
+"""
+
+# The ext_resource lines carry the target's uid, the way the editor writes
+# them when a scene is saved, so ResourceLoader.get_dependencies returns the
+# "uid://...::::res://..." form and the cycle walk must strip it.
+INST_T_TSCN = """[gd_scene load_steps=2 format=3 uid="uid://gp031instt1"]
+[ext_resource type="PackedScene" uid="uid://gp031inste1" path="res://inst_e.tscn" id="1"]
+[node name="TRoot" type="Node"]
+[node name="Kid" parent="." instance=ExtResource("1")]
+"""
+
+INST_DERIVED_E_TSCN = """[gd_scene load_steps=2 format=3 uid="uid://gp031instde1"]
+[ext_resource type="PackedScene" uid="uid://gp031inste1" path="res://inst_e.tscn" id="1_base"]
+[node name="ERoot" instance=ExtResource("1_base")]
+"""
+
+INST_MISSING_DEP_TSCN = """[gd_scene load_steps=2 format=3 uid="uid://gp031instmd1"]
+[ext_resource type="PackedScene" path="res://inst_absent.tscn" id="1"]
+[node name="MissingRoot" type="Node"]
+[node name="Kid" parent="." instance=ExtResource("1")]
+"""
+
+INST_BROKEN_TSCN = """this is not a valid scene at all
+"""
+
+INST_NOTE_TXT = """session fixture plain text, not a scene
+"""
+
+INST_SCRIPT_GD = """extends Node
+"""
+
+INST_BASE_TSCN = """[gd_scene load_steps=3 format=3 uid="uid://gp031instbase1"]
+[ext_resource type="PackedScene" path="res://inst_sub.tscn" id="1"]
+[ext_resource type="PackedScene" path="res://inst_of_sub.tscn" id="2"]
+[node name="InstRoot" type="Node"]
+[node name="Plain" type="Node" parent="."]
+[node name="SubOff" parent="." instance=ExtResource("1")]
+[node name="SubOn" parent="." instance=ExtResource("1")]
+[editable path="SubOn"]
+[node name="LocalUnderOn" type="Node" parent="SubOn"]
+owner="."
+[node name="OfSub" parent="." instance=ExtResource("2")]
+"""
+
 # Each entry is (kind, text) where kind is "line" (newline-terminated, one
 # reply expected at once) or "idle" (sent without newline; the reply arrives
 # after the plugin's 5s idle timeout). "<PROJ>" is replaced with the
@@ -1260,6 +1337,118 @@ def build_s():
     return out
 
 
+def isc(scene, parent, project="<PROJ>"):
+    d = {"command": "instantiate_scene", "scene_path": scene,
+         "parent_path": parent, "project_path": project}
+    return ("line", json.dumps(d, separators=(",", ":")))
+
+
+def build_t():
+    # Session T: instantiate-scene rejections that need no edited scene. It runs
+    # before session C, while the editor still has no scene open.
+    return [
+        ("line", '{"command":"status"}'),
+        isc("res://inst_plain.tscn", "."),
+        isc("res://inst_plain.tscn", ".", project="/no/replay-mismatch"),
+        ("line", '{"command":"instantiate_scene"}'),
+        ("line", '{"command":"instantiate_scene","scene_path":7,"parent_path":".","project_path":"<PROJ>"}'),
+        ("line", '{"command":"instantiate_scene","scene_path":"res://inst_plain.tscn","parent_path":7,"project_path":"<PROJ>"}'),
+    ]
+
+
+def build_u():
+    # Session U: instantiate-scene against inst_base.tscn. Accepted requests run
+    # first, then each rejection is bracketed by identical scene_tree snapshots.
+    # Nothing is saved until save_scene, so the file hash before and after the
+    # rejections is equal. The cycle cases need a different edited scene, so
+    # they run after the save, each bracketed by an equal before/after hash of
+    # its own fixture.
+    accepted = [
+        isc("res://inst_plain.tscn", "."),
+        isc("res://inst_sub.tscn", "."),
+        isc("res://inst_sub.tscn", "."),                  # sibling collision -> R2
+        isc("res://inst_sub.tscn", "SubOff"),             # instance root, Editable Children off
+        isc("res://inst_sub.tscn", "SubOn"),              # instance root, Editable Children on
+        isc("res://inst_sub.tscn", "SubOn/LocalUnderOn"),  # local node under an editable instance
+        isc("res://inst_of_sub.tscn", "."),               # a scene that itself instances S
+        isc("res://inst_control.tscn", "."),              # a Control root under a plain Node
+    ]
+    rejections = [
+        isc("res://inst_sub.tscn", "SubOff/A"),           # inner node of a non-editable instance
+        isc("res://inst_sub.tscn", "SubOn/A"),            # inner node of an editable instance
+        isc("res://inst_sub.tscn", "NoSuch"),
+        isc("res://inst_sub.tscn", ""),
+        isc("res://inst_sub.tscn", "/InstRoot"),
+        isc("res://inst_sub.tscn", "A:B"),
+        isc("res://inst_sub.tscn", "../Plain"),
+        isc("plain.tscn", "."),                           # not res://
+        isc("res://x/../inst_plain.tscn", "."),           # ..
+        isc("res://inst_note.txt", "."),                  # wrong extension
+        isc("res://inst_script.gd", "."),                 # a .gd file
+        isc("res://inst_absent.tscn", "."),               # missing file
+        isc("res://inst_broken.tscn", "."),               # a file that fails to parse
+        isc("res://inst_missing_dep.tscn", "."),          # a scene with a missing dependency
+        isc("res://inst_base.tscn", "."),                 # self cycle
+        isc("res://inst_plain.tscn", ".", project="/no/replay-mismatch"),
+        isc("plain.tscn", "NoSuch", project="/no/replay-mismatch"),  # project guard first
+    ]
+    out = [("line", '{"command":"status"}'), ("file_sha256", "inst_base.tscn")]
+    out.extend(accepted)
+    for request in rejections:
+        out.append(("line", '{"command":"scene_tree"}'))
+        out.append(request)
+        out.append(("line", '{"command":"scene_tree"}'))
+    # No implicit save: the file is unchanged since the session opened.
+    out.append(("file_sha256", "inst_base.tscn"))
+    out.append(("file_not_contains", 'inst_base.tscn|name="R2"'))
+    # The post-save file is not hashed: the save adds a generated unique_id and
+    # ext_resource id suffixes, so its bytes are not deterministic. The write is
+    # proven by the file_not_contains before the save and the checks after it.
+    out.append(("line", '{"command":"save_scene","project_path":"<PROJ>"}'))
+    out.append(("file_contains", 'inst_base.tscn|name="R2" parent="."'))
+    out.append(("file_contains", 'inst_base.tscn|name="PlainRoot" parent="."'))
+    out.append(("file_contains", 'inst_base.tscn|name="R" parent="SubOff"'))
+    out.append(("file_contains", 'inst_base.tscn|name="R" parent="SubOn/LocalUnderOn"'))
+    out.append(("file_contains", 'inst_base.tscn|name="CtlRoot" parent="."'))
+    out.append(("file_contains", 'inst_base.tscn|instance=ExtResource'))
+    # Self cycle on a scene without instances.
+    out.append(("file_sha256", "inst_plain.tscn"))
+    out.append(os_("res://inst_plain.tscn"))
+    out.append(("line", '{"command":"scene_tree"}'))
+    out.append(isc("res://inst_plain.tscn", "."))
+    out.append(("line", '{"command":"scene_tree"}'))
+    out.append(("file_sha256", "inst_plain.tscn"))
+    # Transitive cycle (inst_t instances the edited inst_e) and an inheritance
+    # cycle (inst_derived_e inherits the edited inst_e).
+    out.append(("file_sha256", "inst_e.tscn"))
+    out.append(os_("res://inst_e.tscn"))
+    out.append(("line", '{"command":"scene_tree"}'))
+    out.append(isc("res://inst_t.tscn", "."))
+    out.append(isc("res://inst_derived_e.tscn", "."))
+    out.append(("line", '{"command":"scene_tree"}'))
+    out.append(("file_sha256", "inst_e.tscn"))
+    return out
+
+
+def build_v():
+    # Session V: a fresh editor on the saved inst_base.tscn. The accepted
+    # instances must be present with their applied names after the reload, and
+    # the saved file must carry an instance row for one of them.
+    out = [
+        ("line", '{"command":"status"}'),
+        ("line", '{"command":"scene_tree"}'),
+        q(),
+        ins("R2"),
+        ins("PlainRoot"),
+        ins("SubOff/R"),
+        ins("SubOn/LocalUnderOn/R"),
+        ins("OfSubRoot"),
+        ins("CtlRoot"),
+        ("file_contains", 'inst_base.tscn|name="R2" parent="."'),
+    ]
+    return out
+
+
 def send_one(port, text, newline, timeout):
     s = socket.create_connection(("127.0.0.1", port), timeout=10)
     try:
@@ -1437,6 +1626,18 @@ def main():
             ("inherit_i7.tscn", INHERIT_I7_TSCN),
             ("inherit_i8.tscn", INHERIT_I8_TSCN),
             ("inherit_i9.tscn", INHERIT_I9_TSCN),
+            ("inst_plain.tscn", INST_PLAIN_TSCN),
+            ("inst_sub.tscn", INST_SUB_TSCN),
+            ("inst_control.tscn", INST_CONTROL_TSCN),
+            ("inst_of_sub.tscn", INST_OF_SUB_TSCN),
+            ("inst_e.tscn", INST_E_TSCN),
+            ("inst_t.tscn", INST_T_TSCN),
+            ("inst_derived_e.tscn", INST_DERIVED_E_TSCN),
+            ("inst_missing_dep.tscn", INST_MISSING_DEP_TSCN),
+            ("inst_broken.tscn", INST_BROKEN_TSCN),
+            ("inst_note.txt", INST_NOTE_TXT),
+            ("inst_script.gd", INST_SCRIPT_GD),
+            ("inst_base.tscn", INST_BASE_TSCN),
         ]:
             with open(os.path.join(proj, name), "w") as f:
                 f.write(text)
@@ -1455,16 +1656,18 @@ def main():
         if r.returncode != 0:
             raise SystemExit("godot --import failed")
         rows = []
-        # Run order is A, E, G, J, C, B, D, F, H, I, K, L: a fresh editor
-        # restores the previous session's open scenes, so the no-scene sessions
-        # (A, E, G, J, and C before it opens anything) must run before the scene
-        # sessions. Rows are stored A, B, C, E, D, F, G, H, I, J, K, L, so the
-        # first 362 rows stay byte-identical to the set-group baseline and the
-        # new set-unique-name rows are appended.
+        # Run order is A, E, G, J, T, C, B, D, F, H, I, K, L, N, O, P, Q, R,
+        # S, U, V: a fresh editor restores the previous session's open scenes,
+        # so the no-scene sessions (A, E, G, J, T, and C before it opens
+        # anything) must run before the scene sessions. Rows are stored A, B,
+        # C, E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, then the new T, U and
+        # V rows, so the first 630 rows stay byte-identical to the previous
+        # baseline and the instantiate-scene rows are appended.
         rows_a = run_session(a.port, proj, None, REQ_A, None)
         rows_e = run_session(a.port, proj, None, build_e(), None)
         rows_g = run_session(a.port, proj, None, build_g(), None)
         rows_j = run_session(a.port, proj, None, build_j(), None)
+        rows_t = run_session(a.port, proj, None, build_t(), None)
         rows_c = run_session(a.port, proj, None, build_c(), None)
         rows_b = run_session(a.port, proj, "res://main.tscn", build_b(), "res://main.tscn")
         rows_d = run_session(a.port, proj, "res://connect.tscn", build_d(), "res://connect.tscn")
@@ -1479,9 +1682,11 @@ def main():
         rows_q = run_session(a.port, proj, "res://rename_case1_accept.tscn", build_q(), "res://rename_case1_accept.tscn")
         rows_r = run_session(a.port, proj, "res://inherit_i3.tscn", build_r(), "res://inherit_i3.tscn")
         rows_s = run_session(a.port, proj, "res://inherit_i1.tscn", build_s(), "res://inherit_i1.tscn")
+        rows_u = run_session(a.port, proj, "res://inst_base.tscn", build_u(), "res://inst_base.tscn")
+        rows_v = run_session(a.port, proj, "res://inst_base.tscn", build_v(), "res://inst_base.tscn")
         rows = (rows_a + rows_b + rows_c + rows_e + rows_d + rows_f + rows_g
                 + rows_h + rows_i + rows_j + rows_k + rows_l + rows_n + rows_o
-                + rows_p + rows_q + rows_r + rows_s)
+                + rows_p + rows_q + rows_r + rows_s + rows_t + rows_u + rows_v)
         with open(a.out, "w") as f:
             for req, rep in rows:
                 f.write(json.dumps({"request": req, "reply": rep}, separators=(",", ":")) + "\n")
