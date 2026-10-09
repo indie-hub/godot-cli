@@ -4,11 +4,11 @@ Godot Pipeline is a Rust CLI plus a GDScript EditorPlugin for stock Godot. An ag
 
 ## Status
 
-- Fifteen commands exist: `status`, `scene-tree`, `rename-node`, `create-node`, `set-property`, `delete-node`, `connect-signal`, `set-group`, `set-unique-name`, `instantiate-scene`, `save-scene`, `inspect-node`, `query-nodes`, `inspect-class`, `open-scene`. See `README.md`.
+- Sixteen commands exist: `status`, `scene-tree`, `rename-node`, `create-node`, `set-property`, `delete-node`, `connect-signal`, `set-group`, `set-unique-name`, `instantiate-scene`, `save-scene`, `inspect-node`, `query-nodes`, `inspect-class`, `open-scene`, `list-resources`. See `README.md`.
 - `set-property` accepts 17 value types, ten Packed array types, and typed `Array[T]`. It rejects untyped arrays on purpose.
 - The plugin assembles each request across editor ticks, with an 8 MiB cap and a 5 second idle timeout.
 - Current version is 0.6.0. Phase 1 (read and navigate) and Phase 2 (Godot scene edits) are complete.
-- The golden replay harness in `tools/replay/` covers all fifteen commands (729 baseline rows).
+- The golden replay harness in `tools/replay/` covers all sixteen commands (764 baseline rows).
 - The add-on is a prototype and is not ready for distribution.
 
 ## How this plan was made, and how far to trust it
@@ -60,7 +60,7 @@ Why external writes wait: scene edits go through the editor's undo stack, so Ctr
 
 **Phase 3: resources and the project boundary.**
 
-9. `list-resources`: paged editor resource inventory.
+9. `list-resources`: paged editor resource inventory. Done on the current working tree (next release).
 10. `inspect-resource`: typed resource read.
 11. Then consider, in this order, and only behind explicit gates: resource creation and save, InputMap edits, project settings writes, play control, headless checks and export, and an MCP facade if a host needs one.
 

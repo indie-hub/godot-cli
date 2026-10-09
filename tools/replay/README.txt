@@ -1,11 +1,12 @@
-Golden replay harness for the Godot Pipeline editor plugin (729 rows:
+Golden replay harness for the Godot Pipeline editor plugin (764 rows:
 1-148 unchanged, 149-200 cover inspect-class and open-scene, 201-262 cover
 connect-signal, 263-362 cover set-group, 363-413 cover set-unique-name,
 414-477 cover the rename unique-flag fix, 478-530 cover the rename option C
 cases, 531-619 cover the inherited-rename rejection, 620-630 cover the fresh
 reloads of the accepted inherited-rename cases, 631-636 cover the
 instantiate-scene no-scene guards, 637-719 cover instantiate-scene accepted and
-rejected cases, and 720-729 cover the fresh reloads of the accepted instances).
+rejected cases, 720-729 cover the fresh reloads of the accepted instances, and
+730-764 cover list-resources).
 
 HOW TO RUN
   GODOT=/path/to/Godot python3 replay.py --plugin-dir DIR --port PORT --out FILE
@@ -18,18 +19,18 @@ HOW TO RUN
   Prints the first differing request with both replies, or IDENTICAL.
   Exit 0 identical, 1 different.
 
-  Each run takes about two minutes: one --import plus twenty-one editor launches
+  Each run takes about two minutes: one --import plus twenty-two editor launches
   (in launch order A with no scene, E with no scene, G with no scene, J with no
-  scene, T with no scene, C with no scene, B with res://main.tscn, D and F with
-  res://connect.tscn, H and I with res://group.tscn, K and L with
+  scene, T with no scene, W with no scene, C with no scene, B with res://main.tscn,
+  D and F with res://connect.tscn, H and I with res://group.tscn, K and L with
   res://unique.tscn, N, O, P and Q with the rename_*.tscn fixtures, R with
   res://inherit_i3.tscn, S with res://inherit_i1.tscn, and U and V with
-  res://inst_base.tscn), 729
-  requests. The plugin has fifteen commands, a different count. Rows are
-  stored A, B, C, E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, T, U, V: a fresh
+  res://inst_base.tscn), 764
+  requests. The plugin has sixteen commands, a different count. Rows are
+  stored A, B, C, E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, T, U, V, W: a fresh
   editor restores the previous session's open scenes, so the no-scene sessions
-  (A, E, G, J, T, and C before it opens anything) must run before any scene
-  session. Appending the new sessions keeps rows 1-630 byte-identical.
+  (A, E, G, J, T, W, and C before it opens anything) must run before any scene
+  session. Appending the new sessions keeps rows 1-729 byte-identical.
 
 WHAT IT DOES
   Session A (requests 1-23, no edited scene): status ok with scene_path null;
@@ -221,15 +222,33 @@ WHAT IT DOES
   nodes (R2, PlainRoot, SubOff/R, SubOn/LocalUnderOn/R, OfSubRoot, CtlRoot),
   and a file_contains that the R2 instance row is on disk. This proves the
   accepted instances survive a save and a fresh reload.
+  Session W (requests 730-764, no edited scene, runs before session C): the
+  list-resources matrix. status, then the full listing (limit 1000), limits
+  1/2/1000, rejected limits 0/1001/1.5/"abc", type filters (GDScript,
+  PackedScene, Resource, StandardMaterial3D, Node, Script), the unknown and
+  project-script classes, an empty type, path_prefix matches (res://inst_ and
+  the commands folder) and the not-res:// rejection, an empty prefix, cursor
+  pages after res://inst_plain.tscn and a PackedScene cursor after
+  res://sub.tscn, cursors that are absent or not res://, each wrong field type,
+  a wrong project with other invalid fields (the project guard answers first),
+  and a refresh false that returns the ordinary listing. The session waits,
+  unrecorded, until the editor's file-system scan reports scanning false
+  before its first recorded request, so a fresh editor's startup scan cannot
+  change a reply.
 
 NORMALISATION
   The only one: the throwaway project's absolute path is replaced with
   <PROJECT> in stored requests and replies. Replies that carry it are the
   "project path mismatch" errors (10, 46, 54, 61, 70, 131, 141, 146, 158,
-  159, 203, 244, 265, 323, 365, 400, 606, 633, 693, 696). Reply text is
+  159, 203, 244, 265, 323, 365, 400, 606, 633, 693, 696, 763). Reply text is
   otherwise verbatim; no sorting, no rounding.
 
 DETERMINISM PROOF
+  The list-resources rows were recorded twice; the two full runs are
+  byte-identical (compare.py IDENTICAL, cmp clean, 764 pairs). Rows 1-729 are
+  byte-identical to the 729-row baseline that preceded this change (git show
+  HEAD). Rows 730-764 are the list-resources session; its first recorded
+  request follows an unrecorded wait until the editor reports scanning false.
   The instantiate-scene rows were recorded twice; the two full runs are
   byte-identical (compare.py IDENTICAL, cmp clean, 729 pairs). Rows 1-630 are
   byte-identical to the 630-row baseline that preceded this change (git show
@@ -381,6 +400,17 @@ COVERAGE (request numbers above)
   hash); V #720-729: status #720, scene_tree #721, query_nodes #722,
   inspect_node of R2 #723, PlainRoot #724, SubOff/R #725, SubOn/LocalUnderOn/R
   #726, OfSubRoot #727, CtlRoot #728, and the R2 instance row on disk #729.
+  list-resources #730-764: W #730-763 (status #730; full listing #731; limits
+  1/2/1000 #732-734; rejected limits 0/1001/1.5/"abc" #735-738; type GDScript
+  #739, PackedScene #740, Resource #741, StandardMaterial3D #742, Node #743,
+  Script #744, unknown class #745, project script class #746, empty type #747;
+  path_prefix res://inst_ #748, the commands folder #749, not-res:// #750,
+  empty #751; cursor page after res://inst_plain.tscn with limit 2 #752 and
+  limit 1000 #753, PackedScene cursor after res://sub.tscn #754; cursor not in
+  the tree #755-756; cursor not res:// #757; wrong field types path_prefix
+  #758, type #759, cursor #760, refresh #761, project_path #762; a wrong
+  project with other invalid fields where the project guard answers first
+  #763), and refresh false with a full listing #764.
   Not covered, with reason:
   - "request exceeds the maximum size" (>8 MiB without newline): reaching
     it needs an 8 MB write, and the reported byte count varies with TCP
@@ -389,6 +419,10 @@ COVERAGE (request numbers above)
   - "class must be a built-in ... script class" (create_node, query_nodes):
     unreachable in this editor: ClassDB rejects the script class first,
     observed as "unknown class: QryScriptClass" (#29, #74).
+  - list-resources refresh: the scanning reply and the moment the scan
+    finishes depend on timing, so the refresh case cannot be
+    byte-deterministic. It is proved instead by an isolated-editor probe over
+    the real socket and by the CLI's loopback fake-plugin tests.
   - "the open scene has no file path yet": no command opens an unsaved
     scene, so this branch cannot trigger from outside.
   - "failed to save the scene": needs an IO failure while saving.
@@ -426,7 +460,7 @@ NOTES
   one-action Undo/Redo proof lives in the Code4Me task result, from a separate
   isolated-editor probe that sends a real connect-signal request through the
   plugin and then triggers the editor's Undo/Redo through the safe route.
-  The baseline is only valid while the plugin's replies for these 729 requests
+  The baseline is only valid while the plugin's replies for these 764 requests
   are supposed to stay the same. A change that adds or alters a command's
   behavior on purpose needs a new baseline, recorded from the last trusted
   commit, and a fresh determinism check (record three times, compare byte for

@@ -96,6 +96,7 @@ The new node is in the scene and in the file now. You can undo the edits in the 
 | read | `inspect-node` | Show a node's class, child count, and property values. |
 | read | `query-nodes` | Find nodes in the open scene by class, group, or name. |
 | read | `inspect-class` | Show an engine class's properties, methods, and signals. |
+| read | `list-resources` | List the resource files the editor file system holds. |
 | read | `open-scene` | Open a scene in the editor; with `--save`, save the current scene first. |
 | edit | `rename-node` | Rename a node. |
 | edit | `create-node` | Add a new node under another node. |

@@ -1449,6 +1449,49 @@ def build_v():
     return out
 
 
+def lr(**kw):
+    d = {"command": "list_resources", "project_path": "<PROJ>"}
+    d.update(kw)
+    return ("line", json.dumps(d, separators=(",", ":")))
+
+
+def build_w():
+    # Session W: list-resources (read-only, no edited scene). Runs before
+    # session C like the other no-scene sessions. The listing covers the
+    # fixture project and the copied plugin, both deterministic. The refresh
+    # cases are not recorded: their reply depends on scan timing.
+    return [
+        ("line", '{"command":"status"}'),
+        lr(limit=1000),
+        lr(limit=1), lr(limit=2), lr(limit=1000),
+        lr(limit=0), lr(limit=1001), lr(limit=1.5),
+        ("line", '{"command":"list_resources","project_path":"<PROJ>","limit":"abc"}'),
+        lr(type="GDScript", limit=1000),
+        lr(type="PackedScene", limit=1000),
+        lr(type="Resource", limit=1000),
+        lr(type="StandardMaterial3D", limit=1000),
+        lr(type="Node", limit=1000),
+        lr(type="Script", limit=1000),
+        lr(type="NoSuchClass999"),
+        lr(type="QryScriptClass"),
+        lr(type=""),
+        lr(path_prefix="res://inst_", limit=1000),
+        lr(path_prefix="res://addons/godot_pipeline/commands/", limit=1000),
+        lr(path_prefix="not-res://"),
+        lr(path_prefix="", limit=1000),
+        lr(cursor="res://inst_plain.tscn", limit=2),
+        lr(cursor="res://inst_plain.tscn", limit=1000),
+        lr(cursor="res://sub.tscn", type="PackedScene", limit=1000),
+        lr(cursor="res://inst_absent.tscn"),
+        lr(cursor="res://no/such.tres"),
+        lr(cursor="not-res://"),
+        lr(path_prefix=7), lr(type=7), lr(cursor=7), lr(refresh="yes"),
+        ("line", '{"command":"list_resources","project_path":7}'),
+        ("line", '{"command":"list_resources","project_path":"/no/replay-mismatch","limit":0,"type":"NoSuchClass999","cursor":"nope","path_prefix":"nope","refresh":false}'),
+        lr(refresh=False, limit=1000),
+    ]
+
+
 def send_one(port, text, newline, timeout):
     s = socket.create_connection(("127.0.0.1", port), timeout=10)
     try:
@@ -1482,6 +1525,22 @@ def status_scene(port):
     return json.loads(reply).get("data", {}).get("scene_path")
 
 
+def wait_filesystem_ready(port, proj, timeout=120):
+    # Polls list-resources until the editor's file system reports a finished
+    # scan. This wait is not recorded; it keeps a fresh-editor session
+    # deterministic when the editor's startup scan is still running.
+    deadline = time.time() + timeout
+    while True:
+        reply = json.loads(send_one(port, json.dumps(
+            {"command": "list_resources", "project_path": proj, "limit": 1},
+            separators=(",", ":")), True, 25))
+        if reply.get("status") == "ok" and reply["data"].get("scanning") is False:
+            return
+        if time.time() >= deadline:
+            raise RuntimeError("editor file system never became ready")
+        time.sleep(0.5)
+
+
 def launch(proj, scene):
     args = [GODOT, "--headless", "--path", proj, "--editor"]
     if scene:
@@ -1501,7 +1560,7 @@ def stop(proc):
         raise RuntimeError("editor process would not die")
 
 
-def run_session(port, proj, scene, requests, expected_scene):
+def run_session(port, proj, scene, requests, expected_scene, ready_filesystem=False):
     proc = launch(proj, scene)
     try:
         wait_listener(port)
@@ -1517,6 +1576,8 @@ def run_session(port, proj, scene, requests, expected_scene):
             time.sleep(3)
             if status_scene(port) is not None:
                 raise RuntimeError("expected no edited scene, one is open")
+        if ready_filesystem:
+            wait_filesystem_ready(port, proj)
         rows = []
         for kind, text in requests:
             if kind == "file_sha256":
@@ -1656,18 +1717,20 @@ def main():
         if r.returncode != 0:
             raise SystemExit("godot --import failed")
         rows = []
-        # Run order is A, E, G, J, T, C, B, D, F, H, I, K, L, N, O, P, Q, R,
-        # S, U, V: a fresh editor restores the previous session's open scenes,
-        # so the no-scene sessions (A, E, G, J, T, and C before it opens
-        # anything) must run before the scene sessions. Rows are stored A, B,
-        # C, E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, then the new T, U and
-        # V rows, so the first 630 rows stay byte-identical to the previous
-        # baseline and the instantiate-scene rows are appended.
+        # Run order is A, E, G, J, T, W, C, B, D, F, H, I, K, L, N, O, P, Q,
+        # R, S, U, V: a fresh editor restores the previous session's open
+        # scenes, so the no-scene sessions (A, E, G, J, T, W, and C before it
+        # opens anything) must run before the scene sessions. Rows are stored
+        # A, B, C, E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, then the T, U
+        # and V rows, then the new W rows, so the first 729 rows stay
+        # byte-identical to the previous baseline and the list-resources rows
+        # are appended.
         rows_a = run_session(a.port, proj, None, REQ_A, None)
         rows_e = run_session(a.port, proj, None, build_e(), None)
         rows_g = run_session(a.port, proj, None, build_g(), None)
         rows_j = run_session(a.port, proj, None, build_j(), None)
         rows_t = run_session(a.port, proj, None, build_t(), None)
+        rows_w = run_session(a.port, proj, None, build_w(), None, ready_filesystem=True)
         rows_c = run_session(a.port, proj, None, build_c(), None)
         rows_b = run_session(a.port, proj, "res://main.tscn", build_b(), "res://main.tscn")
         rows_d = run_session(a.port, proj, "res://connect.tscn", build_d(), "res://connect.tscn")
@@ -1686,7 +1749,8 @@ def main():
         rows_v = run_session(a.port, proj, "res://inst_base.tscn", build_v(), "res://inst_base.tscn")
         rows = (rows_a + rows_b + rows_c + rows_e + rows_d + rows_f + rows_g
                 + rows_h + rows_i + rows_j + rows_k + rows_l + rows_n + rows_o
-                + rows_p + rows_q + rows_r + rows_s + rows_t + rows_u + rows_v)
+                + rows_p + rows_q + rows_r + rows_s + rows_t + rows_u + rows_v
+                + rows_w)
         with open(a.out, "w") as f:
             for req, rep in rows:
                 f.write(json.dumps({"request": req, "reply": rep}, separators=(",", ":")) + "\n")

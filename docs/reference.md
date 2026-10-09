@@ -46,6 +46,8 @@ One TCP connection per request, on `127.0.0.1:47821` by default:
    `{"command":"save_scene","project_path":"..."}`,
    or
    `{"command":"open_scene","project_path":"...","scene_path":"...","save":false}`,
+   or
+   `{"command":"list_resources","project_path":"...","path_prefix":<prefix or null>,"type":<class or null>,"limit":<int>,"cursor":<path or null>,"refresh":false}`,
    then keeps the socket open for the reply.
 2. The plugin writes one line of JSON back:
    `{"status":"ok","data":...}` or `{"status":"error","message":"..."}`.
@@ -419,6 +421,44 @@ with `data.unsaved` the scenes that still have unsaved changes after the call
 the editor refuses the open, the reply is an `error` naming the requested
 scene, and a save that already happened stays saved.
 
+`list_resources` reports the resource files the editor's file system view
+holds, as a bounded page, and changes nothing: no Undo/Redo step, no dirty
+flag, no file write, and no edited scene is required. `project_path` follows
+the same rules as `rename_node`'s and is checked first. Optional `path_prefix`
+keeps entries whose full path starts with it (an empty string counts as
+absent), optional `type` keeps entries whose engine class equals it or
+inherits it (`ClassDB.is_parent_class`), optional `cursor` is the path of the
+last entry of the previous page, `limit` is an integer in 1..1000 (default
+100), and `refresh` (default false) starts a file-system scan. The reply is
+`{"status":"ok","data":{"scanning":false,"resources":[{"path":"res://...","type":"..."},...],"truncated":false,"next_cursor":null}}`;
+a `GDScript` entry also carries `script_class` and `extends` (either may be
+empty). Entries are in the editor's own walk order (a directory's files before
+its subdirectories, natural case-insensitive order inside a directory);
+`TextFile` entries (`.txt`, `.cfg`, and other text files) are skipped. The page
+holds at most `limit` entries; `truncated` is true when more matched, and
+`next_cursor` is then the last returned path, to pass back as `cursor`. A
+`cursor` that is not in the tree is an error (`cursor not found: <path>`); a
+cursor entry deleted between pages gives that error, and the caller restarts
+without a cursor. `type` must be an engine class (`unknown class: <name>`
+otherwise); a project script class is rejected the same way `query_nodes`
+rejects it. With `refresh` true the plugin starts a scan and replies
+`{"scanning":true,"resources":[],"truncated":false,"next_cursor":null}`; a
+request made while a scan is running replies the same scanning shape, so a
+listing is not a partial page. The CLI's `--refresh` sends the refresh request,
+then repeats the request every 250 ms until the scan finishes or 60 seconds
+pass, and fails with a timeout error if it does not finish. Limits: the tree
+lists loadable resources and omits unknown extensions, `.uid` and `.import`
+sidecars, any folder holding a `.gdignore`, and dot folders (`.godot`, `.git`,
+...); `ResourceLoader` can still open a file there, but this command does not
+list it. `get_file_type` reports the base class, so an instance of a custom
+resource class appears as `type: "Resource"`, not as that class. The tree is a
+cached view: a file changed or added on disk after the editor's last scan does
+not appear until a scan runs, which `refresh` starts. Only headless editors
+were measured; the behavior of a windowed editor was not tested.
+An entry's `type` can be an empty string: the editor reports no type for a
+dangling symlink and for a text file named `.scn`. Such an entry is still
+listed, and a `type` filter such as `Resource` does not match it.
+
 There is no length prefix beyond the newline: a request is one
 newline-terminated JSON object and a reply is one newline-terminated JSON
 object. The plugin buffers the bytes of the request in its own state and
@@ -471,6 +511,10 @@ cargo run -- instantiate-scene --scene-path res://scenes/S1.tscn --parent-path C
 cargo run -- save-scene --project-path /path/to/project
 cargo run -- open-scene --scene-path scenes/S1.tscn --project-path /path/to/project
 cargo run -- open-scene --scene-path res://scenes/S1.tscn --save --project-path /path/to/project
+cargo run -- list-resources --project-path /path/to/project
+cargo run -- list-resources --path-prefix res://scenes/ --type Texture2D --limit 50 --project-path /path/to/project
+cargo run -- list-resources --cursor res://scenes/a.png --project-path /path/to/project
+cargo run -- list-resources --refresh --project-path /path/to/project
 ```
 
 `status` reports the editor version, whether a scene is playing, and the
@@ -538,6 +582,13 @@ anything is saved. Without `--save` a dirty edited scene stays open as a
 background tab; with `--save` it is saved before the open. The success reply
 lists the scenes that still have unsaved changes in `data.unsaved`.
 `--project-path` is canonicalized the same way as the other commands.
+`list-resources [--path-prefix <res://dir/>] [--type <class>] [--limit <n>] [--cursor <path>] [--refresh] --project-path <dir>`
+lists the resource files the editor file system holds, as a bounded page,
+without loading them (see Protocol above), canonicalizing `--project-path`
+the same way as the other commands. `--limit` defaults to 100 and is
+forwarded as raw JSON, so the plugin validates it after the project check.
+With `--refresh` the CLI starts a scan and waits until it finishes (up to
+60 seconds) before printing the listing.
 
 ## Verification
 
@@ -549,8 +600,8 @@ cargo clippy -- -D warnings
 
 `cargo test` includes protocol tests that open a real loopback socket and
 round-trip `Request`/`Response` pairs through the exact wire format, not
-just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `inspect_node`, `query_nodes`, `inspect_class`, `delete_node`, `connect_signal`, `set_group`, `set_unique_name`, `instantiate_scene`, `save_scene`, and `open_scene` wire
-shapes and the CLI's `set-property` value parsing.
+just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `inspect_node`, `query_nodes`, `inspect_class`, `delete_node`, `connect_signal`, `set_group`, `set_unique_name`, `instantiate_scene`, `save_scene`, `open_scene`, and `list_resources` wire
+shapes, the `list-resources` CLI parsing and its `--refresh` wait loop, and the CLI's `set-property` value parsing.
 
 Live verification against a running Godot editor (status, scene tree,
 rename/undo/redo/save, project-path rejection, and the disabled-plugin
