@@ -7,7 +7,7 @@ Godot Pipeline is a Rust CLI plus a GDScript EditorPlugin for stock Godot. An ag
 - Fifteen commands exist: `status`, `scene-tree`, `rename-node`, `create-node`, `set-property`, `delete-node`, `connect-signal`, `set-group`, `set-unique-name`, `instantiate-scene`, `save-scene`, `inspect-node`, `query-nodes`, `inspect-class`, `open-scene`. See `README.md`.
 - `set-property` accepts 17 value types, ten Packed array types, and typed `Array[T]`. It rejects untyped arrays on purpose.
 - The plugin assembles each request across editor ticks, with an 8 MiB cap and a 5 second idle timeout.
-- Current version is 0.5.0. Phase 1 (read and navigate) is complete.
+- Current version is 0.6.0. Phase 1 (read and navigate) and Phase 2 (Godot scene edits) are complete.
 - The golden replay harness in `tools/replay/` covers all fifteen commands (729 baseline rows).
 - The add-on is a prototype and is not ready for distribution.
 
@@ -53,10 +53,10 @@ Why external writes wait: scene edits go through the editor's undo stack, so Ctr
 
 **Phase 2: Godot scene edits.** Build after Phase 1 discovery exists and each behavior is proved in a throwaway editor.
 
-5. `connect-signal`: serialized signal wiring. Done on the current working tree (next release).
-6. `set-group`: persistent node group membership. Done on the current working tree (next release).
-7. `set-unique-name`: `%` name within owner scope. Done on the current working tree (next release).
-8. `instantiate-scene`: add a PackedScene instance with correct ownership. Done on the current working tree (next release).
+5. `connect-signal`: serialized signal wiring. Done in 0.6.0.
+6. `set-group`: persistent node group membership. Done in 0.6.0.
+7. `set-unique-name`: `%` name within owner scope. Done in 0.6.0.
+8. `instantiate-scene`: add a PackedScene instance with correct ownership. Done in 0.6.0.
 
 **Phase 3: resources and the project boundary.**
 
