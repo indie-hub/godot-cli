@@ -38,6 +38,26 @@ static func project_path_mismatch(project_path_value: Variant) -> String:
 	return ""
 
 
+## Validates a request's `limit` (a JSON number, defaulting to 100) as an
+## integer in 1..1000. Returns `{"value": int}` on success or
+## `{"error": message}` otherwise; a fractional or non-numeric value is not an
+## integer, and an integer outside the range is rejected up front. Shared by
+## `query_nodes` and `list_resources`.
+static func validate_limit(value: Variant) -> Dictionary:
+	if typeof(value) == TYPE_INT:
+		if int(value) < 1 or int(value) > 1000:
+			return {"error": "limit must be between 1 and 1000"}
+		return {"value": int(value)}
+	if typeof(value) == TYPE_FLOAT:
+		var number := float(value)
+		if number != floorf(number):
+			return {"error": "limit must be an integer"}
+		if number < 1.0 or number > 1000.0:
+			return {"error": "limit must be between 1 and 1000"}
+		return {"value": int(number)}
+	return {"error": "limit must be an integer"}
+
+
 ## Resolves the request fields every scene command checks in the same fixed
 ## order: the project path first (so a mismatched caller can never cause a
 ## mutation or a read), then the edited scene root, then the node path and its

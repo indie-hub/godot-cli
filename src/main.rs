@@ -9,6 +9,14 @@ mod protocol;
 
 use protocol::{ClientError, DEFAULT_PORT, HOST, Request, Response, send_request};
 use std::process::ExitCode;
+use std::thread;
+use std::time::Duration;
+
+/// The `list-resources --refresh` poll interval and overall timeout. The
+/// plugin cannot reply after it has sent the scanning reply, so the CLI waits
+/// here and repeats the request until the scan finishes.
+const REFRESH_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const REFRESH_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -53,6 +61,10 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut instantiate_parent_path: Option<String> = None;
     let mut scene_path: Option<String> = None;
     let mut save: bool = false;
+    let mut list_path_prefix: Option<String> = None;
+    let mut list_type: Option<String> = None;
+    let mut list_cursor: Option<String> = None;
+    let mut list_refresh: bool = false;
 
     let mut arguments = args.iter().skip(1);
     while let Some(argument) = arguments.next() {
@@ -162,6 +174,7 @@ fn run(args: &[String]) -> Result<(), String> {
                     })?);
             }
             "instantiate-scene" => command = Some(argument.clone()),
+            "list-resources" => command = Some(argument.clone()),
             "--port" => {
                 let value = arguments
                     .next()
@@ -201,6 +214,25 @@ fn run(args: &[String]) -> Result<(), String> {
                 scene_path = Some(value.clone());
             }
             "--save" => save = true,
+            "--path-prefix" => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| "--path-prefix requires a value".to_string())?;
+                list_path_prefix = Some(value.clone());
+            }
+            "--type" => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| "--type requires a value".to_string())?;
+                list_type = Some(value.clone());
+            }
+            "--cursor" => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| "--cursor requires a value".to_string())?;
+                list_cursor = Some(value.clone());
+            }
+            "--refresh" => list_refresh = true,
             "--deferred" => connect_deferred = true,
             "--one-shot" => connect_one_shot = true,
             "--remove" => {
@@ -236,7 +268,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let Some(command) = command else {
         print_usage();
         return Err(
-            "missing command (expected 'status', 'scene-tree', 'rename-node', 'create-node', 'set-property', 'inspect-node', 'query-nodes', 'inspect-class', 'delete-node', 'connect-signal', 'set-group', 'set-unique-name', 'instantiate-scene', 'save-scene', or 'open-scene')"
+            "missing command (expected 'status', 'scene-tree', 'rename-node', 'create-node', 'set-property', 'inspect-node', 'query-nodes', 'inspect-class', 'list-resources', 'delete-node', 'connect-signal', 'set-group', 'set-unique-name', 'instantiate-scene', 'save-scene', or 'open-scene')"
                 .to_string(),
         );
     };
@@ -406,11 +438,40 @@ fn run(args: &[String]) -> Result<(), String> {
                 save,
             }
         }
+        "list-resources" => {
+            let project_path = project_path
+                .ok_or_else(|| "list-resources requires --project-path <dir>".to_string())?;
+            // The limit is forwarded as raw JSON, like query-nodes, so the
+            // plugin validates it after the project-path check.
+            let limit = query_limit
+                .as_deref()
+                .map(parse_value_argument)
+                .unwrap_or_else(|| serde_json::json!(100));
+            Request::ListResources {
+                project_path: canonicalize_project_path(&project_path)?,
+                path_prefix: list_path_prefix,
+                r#type: list_type,
+                limit,
+                cursor: list_cursor,
+                refresh: list_refresh,
+            }
+        }
         _ => unreachable!("argument parsing only assigns known commands"),
     };
 
-    let response =
-        send_request(HOST, port, &request).map_err(|error| describe_client_error(&error, port))?;
+    let response = match &request {
+        Request::ListResources { refresh: true, .. } => poll_refresh(
+            &request,
+            |current| {
+                send_request(HOST, port, current)
+                    .map_err(|error| describe_client_error(&error, port))
+            },
+            thread::sleep,
+            REFRESH_TIMEOUT,
+        )?,
+        _ => send_request(HOST, port, &request)
+            .map_err(|error| describe_client_error(&error, port))?,
+    };
 
     match response {
         Response::Ok { data } => {
@@ -431,6 +492,62 @@ fn describe_client_error(error: &ClientError, port: u16) -> String {
         ClientError::Io(source) => format!("network error talking to the plugin: {source}"),
         ClientError::Protocol(message) => format!("unexpected response from the plugin: {message}"),
     }
+}
+
+/// Sends `request` (whose `refresh` field is true), then repeats it with
+/// `refresh` false every `REFRESH_POLL_INTERVAL` until the plugin reports a
+/// finished scan or an error, and returns the final response. Fails with the
+/// timeout message once `timeout` passes first. `sleep` is a parameter so the
+/// wait is testable without real time.
+fn poll_refresh<F, S>(
+    request: &Request,
+    mut send: F,
+    mut sleep: S,
+    timeout: Duration,
+) -> Result<Response, String>
+where
+    F: FnMut(&Request) -> Result<Response, String>,
+    S: FnMut(Duration),
+{
+    let mut response = send(request)?;
+    if refresh_complete(&response) {
+        return Ok(response);
+    }
+    let poll = refresh_off(request);
+    let mut waited = Duration::ZERO;
+    loop {
+        if waited >= timeout {
+            return Err(format!(
+                "list-resources --refresh did not finish within {} seconds; the editor may still be scanning",
+                timeout.as_secs()
+            ));
+        }
+        sleep(REFRESH_POLL_INTERVAL);
+        waited += REFRESH_POLL_INTERVAL;
+        response = send(&poll)?;
+        if refresh_complete(&response) {
+            return Ok(response);
+        }
+    }
+}
+
+/// Whether a reply ends the `--refresh` wait: an error reply, or an ok reply
+/// whose `scanning` flag is false.
+fn refresh_complete(response: &Response) -> bool {
+    match response {
+        Response::Error { .. } => true,
+        Response::Ok { data } => data.get("scanning") == Some(&serde_json::Value::Bool(false)),
+    }
+}
+
+/// The same `list-resources` request with `refresh` false, for the polls
+/// after the first refresh request.
+fn refresh_off(request: &Request) -> Request {
+    let mut poll = request.clone();
+    if let Request::ListResources { refresh, .. } = &mut poll {
+        *refresh = false;
+    }
+    poll
 }
 
 /// Resolves `project_path` to an absolute, symlink-free path so it can be
@@ -495,6 +612,9 @@ fn print_usage() {
     eprintln!(
         "       godot-pipeline open-scene --scene-path <path> --project-path <dir> [--save] [--port PORT]"
     );
+    eprintln!(
+        "       godot-pipeline list-resources [--path-prefix <res://dir/>] [--type <class>] [--limit <n>] [--cursor <path>] [--refresh] --project-path <dir> [--port PORT]"
+    );
     eprintln!("  status      report the editor's connection state and edited scene path");
     eprintln!("  scene-tree  report the node tree of the currently edited scene");
     eprintln!("  rename-node rename a node in the edited scene through the editor's undo/redo");
@@ -522,6 +642,11 @@ fn print_usage() {
         "              it can be instantiated, whether it is a Node subclass, and its declared"
     );
     eprintln!("              properties, methods, and signals; no edited scene is required");
+    eprintln!("  list-resources list the resource files the editor file system holds, as a");
+    eprintln!("              bounded page, without loading them; --path-prefix and --type");
+    eprintln!("              filter the list, --cursor resumes the page after the last path,");
+    eprintln!("              --limit bounds it (default 100, max 1000), and --refresh starts a");
+    eprintln!("              file-system scan and waits for it to finish");
     eprintln!("  delete-node remove a node and its subtree from the edited scene through the");
     eprintln!("              editor's undo/redo stack; the scene root ('.') is rejected");
     eprintln!("  connect-signal connect <signal> on a source node to <method> on a target node");
@@ -558,7 +683,7 @@ fn print_usage() {
     eprintln!("              changes in `unsaved`; an untitled scene appears as `[\"\"]`.");
     eprintln!("  --project-path  the project the command targets; required for rename-node,");
     eprintln!(
-        "                  create-node, set-property, inspect-node, query-nodes, inspect-class, delete-node, connect-signal, set-group, set-unique-name, instantiate-scene, save-scene, and open-scene, rejected"
+        "                  create-node, set-property, inspect-node, query-nodes, inspect-class, list-resources, delete-node, connect-signal, set-group, set-unique-name, instantiate-scene, save-scene, and open-scene, rejected"
     );
     eprintln!("                  by the plugin if it does not match the open project");
     eprintln!("  --port      override the default port ({DEFAULT_PORT})");
@@ -566,12 +691,44 @@ fn print_usage() {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_value_argument, run};
+    use super::{parse_value_argument, poll_refresh, run};
     use crate::protocol::{HOST, Request, Response};
     use serde_json::json;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     use std::thread;
+    use std::time::Duration;
+
+    /// Binds a loopback socket, asserts the single request `run` sends equals
+    /// `expected`, and replies with `data`. Returns the port to pass to the CLI
+    /// and the server thread, so a list-resources parsing test exercises
+    /// parsing and transport together.
+    fn list_resources_server(
+        expected: Request,
+        data: serde_json::Value,
+    ) -> (u16, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind((HOST, 0)).expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+        let handle = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept connection");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+            let mut request_line = String::new();
+            reader
+                .read_line(&mut request_line)
+                .expect("read request line");
+            let request: Request =
+                serde_json::from_str(request_line.trim_end()).expect("parse request");
+            assert_eq!(request, expected);
+            let mut writer = stream;
+            let mut response_line =
+                serde_json::to_string(&Response::Ok { data }).expect("serialize reply");
+            response_line.push('\n');
+            writer
+                .write_all(response_line.as_bytes())
+                .expect("write reply");
+        });
+        (port, handle)
+    }
 
     #[test]
     fn parse_value_argument_keeps_json_types_and_falls_back_to_string() {
@@ -1548,5 +1705,292 @@ mod tests {
     fn help_flag_succeeds() {
         let args = vec!["godot-pipeline".to_string(), "--help".to_string()];
         run(&args).expect("--help must succeed");
+    }
+
+    /// Pins the CLI's `list-resources` argument parsing: the filters, limit,
+    /// and cursor are forwarded as given and `--project-path` is canonicalized
+    /// the same way as the other commands.
+    #[test]
+    fn list_resources_cli_forwards_filters_and_canonicalized_project_path() {
+        let project_dir = std::env::temp_dir();
+        let canonical = std::fs::canonicalize(&project_dir).expect("canonicalize temp dir");
+        let canonical_arg = canonical.to_str().expect("temp dir is UTF-8").to_string();
+        let expected = Request::ListResources {
+            project_path: canonical_arg,
+            path_prefix: Some("res://scenes/".to_string()),
+            r#type: Some("Texture2D".to_string()),
+            limit: serde_json::json!(50),
+            cursor: Some("res://scenes/a.png".to_string()),
+            refresh: false,
+        };
+        let (port, server) = list_resources_server(expected, json!({}));
+
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "list-resources".to_string(),
+            "--path-prefix".to_string(),
+            "res://scenes/".to_string(),
+            "--type".to_string(),
+            "Texture2D".to_string(),
+            "--limit".to_string(),
+            "50".to_string(),
+            "--cursor".to_string(),
+            "res://scenes/a.png".to_string(),
+            "--project-path".to_string(),
+            project_dir.to_str().expect("temp dir is UTF-8").to_string(),
+            "--port".to_string(),
+            port.to_string(),
+        ];
+        run(&args).expect("run succeeds");
+
+        server.join().expect("server thread does not panic");
+    }
+
+    /// Pins the CLI's `list-resources` defaults: absent filters and cursor
+    /// serialize as null and the limit defaults to 100.
+    #[test]
+    fn list_resources_without_flags_uses_defaults() {
+        let project_dir = std::env::temp_dir();
+        let canonical = std::fs::canonicalize(&project_dir).expect("canonicalize temp dir");
+        let canonical_arg = canonical.to_str().expect("temp dir is UTF-8").to_string();
+        let expected = Request::ListResources {
+            project_path: canonical_arg,
+            path_prefix: None,
+            r#type: None,
+            limit: serde_json::json!(100),
+            cursor: None,
+            refresh: false,
+        };
+        let (port, server) = list_resources_server(expected, json!({}));
+
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "list-resources".to_string(),
+            "--project-path".to_string(),
+            project_dir.to_str().expect("temp dir is UTF-8").to_string(),
+            "--port".to_string(),
+            port.to_string(),
+        ];
+        run(&args).expect("run succeeds");
+
+        server.join().expect("server thread does not panic");
+    }
+
+    /// Pins that `--refresh` reaches the wire as a real JSON bool true and
+    /// that the wait ends when the first reply reports `scanning` false.
+    #[test]
+    fn list_resources_cli_forwards_the_refresh_flag() {
+        let project_dir = std::env::temp_dir();
+        let canonical = std::fs::canonicalize(&project_dir).expect("canonicalize temp dir");
+        let canonical_arg = canonical.to_str().expect("temp dir is UTF-8").to_string();
+        let expected = Request::ListResources {
+            project_path: canonical_arg,
+            path_prefix: None,
+            r#type: None,
+            limit: serde_json::json!(100),
+            cursor: None,
+            refresh: true,
+        };
+        let (port, server) = list_resources_server(
+            expected,
+            json!({"scanning": false, "resources": [], "truncated": false, "next_cursor": null}),
+        );
+
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "list-resources".to_string(),
+            "--refresh".to_string(),
+            "--project-path".to_string(),
+            project_dir.to_str().expect("temp dir is UTF-8").to_string(),
+            "--port".to_string(),
+            port.to_string(),
+        ];
+        run(&args).expect("run succeeds");
+
+        server.join().expect("server thread does not panic");
+    }
+
+    /// Pins the CLI's rejection of `list-resources` without `--project-path`:
+    /// it must fail before any request is sent.
+    #[test]
+    fn list_resources_without_project_path_is_rejected() {
+        let args = vec!["godot-pipeline".to_string(), "list-resources".to_string()];
+        let error = run(&args).expect_err("list-resources without --project-path must fail");
+        assert!(
+            error.contains("list-resources requires --project-path"),
+            "{error}"
+        );
+    }
+
+    /// Pins the full `--refresh` CLI path over a real loopback socket that acts
+    /// as a fake plugin: the first (refresh true) request and the next (refresh
+    /// false) poll are answered with `scanning` true, and the third with
+    /// `scanning` false, so `run` finishes with the last reply.
+    #[test]
+    fn list_resources_refresh_cli_polls_a_loopback_fake_plugin() {
+        let listener = TcpListener::bind((HOST, 0)).expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+
+        let project_dir = std::env::temp_dir();
+        let canonical = std::fs::canonicalize(&project_dir).expect("canonicalize temp dir");
+        let canonical_arg = canonical.to_str().expect("temp dir is UTF-8").to_string();
+
+        let server = thread::spawn(move || {
+            for (index, refresh) in [true, false, false].into_iter().enumerate() {
+                let (stream, _) = listener.accept().expect("accept connection");
+                let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+                let mut request_line = String::new();
+                reader
+                    .read_line(&mut request_line)
+                    .expect("read request line");
+                let request: Request =
+                    serde_json::from_str(request_line.trim_end()).expect("parse request");
+                assert_eq!(
+                    request,
+                    Request::ListResources {
+                        project_path: canonical_arg.clone(),
+                        path_prefix: None,
+                        r#type: None,
+                        limit: serde_json::json!(100),
+                        cursor: None,
+                        refresh,
+                    }
+                );
+                let scanning = index < 2;
+                let mut writer = stream;
+                let mut response_line = serde_json::to_string(&Response::Ok {
+                    data: json!({
+                        "scanning": scanning,
+                        "resources": [],
+                        "truncated": false,
+                        "next_cursor": null,
+                    }),
+                })
+                .expect("serialize reply");
+                response_line.push('\n');
+                writer
+                    .write_all(response_line.as_bytes())
+                    .expect("write reply");
+            }
+        });
+
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "list-resources".to_string(),
+            "--refresh".to_string(),
+            "--project-path".to_string(),
+            project_dir.to_str().expect("temp dir is UTF-8").to_string(),
+            "--port".to_string(),
+            port.to_string(),
+        ];
+        run(&args).expect("run succeeds after the scan finishes");
+
+        server.join().expect("server thread does not panic");
+    }
+
+    /// Pins the `--refresh` loop: the first request and the polls run until a
+    /// reply reports `scanning` false, and the final reply is returned.
+    #[test]
+    fn list_resources_refresh_loop_polls_until_scanning_is_false() {
+        let request = Request::ListResources {
+            project_path: "/tmp/project".to_string(),
+            path_prefix: None,
+            r#type: None,
+            limit: serde_json::json!(100),
+            cursor: None,
+            refresh: true,
+        };
+        let scanning = Response::Ok {
+            data: json!({"scanning": true, "resources": [], "truncated": false, "next_cursor": null}),
+        };
+        let done = Response::Ok {
+            data: json!({"scanning": false, "resources": [], "truncated": false, "next_cursor": null}),
+        };
+        let mut replies = vec![scanning.clone(), scanning, done].into_iter();
+        let mut refreshes = Vec::new();
+        let response = poll_refresh(
+            &request,
+            |current| {
+                if let Request::ListResources { refresh, .. } = current {
+                    refreshes.push(*refresh);
+                }
+                Ok(replies.next().expect("one reply per send"))
+            },
+            |_| {},
+            Duration::from_secs(60),
+        )
+        .expect("the loop finishes when scanning is false");
+
+        assert_eq!(refreshes, vec![true, false, false]);
+        assert!(matches!(response, Response::Ok { .. }));
+    }
+
+    /// Pins that an error reply stops the `--refresh` loop and is returned.
+    #[test]
+    fn list_resources_refresh_loop_stops_on_an_error_reply() {
+        let request = Request::ListResources {
+            project_path: "/tmp/project".to_string(),
+            path_prefix: None,
+            r#type: None,
+            limit: serde_json::json!(100),
+            cursor: None,
+            refresh: true,
+        };
+        let scanning = Response::Ok {
+            data: json!({"scanning": true, "resources": [], "truncated": false, "next_cursor": null}),
+        };
+        let error = Response::Error {
+            message: "the editor file system is not ready".to_string(),
+        };
+        let mut replies = vec![scanning, error].into_iter();
+        let mut calls = 0;
+        let response = poll_refresh(
+            &request,
+            |_| {
+                calls += 1;
+                Ok(replies.next().expect("one reply per send"))
+            },
+            |_| {},
+            Duration::from_secs(60),
+        )
+        .expect("the loop returns the error reply");
+
+        assert_eq!(calls, 2);
+        assert_eq!(
+            response,
+            Response::Error {
+                message: "the editor file system is not ready".to_string(),
+            }
+        );
+    }
+
+    /// Pins that the `--refresh` loop fails with the documented timeout when
+    /// the scan never finishes.
+    #[test]
+    fn list_resources_refresh_loop_times_out_while_scanning() {
+        let request = Request::ListResources {
+            project_path: "/tmp/project".to_string(),
+            path_prefix: None,
+            r#type: None,
+            limit: serde_json::json!(100),
+            cursor: None,
+            refresh: true,
+        };
+        let result = poll_refresh(
+            &request,
+            |_| {
+                Ok(Response::Ok {
+                    data: json!({"scanning": true, "resources": [], "truncated": false, "next_cursor": null}),
+                })
+            },
+            |_| {},
+            Duration::from_secs(60),
+        )
+        .expect_err("the loop must time out");
+
+        assert!(
+            result.contains("did not finish within 60 seconds"),
+            "{result}"
+        );
     }
 }
