@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `list-resources` command to list the resource files the editor's file system view holds, as a bounded page, without loading or reading any resource and without changing the scene. `--path-prefix` keeps entries whose full path starts with a string, `--type` keeps entries whose engine class equals or inherits an engine class, `--limit` (default 100, max 1000) bounds the page, `--cursor` resumes after the last path of the previous page, and `--refresh` starts an editor file-system scan and waits for it to finish before printing the listing. An entry is `{"path","type"}`; a `GDScript` entry also carries `script_class` and `extends`. The list is in the editor's own walk order (a directory's files before its subdirectories, natural case-insensitive order inside a directory) and omits `TextFile` entries, unknown extensions, `.uid` and `.import` sidecars, any folder holding a `.gdignore`, and dot folders. The request is rejected before the file system is read when the project path does not match, when a filter has the wrong type, when `limit` is not an integer in 1..1000, when `type` is not an engine class in `ClassDB`, or when `path_prefix` or `cursor` does not start with `res://`; a `cursor` that is not in the tree is rejected with `cursor not found`. The reply is the scanning shape while a scan runs, so a listing is not a partial page.
+
 ## [0.6.0] - 2026-10-09
 
 ### Added

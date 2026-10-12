@@ -36,7 +36,7 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 			if global_class.get("class") == class_filter:
 				return CommandSupport.error("class must be a built-in class, not a project script class: %s" % class_filter)
 
-	var limit := _validate_limit(request.get("limit", 100))
+	var limit := CommandSupport.validate_limit(request.get("limit", 100))
 	if limit.has("error"):
 		return CommandSupport.error(limit["error"])
 
@@ -63,25 +63,6 @@ static func _optional_string(request: Dictionary, key: String) -> String:
 	if typeof(value) != TYPE_STRING:
 		return ""
 	return value
-
-
-## Validates the request's `limit` (a JSON number, defaulting to 100) as an
-## integer in 1..1000. Returns `{"value": int}` on success or
-## `{"error": message}` otherwise; a fractional or non-numeric value is not an
-## integer, and an integer outside the range is rejected up front.
-static func _validate_limit(value: Variant) -> Dictionary:
-	if typeof(value) == TYPE_INT:
-		if int(value) < 1 or int(value) > 1000:
-			return {"error": "limit must be between 1 and 1000"}
-		return {"value": int(value)}
-	if typeof(value) == TYPE_FLOAT:
-		var number := float(value)
-		if number != floorf(number):
-			return {"error": "limit must be an integer"}
-		if number < 1.0 or number > 1000.0:
-			return {"error": "limit must be between 1 and 1000"}
-		return {"value": int(number)}
-	return {"error": "limit must be an integer"}
 
 
 ## Appends every node at or below `node` that matches all the filters, in

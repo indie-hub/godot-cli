@@ -162,6 +162,24 @@ pub enum Request {
         scene_path: String,
         save: bool,
     },
+    /// Lists the resource files the editor's file system view holds, as a
+    /// bounded page, without changing the scene and without loading or reading
+    /// any resource. `path_prefix` keeps entries whose full path starts with
+    /// it; `type` keeps entries whose engine class equals it or inherits it;
+    /// `cursor` is the path of the last entry of the previous page; `limit` is
+    /// a JSON number the plugin validates (default 100, max 1000); `refresh`
+    /// asks the plugin to start a file-system scan and reply in the scanning
+    /// state. `project_path` follows the same rules as
+    /// [`Request::RenameNode`].
+    ListResources {
+        project_path: String,
+        path_prefix: Option<String>,
+        #[serde(rename = "type")]
+        r#type: Option<String>,
+        limit: serde_json::Value,
+        cursor: Option<String>,
+        refresh: bool,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
@@ -643,6 +661,49 @@ mod tests {
         assert_eq!(
             json,
             r#"{"command":"open_scene","project_path":"/tmp/project","scene_path":"scenes/S1.tscn","save":false}"#
+        );
+    }
+
+    /// Pins the exact wire shape the GDScript plugin matches on
+    /// (`"command":"list_resources"` plus the six snake_case fields, with the
+    /// Rust keyword `type` serialized as `type`).
+    #[test]
+    fn list_resources_request_serializes_to_the_documented_wire_shape() {
+        let request = Request::ListResources {
+            project_path: "/tmp/project".to_string(),
+            path_prefix: Some("res://scenes/".to_string()),
+            r#type: Some("Texture2D".to_string()),
+            limit: serde_json::json!(50),
+            cursor: Some("res://scenes/a.png".to_string()),
+            refresh: true,
+        };
+
+        let json = serde_json::to_string(&request).expect("serialize request");
+
+        assert_eq!(
+            json,
+            r#"{"command":"list_resources","project_path":"/tmp/project","path_prefix":"res://scenes/","type":"Texture2D","limit":50,"cursor":"res://scenes/a.png","refresh":true}"#
+        );
+    }
+
+    /// Pins the default wire shape: absent filters and cursor serialize as
+    /// null, the CLI's default limit is 100, and `refresh` is a real JSON bool.
+    #[test]
+    fn list_resources_without_filters_serializes_nulls_and_defaults() {
+        let request = Request::ListResources {
+            project_path: "/tmp/project".to_string(),
+            path_prefix: None,
+            r#type: None,
+            limit: serde_json::json!(100),
+            cursor: None,
+            refresh: false,
+        };
+
+        let json = serde_json::to_string(&request).expect("serialize request");
+
+        assert_eq!(
+            json,
+            r#"{"command":"list_resources","project_path":"/tmp/project","path_prefix":null,"type":null,"limit":100,"cursor":null,"refresh":false}"#
         );
     }
 }
