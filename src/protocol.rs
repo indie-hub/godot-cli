@@ -180,6 +180,16 @@ pub enum Request {
         cursor: Option<String>,
         refresh: bool,
     },
+    /// Reports one resource file's class and its typed property values,
+    /// without changing the scene and without loading any project code (a
+    /// resource whose dependency chain contains a `@tool` script is refused).
+    /// `resource_path` must be a `res://` path that does not contain a `..`
+    /// segment or `uid://` and is not a scene or script file. `project_path`
+    /// follows the same rules as [`Request::RenameNode`].
+    InspectResource {
+        project_path: String,
+        resource_path: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
@@ -661,6 +671,25 @@ mod tests {
         assert_eq!(
             json,
             r#"{"command":"open_scene","project_path":"/tmp/project","scene_path":"scenes/S1.tscn","save":false}"#
+        );
+    }
+
+    /// Pins the exact wire shape the GDScript plugin matches on
+    /// (`"command":"inspect_resource"` plus the two snake_case fields); a
+    /// silent rename in `#[serde(...)]` here would desync the two sides
+    /// without either one failing to compile.
+    #[test]
+    fn inspect_resource_request_serializes_to_the_documented_wire_shape() {
+        let request = Request::InspectResource {
+            project_path: "/tmp/project".to_string(),
+            resource_path: "res://scenes/a.tres".to_string(),
+        };
+
+        let json = serde_json::to_string(&request).expect("serialize request");
+
+        assert_eq!(
+            json,
+            r#"{"command":"inspect_resource","project_path":"/tmp/project","resource_path":"res://scenes/a.tres"}"#
         );
     }
 

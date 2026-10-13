@@ -48,6 +48,8 @@ One TCP connection per request, on `127.0.0.1:47821` by default:
    `{"command":"open_scene","project_path":"...","scene_path":"...","save":false}`,
    or
    `{"command":"list_resources","project_path":"...","path_prefix":<prefix or null>,"type":<class or null>,"limit":<int>,"cursor":<path or null>,"refresh":false}`,
+   or
+   `{"command":"inspect_resource","project_path":"...","resource_path":"res://..."}`,
    then keeps the socket open for the reply.
 2. The plugin writes one line of JSON back:
    `{"status":"ok","data":...}` or `{"status":"error","message":"..."}`.
@@ -459,6 +461,68 @@ An entry's `type` can be an empty string: the editor reports no type for a
 dangling symlink and for a text file named `.scn`. Such an entry is still
 listed, and a `type` filter such as `Resource` does not match it.
 
+`inspect_resource` reads one resource file as a typed view and changes
+nothing: no Undo/Redo step, no dirty flag, no file write, no save, and no
+edited scene is required. `project_path` follows the same rules as
+`rename_node`'s and is checked first. `resource_path` must be a `res://`
+path; the plugin rejects it up front when it does not start with `res://`,
+contains a `..` path segment, or contains `uid://`. Scene files (`.tscn`,
+`.scn`) and script files (`.gd`) are refused with a pointer to the commands
+that read them (`open_scene`/`scene_tree`, or reading the file directly), and
+a text `.tres` over 4 MiB is refused before it is parsed, so a huge text load
+never runs and never stalls the editor. The extension comparison is
+case-insensitive, so `.TSCN`, `.SCN`, `.GD` and `.TRES` are refused the same
+way as their lowercase forms. A path that does not exist
+(`ResourceLoader.exists` false: a TextFile, an unknown extension, a
+directory, a missing file, a dangling symlink) replies `resource not found`.
+The reply is `{"status":"ok","data":{"path":"...","type":"...","properties":[...]}}`
+with `data.path` echoing the requested path and one property entry per
+inspector/storage property in engine order, matching `inspect_node`'s shape:
+`name`, the Variant type name, `read_only`, and `value` in the JSON shape
+`set-property` accepts (via the shared value codec). An object-valued
+property is shown compactly: an external resource reference as
+`{"path","type"}` without expanding it, and an embedded sub-resource (a
+`resource_path` of the form `file::id`) inline as `{"path","type","properties"}`
+with a depth limit of 3 and a loop guard on the sub-resource ids, so a
+self-referencing fixture cannot loop and a chain stops at the limit with the
+deepest sub-resource shown as `{"path","type"}`. A null property value is
+null. For the value types the codec cannot address (Object beyond Resource,
+Dictionary, untyped Array, Callable, Signal, ...) the entry has `value: null`
+and `supported: false`. An array property with more than 10,000 elements is
+replaced by `{"type","size","truncated":true}` so the reply stays well below
+the size that breaks the real CLI.
+
+A resource whose dependency chain contains a `@tool` script is refused,
+naming that script: `@tool` resource scripts run project code on load, so the
+command scans the chain before anything is loaded and every refusal runs no
+project code. A `@tool` annotation is a line whose first non-blank text is
+`@tool`; a script that merely mentions `@tool` in a comment or string is
+accepted, and a line inside a triple-quoted string is not treated as an
+annotation. The chain is the transitive `ResourceLoader.get_dependencies`
+closure (direct only per call, with an optional `uid://...::::` prefix
+stripped) plus, for every `.gd` script reached, the `res://`, relative and
+`uid://` paths its source text names in `preload("...")` and `load("...")`
+literals (whitespace may span lines around the call and the path, trailing
+arguments after the path are allowed, and a `uid://` literal is resolved
+through the engine's `ResourceUID` registry): compiling a script compiles a
+preloaded resource, so a `@tool` on a preloaded resource runs even when the
+outer resource later fails to load. The walk also follows each script's
+`extends` edge: `extends "path"` adds that path, a one-line
+`class_name Name extends ...` and an inner `class Name extends ...` add their
+base, and `extends ClassName` resolves the class name against the project's
+global class list and adds that script's path, so a base script's own preloads
+and base are walked in turn. A script that merely `extends` a `@tool` base
+without `@tool` itself is therefore refused and the reply names the base
+script, in both the path and the `class_name` forms. The scan cannot see a
+path a script builds at run time, a `uid://` the editor does not know, or a
+language construct the scan does not read; such a `@tool` path is not refused,
+and these limits are documented.
+The load uses `ResourceLoader.CACHE_MODE_IGNORE_DEEP` only: a fresh copy of
+the top resource and its dependencies, never a replacement of a live cached
+object that an open scene may hold. A file that exists but does not load (a
+corrupt, an empty, or a text-scene-named-`.res` file) replies
+`resource failed to load`.
+
 There is no length prefix beyond the newline: a request is one
 newline-terminated JSON object and a reply is one newline-terminated JSON
 object. The plugin buffers the bytes of the request in its own state and
@@ -515,6 +579,7 @@ cargo run -- list-resources --project-path /path/to/project
 cargo run -- list-resources --path-prefix res://scenes/ --type Texture2D --limit 50 --project-path /path/to/project
 cargo run -- list-resources --cursor res://scenes/a.png --project-path /path/to/project
 cargo run -- list-resources --refresh --project-path /path/to/project
+cargo run -- inspect-resource --resource-path res://scenes/a.tres --project-path /path/to/project
 ```
 
 `status` reports the editor version, whether a scene is playing, and the
@@ -589,6 +654,12 @@ the same way as the other commands. `--limit` defaults to 100 and is
 forwarded as raw JSON, so the plugin validates it after the project check.
 With `--refresh` the CLI starts a scan and waits until it finishes (up to
 60 seconds) before printing the listing.
+`inspect-resource --resource-path <res://path> --project-path <dir>` reads a
+resource file's class and typed property values (see Protocol above),
+canonicalizing `--project-path` the same way as the other commands and
+resolving symlinks first: a `res://` path whose symlink resolves outside the
+project is rejected locally (`resource path resolves outside the project`)
+instead of being sent, because the plugin cannot detect a symlink escape.
 
 ## Verification
 
@@ -600,8 +671,9 @@ cargo clippy -- -D warnings
 
 `cargo test` includes protocol tests that open a real loopback socket and
 round-trip `Request`/`Response` pairs through the exact wire format, not
-just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `inspect_node`, `query_nodes`, `inspect_class`, `delete_node`, `connect_signal`, `set_group`, `set_unique_name`, `instantiate_scene`, `save_scene`, `open_scene`, and `list_resources` wire
-shapes, the `list-resources` CLI parsing and its `--refresh` wait loop, and the CLI's `set-property` value parsing.
+just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `inspect_node`, `query_nodes`, `inspect_class`, `delete_node`, `connect_signal`, `set_group`, `set_unique_name`, `instantiate_scene`, `save_scene`, `open_scene`, `list_resources`, and `inspect_resource` wire
+shapes, the `list-resources` CLI parsing and its `--refresh` wait loop, the
+`inspect-resource` CLI parsing and its symlink containment, and the CLI's `set-property` value parsing.
 
 Live verification against a running Godot editor (status, scene tree,
 rename/undo/redo/save, project-path rejection, and the disabled-plugin
