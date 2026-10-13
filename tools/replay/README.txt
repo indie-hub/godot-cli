@@ -5,8 +5,8 @@ connect-signal, 263-362 cover set-group, 363-413 cover set-unique-name,
 cases, 531-619 cover the inherited-rename rejection, 620-630 cover the fresh
 reloads of the accepted inherited-rename cases, 631-636 cover the
 instantiate-scene no-scene guards, 637-719 cover instantiate-scene accepted and
-rejected cases, 720-729 cover the fresh reloads of the accepted instances, and
-730-764 cover list-resources).
+rejected cases, 720-729 cover the fresh reloads of the accepted instances,
+730-764 cover list-resources, and 765-825 cover inspect-resource).
 
 HOW TO RUN
   GODOT=/path/to/Godot python3 replay.py --plugin-dir DIR --port PORT --out FILE
@@ -19,18 +19,19 @@ HOW TO RUN
   Prints the first differing request with both replies, or IDENTICAL.
   Exit 0 identical, 1 different.
 
-  Each run takes about two minutes: one --import plus twenty-two editor launches
+  Each run takes about two minutes: one --import plus twenty-three editor launches
   (in launch order A with no scene, E with no scene, G with no scene, J with no
-  scene, T with no scene, W with no scene, C with no scene, B with res://main.tscn,
+  scene, T with no scene, W with no scene, X with no scene, C with no scene,
+  B with res://main.tscn,
   D and F with res://connect.tscn, H and I with res://group.tscn, K and L with
   res://unique.tscn, N, O, P and Q with the rename_*.tscn fixtures, R with
   res://inherit_i3.tscn, S with res://inherit_i1.tscn, and U and V with
-  res://inst_base.tscn), 764
-  requests. The plugin has sixteen commands, a different count. Rows are
-  stored A, B, C, E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, T, U, V, W: a fresh
+  res://inst_base.tscn), 825
+  requests. The plugin has seventeen commands, a different count. Rows are
+  stored A, B, C, E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, T, U, V, W, X: a fresh
   editor restores the previous session's open scenes, so the no-scene sessions
-  (A, E, G, J, T, W, and C before it opens anything) must run before any scene
-  session. Appending the new sessions keeps rows 1-729 byte-identical.
+  (A, E, G, J, T, W, X, and C before it opens anything) must run before any scene
+  session. Appending the new sessions keeps rows 1-764 byte-identical.
 
 WHAT IT DOES
   Session A (requests 1-23, no edited scene): status ok with scene_path null;
@@ -235,6 +236,56 @@ WHAT IT DOES
   unrecorded, until the editor's file-system scan reports scanning false
   before its first recorded request, so a fresh editor's startup scan cannot
   change a reply.
+  Session X (requests 765-825, no edited scene, runs right after session W):
+  the inspect-resource matrix. It runs after W's file-listing rows are
+  recorded, so the fixture files it needs are written into the throwaway
+  project only at that point and never appear in the earlier rows' listings;
+  the new `inspect_resource.gd` command script is staged into the copied
+  plugin only for this session too, so rows 1-764 list the previous command
+  set. status, then: accepted typed reads of a script-backed .tres with an
+  embedded sub-resource (shown inline) and an external reference ({path,type}),
+  its external dependency .tres, a generated binary .res (text-format .res
+  does not load in 4.7.2, so the fixture is produced by ResourceSaver and its
+  bytes are deterministic, measured byte-identical across independent project
+  paths), a script-backed binary .res, a .gdshader, a .tres whose array
+  exceeds 10,000 elements (replaced by {type,size,truncated:true}), an
+  embedded sub-resource chain that reaches the reply depth limit of 3 (the
+  fourth level shows as {path,type}) and a self-referencing embedded
+  sub-resource (the loop guard shows the second visit as {path,type}); the
+  refusals: a text .tres over 4 MiB and an uppercase .TRES over 4 MiB
+  (refused before parse), a resource whose dependency chain contains a @tool
+  script, reached on the top script, on an embedded sub-resource, on an
+  external dependency, and through a script preload (including the malformed
+  resource that would fail to load, which must still be refused before any
+  project code runs), through a multi-line `preload(` literal, through a
+  `ResourceLoader.load("...", "", 1)` literal with trailing arguments, and
+  through the `extends` edge: an ordinary base reached by `extends "path"` or
+  `extends ClassName` (its own preload of a @tool resource refuses the whole
+  chain), including a two-level extends chain and a one-line
+  `class_name Name extends Base` form and an inner `class Name extends ...`
+  form (both walked), and through a `preload("uid://...")` literal whose uid
+  resolves through the ResourceUID registry to a resource with a @tool script
+  (both the well-formed and the malformed forms, accepted in the former scan,
+  are now refused); a resource whose script merely extends a @tool script in
+  the `class_name` form, or extends it by `extends "res://..."` path, is
+  refused and the reply names the base script, an ordinary script that
+  mentions @tool only in a comment (accepted), an ordinary script whose
+  comment or string merely contains the word `extends` (accepted, adds no
+  path), an ordinary script with an `@icon("...")` prefix on its extends line
+  whose base is ordinary (accepted), an ordinary script with a @tool-looking
+  line inside a triple-quoted string (accepted), a script whose base is a
+  built-in class (accepted), an ordinary script that preloads a non-@tool
+  resource (accepted), a scene .tscn/.scn and uppercase .TSCN/.SCN and a
+  script .gd and uppercase .GD (kind refusals with pointers), a missing file,
+  a corrupt .tres, an empty .tres, a text scene named .res, an unknown
+  extension, a TextFile, a dangling symlink, and the project root directory
+  (all "resource not found"/"failed to load" errors), the path-rule refusals
+  (not res://, "..", uid://), wrong-project guards (with both valid and
+  invalid paths), and the missing-field and bad-type rows. Each cold payload
+  in the scan cases uses its own @tool script and resource files that no
+  other row loads in the session, so a refused or failed-to-load request is
+  never warmed by an earlier accepted one; the uid fixture's uid is fixed, so
+  its registration is deterministic.
 
 NORMALISATION
   The only one: the throwaway project's absolute path is replaced with
@@ -244,6 +295,14 @@ NORMALISATION
   otherwise verbatim; no sorting, no rounding.
 
 DETERMINISM PROOF
+  The inspect-resource rows were recorded twice; the two full runs are
+  byte-identical (cmp clean, 825 pairs). Rows 1-764 are byte-identical to the
+  764-row baseline that preceded this change (git show HEAD): the new command
+  script is staged out of the copied plugin while sessions A..W record, and
+  the new fixture files are written only for session X, so the earlier
+  commands-folder and file listings never change. Row 765 is a status request
+  and rows 766-825 are the inspect-resource session; the generated binary .res
+  fixture bytes are byte-identical across independent project paths (measured).
   The list-resources rows were recorded twice; the two full runs are
   byte-identical (compare.py IDENTICAL, cmp clean, 764 pairs). Rows 1-729 are
   byte-identical to the 729-row baseline that preceded this change (git show

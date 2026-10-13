@@ -65,6 +65,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut list_type: Option<String> = None;
     let mut list_cursor: Option<String> = None;
     let mut list_refresh: bool = false;
+    let mut inspect_resource_path: Option<String> = None;
 
     let mut arguments = args.iter().skip(1);
     while let Some(argument) = arguments.next() {
@@ -175,6 +176,7 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             "instantiate-scene" => command = Some(argument.clone()),
             "list-resources" => command = Some(argument.clone()),
+            "inspect-resource" => command = Some(argument.clone()),
             "--port" => {
                 let value = arguments
                     .next()
@@ -232,6 +234,12 @@ fn run(args: &[String]) -> Result<(), String> {
                     .ok_or_else(|| "--cursor requires a value".to_string())?;
                 list_cursor = Some(value.clone());
             }
+            "--resource-path" => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| "--resource-path requires a value".to_string())?;
+                inspect_resource_path = Some(value.clone());
+            }
             "--refresh" => list_refresh = true,
             "--deferred" => connect_deferred = true,
             "--one-shot" => connect_one_shot = true,
@@ -268,7 +276,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let Some(command) = command else {
         print_usage();
         return Err(
-            "missing command (expected 'status', 'scene-tree', 'rename-node', 'create-node', 'set-property', 'inspect-node', 'query-nodes', 'inspect-class', 'list-resources', 'delete-node', 'connect-signal', 'set-group', 'set-unique-name', 'instantiate-scene', 'save-scene', or 'open-scene')"
+            "missing command (expected 'status', 'scene-tree', 'rename-node', 'create-node', 'set-property', 'inspect-node', 'query-nodes', 'inspect-class', 'list-resources', 'inspect-resource', 'delete-node', 'connect-signal', 'set-group', 'set-unique-name', 'instantiate-scene', 'save-scene', or 'open-scene')"
                 .to_string(),
         );
     };
@@ -456,6 +464,17 @@ fn run(args: &[String]) -> Result<(), String> {
                 refresh: list_refresh,
             }
         }
+        "inspect-resource" => {
+            let resource_path = inspect_resource_path
+                .ok_or_else(|| "inspect-resource requires --resource-path <path>".to_string())?;
+            let project_path = project_path
+                .ok_or_else(|| "inspect-resource requires --project-path <dir>".to_string())?;
+            let canonical_project_path = canonicalize_project_path(&project_path)?;
+            Request::InspectResource {
+                resource_path: resolve_resource_path(&canonical_project_path, &resource_path)?,
+                project_path: canonical_project_path,
+            }
+        }
         _ => unreachable!("argument parsing only assigns known commands"),
     };
 
@@ -564,6 +583,53 @@ fn canonicalize_project_path(project_path: &str) -> Result<String, String> {
         .ok_or_else(|| format!("--project-path {project_path} is not valid UTF-8"))
 }
 
+/// Validates the `res://` resource path of `inspect-resource` against the
+/// canonical project path. A path that does not start with `res://` is
+/// returned unchanged for the plugin to reject with its own message. A `..`
+/// segment or a `uid://` is likewise left for the plugin, which rejects them
+/// with its own message; the CLI's job here is the symlink resolution the
+/// plugin cannot do: a symlinked file or a symlinked directory that resolves
+/// outside the project is rejected up front, because the plugin would either
+/// fail to load it or, for a directory symlink, misreport it. The literal
+/// file is resolved through the deepest existing ancestor, so a missing file
+/// (whose ancestor is inside the project) still reaches the plugin and gets
+/// its `resource not found` reply, while a symlink that escapes the project
+/// at any level is rejected here. Returns the original path unchanged when
+/// it is inside the project.
+fn resolve_resource_path(
+    canonical_project_path: &str,
+    resource_path: &str,
+) -> Result<String, String> {
+    let Some(relative) = resource_path.strip_prefix("res://") else {
+        return Ok(resource_path.to_string());
+    };
+    let project_root = std::path::Path::new(canonical_project_path);
+    let mut candidate = project_root.join(relative);
+    let resolved = loop {
+        match std::fs::canonicalize(&candidate) {
+            Ok(resolved) => break resolved,
+            Err(_) => {
+                let Some(parent) = candidate.parent() else {
+                    return Err(format!(
+                        "resource path resolves outside the project: {resource_path}"
+                    ));
+                };
+                candidate = parent.to_path_buf();
+            }
+        }
+    };
+    // `Path::starts_with` compares whole path components, so a symlink
+    // resolved to a sibling such as `/a/b2` is not inside `/a/b`, and a
+    // non-ASCII component never crosses a char boundary the way a byte slice
+    // would.
+    if !resolved.starts_with(project_root) {
+        return Err(format!(
+            "resource path resolves outside the project: {resource_path}"
+        ));
+    }
+    Ok(resource_path.to_string())
+}
+
 /// Interprets a `set-property` value argument as JSON when it parses (so
 /// `true`, `3`, `1.5`, `[1, 2]`, and `"42"` keep their JSON types) and as a
 /// plain string otherwise (so `Hello` or `#ff8800` need no shell-level
@@ -615,6 +681,9 @@ fn print_usage() {
     eprintln!(
         "       godot-pipeline list-resources [--path-prefix <res://dir/>] [--type <class>] [--limit <n>] [--cursor <path>] [--refresh] --project-path <dir> [--port PORT]"
     );
+    eprintln!(
+        "       godot-pipeline inspect-resource --resource-path <res://path> --project-path <dir> [--port PORT]"
+    );
     eprintln!("  status      report the editor's connection state and edited scene path");
     eprintln!("  scene-tree  report the node tree of the currently edited scene");
     eprintln!("  rename-node rename a node in the edited scene through the editor's undo/redo");
@@ -647,6 +716,11 @@ fn print_usage() {
     eprintln!("              filter the list, --cursor resumes the page after the last path,");
     eprintln!("              --limit bounds it (default 100, max 1000), and --refresh starts a");
     eprintln!("              file-system scan and waits for it to finish");
+    eprintln!("  inspect-resource read one resource file's class and typed property values");
+    eprintln!("              without changing the scene; --resource-path must be a res:// path");
+    eprintln!("              that is not a scene or script file; a resource whose dependency");
+    eprintln!("              chain contains a @tool script, a text .tres over 4 MiB, or a path");
+    eprintln!("              that resolves outside the project is refused before anything loads");
     eprintln!("  delete-node remove a node and its subtree from the edited scene through the");
     eprintln!("              editor's undo/redo stack; the scene root ('.') is rejected");
     eprintln!("  connect-signal connect <signal> on a source node to <method> on a target node");
@@ -683,7 +757,7 @@ fn print_usage() {
     eprintln!("              changes in `unsaved`; an untitled scene appears as `[\"\"]`.");
     eprintln!("  --project-path  the project the command targets; required for rename-node,");
     eprintln!(
-        "                  create-node, set-property, inspect-node, query-nodes, inspect-class, list-resources, delete-node, connect-signal, set-group, set-unique-name, instantiate-scene, save-scene, and open-scene, rejected"
+        "                  create-node, set-property, inspect-node, query-nodes, inspect-class, list-resources, inspect-resource, delete-node, connect-signal, set-group, set-unique-name, instantiate-scene, save-scene, and open-scene, rejected"
     );
     eprintln!("                  by the plugin if it does not match the open project");
     eprintln!("  --port      override the default port ({DEFAULT_PORT})");
@@ -1992,5 +2066,188 @@ mod tests {
             result.contains("did not finish within 60 seconds"),
             "{result}"
         );
+    }
+
+    /// Pins the CLI's `inspect-resource` argument parsing: the resource path is
+    /// forwarded as given and `--project-path` is canonicalized the same way as
+    /// the other commands, then the request is sent to the configured `--port`.
+    #[test]
+    fn inspect_resource_cli_forwards_resource_path_and_canonicalized_project_path() {
+        let project_dir = tempdir_with("inspect_resource_forward");
+        let canonical = std::fs::canonicalize(&project_dir).expect("canonicalize temp dir");
+        let canonical_arg = canonical.to_str().expect("temp dir is UTF-8").to_string();
+        let expected = Request::InspectResource {
+            project_path: canonical_arg,
+            resource_path: "res://scenes/a.tres".to_string(),
+        };
+        let (port, server) = list_resources_server(expected, json!({}));
+
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "inspect-resource".to_string(),
+            "--resource-path".to_string(),
+            "res://scenes/a.tres".to_string(),
+            "--project-path".to_string(),
+            project_dir.to_str().expect("temp dir is UTF-8").to_string(),
+            "--port".to_string(),
+            port.to_string(),
+        ];
+        run(&args).expect("run succeeds");
+
+        server.join().expect("server thread does not panic");
+    }
+
+    /// Pins the CLI's rejection of `inspect-resource` without a resource path:
+    /// it must fail before any request is sent.
+    #[test]
+    fn inspect_resource_without_resource_path_is_rejected() {
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "inspect-resource".to_string(),
+            "--project-path".to_string(),
+            "/tmp/project".to_string(),
+        ];
+        let error = run(&args).expect_err("inspect-resource without --resource-path must fail");
+        assert!(
+            error.contains("inspect-resource requires --resource-path"),
+            "{error}"
+        );
+    }
+
+    /// Pins the CLI's rejection of `inspect-resource` without `--project-path`:
+    /// it must fail before any request is sent.
+    #[test]
+    fn inspect_resource_without_project_path_is_rejected() {
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "inspect-resource".to_string(),
+            "--resource-path".to_string(),
+            "res://scenes/a.tres".to_string(),
+        ];
+        let error = run(&args).expect_err("inspect-resource without --project-path must fail");
+        assert!(
+            error.contains("inspect-resource requires --project-path"),
+            "{error}"
+        );
+    }
+
+    /// Pins the CLI's symlink containment: a `res://` path whose symlink
+    /// resolves outside the project is rejected locally instead of being sent.
+    #[cfg(unix)]
+    #[test]
+    fn inspect_resource_rejects_a_symlink_that_escapes_the_project() {
+        let base = std::env::temp_dir();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        let dir = base.join(format!("inspect_resource_symlink_{unique}"));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        // The outside target is a sibling of the project, not inside it, so
+        // the symlink genuinely escapes.
+        let outside = base.join(format!("inspect_resource_symlink_outside_{unique}"));
+        std::fs::create_dir_all(&outside).expect("create outside dir");
+        std::fs::write(outside.join("a.tres"), "not a real resource").expect("write outside file");
+        std::os::unix::fs::symlink(&outside.join("a.tres"), dir.join("linked.tres"))
+            .expect("create symlink");
+
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "inspect-resource".to_string(),
+            "--resource-path".to_string(),
+            "res://linked.tres".to_string(),
+            "--project-path".to_string(),
+            dir.to_str().expect("temp dir is UTF-8").to_string(),
+        ];
+        let error = run(&args).expect_err("the escaping symlink must be rejected");
+        assert!(
+            error.contains("resource path resolves outside the project"),
+            "{error}"
+        );
+    }
+
+    /// Pins that a symlink whose target crosses the project-prefix name at a
+    /// multi-byte character is rejected with a normal error, not a panic: the
+    /// containment check compares whole path components, so it never slices a
+    /// UTF-8 string by byte index.
+    #[cfg(unix)]
+    #[test]
+    fn inspect_resource_rejects_a_non_ascii_symlink_without_panicking() {
+        let base = std::env::temp_dir();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        let project_name = format!("inspect_resource_unicode_{unique}");
+        let dir = base.join(&project_name);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        // The outside target shares the project directory's name up to the
+        // last ASCII character, then an e-acute in a way that would cross a
+        // multi-byte boundary if the containment check sliced bytes.
+        let outside = base.join(format!(
+            "{}é-onwards",
+            &project_name[..project_name.len() - 1]
+        ));
+        std::fs::create_dir_all(&outside).expect("create outside dir");
+        std::fs::write(outside.join("a.tres"), "not a real resource").expect("write outside file");
+        std::os::unix::fs::symlink(&outside.join("a.tres"), dir.join("escape.tres"))
+            .expect("create symlink");
+
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "inspect-resource".to_string(),
+            "--resource-path".to_string(),
+            "res://escape.tres".to_string(),
+            "--project-path".to_string(),
+            dir.to_str().expect("temp dir is UTF-8").to_string(),
+        ];
+        let error = run(&args).expect_err("the escaping symlink must be rejected");
+        assert!(
+            error.contains("resource path resolves outside the project"),
+            "{error}"
+        );
+    }
+
+    /// Pins quiet behavior for a missing file: the symlink check resolves the
+    /// deepest existing ancestor (the project root), which stays inside the
+    /// project, so the request is still sent and the plugin answers.
+    #[test]
+    fn inspect_resource_missing_file_reaches_the_plugin() {
+        let project_dir = tempdir_with("inspect_resource_missing");
+        let canonical = std::fs::canonicalize(&project_dir).expect("canonicalize temp dir");
+        let canonical_arg = canonical.to_str().expect("temp dir is UTF-8").to_string();
+        let expected = Request::InspectResource {
+            project_path: canonical_arg,
+            resource_path: "res://absent.tres".to_string(),
+        };
+        let (port, server) = list_resources_server(expected, json!({}));
+
+        let args = vec![
+            "godot-pipeline".to_string(),
+            "inspect-resource".to_string(),
+            "--resource-path".to_string(),
+            "res://absent.tres".to_string(),
+            "--project-path".to_string(),
+            project_dir.to_str().expect("temp dir is UTF-8").to_string(),
+            "--port".to_string(),
+            port.to_string(),
+        ];
+        run(&args).expect("run succeeds");
+
+        server.join().expect("server thread does not panic");
+    }
+
+    /// Creates a fresh temporary directory with `prefix`, under the system
+    /// temp dir, and returns it, so the symlink checks never touch a real
+    /// project and never collide across runs.
+    fn tempdir_with(prefix: &str) -> std::path::PathBuf {
+        let base = std::env::temp_dir();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        let dir = base.join(format!("{prefix}_{unique}"));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
     }
 }
