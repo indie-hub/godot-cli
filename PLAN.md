@@ -4,13 +4,13 @@ Godot Pipeline is a Rust CLI plus a GDScript EditorPlugin for stock Godot. An ag
 
 ## Status
 
-- The command table in `README.md` holds 17 commands. The same 17 names are dispatched in `src/main.rs`.
+- The command table in `README.md` holds 17 commands. The plugin publishes their names and arguments, and `godot-cli` dispatches them from that interface.
 - Phase 1, read and navigate, is complete. `inspect-node`, `query-nodes`, `open-scene` and `inspect-class` shipped in 0.5.0.
 - Phase 2, Godot scene edits, is complete. `connect-signal`, `set-group`, `set-unique-name` and `instantiate-scene` shipped in 0.6.0.
 - `list-resources` and `inspect-resource` are built on this working tree. `CHANGELOG.md` lists both under `[Unreleased]`, so neither is in a release yet.
 - The version in `Cargo.toml` is 0.6.0.
-- The replay baseline in `tools/replay/baseline.jsonl` holds 825 rows.
-- `cargo test --locked` passes: 67 passed, 0 failed, 0 ignored.
+- The replay baseline in `tools/replay/baseline.jsonl` holds 827 rows.
+- `cargo test --locked` passes: 23 passed, 0 failed, 0 ignored.
 - `set-property` accepts 17 scalar types and ten `Packed*Array` types, plus a typed `Array[T]` of those types. It rejects untyped arrays, object and resource references, `Dictionary`, `Callable`, `Signal` and `RID`.
 - The plugin assembles each request across editor ticks. It caps a request at 8 MiB (`MAX_REQUEST_BYTES` in `addon/godot_pipeline/editor_plugin.gd`) and drops an idle connection after 5 seconds (`REQUEST_IDLE_TIMEOUT_MSEC`).
 - The add-on is a prototype and is not ready for distribution.
@@ -61,6 +61,18 @@ Decisions of 2026-10-14, made by Bruno after the measurements:
 | Is the timeout enforced? | The timeout is best effort. A runaway loop on the main thread cannot be stopped from inside the editor. |
 | Does `eval` undo its own edits? | No. `eval` is an exception to rule 3 and to rule 6 in the rules section above. The rules section itself stays as it is. |
 | What does the reply report? | The reply carries `scene_changed`. The plugin marks the scene unsaved when the value is true. |
+
+CLI decisions of 2026-10-14:
+
+| Question | Decision |
+| --- | --- |
+| How does the CLI learn the commands? | The plugin describes its commands through one interface (name, arguments with type, flag, positional index, required, default, and help); the CLI collects the interface from the running editor on every run, with no cache. No editor means no command list. |
+| How are plugin commands run? | Plugin commands run through `call`: `godot-cli call <command> [arguments]`. The CLI has its own fixed commands: `commands` (lists the plugin commands), `--help`, and `--version`. Top-level plugin commands were rejected. The subcommand is `call` (not `command`); the discovery subcommand is `commands` (not `list`). |
+| Where is an invocation validated? | The CLI validates statically before sending. The plugin still validates the whole request. |
+| Which argument types exist? | Five: `string`, `boolean`, `json`, `res_path`, and `integer`. An integer argument is checked by the CLI before sending (a JSON integer literal that fits 64 bits). |
+| What is the binary called? | The binary is renamed from `godot-pipeline` to `godot-cli`. The add-on folder `godot_pipeline`, `plugin.cfg`, and the product name `Godot Pipeline` stay. |
+| Is old usage kept? | Nothing was released, so no compatibility was kept: old top-level invocations no longer exist; there is no shim. |
+| How many commands moved at once? | The 17 commands were migrated all at once to the interface; no hand-written command is left beside it (no hybrid). |
 
 ## Rules every new command must keep
 
@@ -225,6 +237,7 @@ These are Godot concepts with no counterpart in the Unity command list. They are
 
 ## Architecture notes
 
+- **Command interface.** The plugin publishes the interface of its commands and the CLI reads it on every run; see [the command interface](docs/reference.md#command-interface).
 - **MCP facade (deferred).** If one is built, make it a Rust stdio adapter over the same commands, with the plugin staying the authority on the scene. Do not put an MCP HTTP server inside the GDScript plugin: it would add protocol and concurrency work to the editor thread. Do not expose a command before the command underneath it exists. The earlier plan listed a facade tool list as the target of this parity work; that surface is not the target.
 - **Batches.** Unity's `changes/apply` applies a ChangeSet in one undo step. The Godot equivalent is one `EditorUndoRedoManager` action that holds many operations. A batch must validate every step against the resulting state before it opens the action. Defer this until the small commands and a preflight model exist. Disk writes, imports, exports and tests can never join a scene undo action.
 - **Governance (deferred).** The Unity command line has no global switch. Its safety is per call: `dry_run` on 40 commands and `confirm` on 29 commands, and 18 of those 29 refuse the call without `confirm=true`. That model fits Godot's rule that a request is validated whole before anything changes. Godot's own design is still open: whether the gates live on the command line, on the plugin, or on both, and how an operator grants them. The earlier sketch put the grants in per-user `EditorSettings`; that sketch came from the wrong reference.
@@ -256,6 +269,6 @@ That is 21 Unity commands. The other 97 rows are docs and source only, and neith
 - How would a C# `eval` be compiled? No working route was found in the tested editor, and external compilers were not tested.
 - Governance gates: does Godot adopt the Unity per-call model of `dry_run` and `confirm`, and do the gates cover direct command-line calls as well as any other interface?
 - External writes: when do project settings, resource files, scripts, imports and exports start? Nothing is built today.
-- The proposed `commands` discovery subcommand, which would print every command with its argument schema as JSON. Is it wanted?
+- The `commands` discovery subcommand, which prints every command with its argument schema as JSON, exists: the plugin publishes the schema and `godot-cli` reads it from the running editor, with no cache.
 - How much measurement does a `docs and source only` row need before it is built?
 - The 15 `UNITY_ONLY` rows: is a Godot-flavored alternative wanted for each, or is the gap accepted?

@@ -4,7 +4,7 @@ This file is the detailed reference for the wire protocol and every command. REA
 
 ## Layout
 
-- `addon/godot_pipeline/` — the GDScript `EditorPlugin` source of truth:
+- `addon/godot_pipeline/` - the GDScript `EditorPlugin` source of truth:
   `editor_plugin.gd` holds the socket server, request framing, reply writing,
   and dispatch into one script per command under `commands/`;
   `commands/command_support.gd` holds the reply constructors, the shared
@@ -12,8 +12,11 @@ This file is the detailed reference for the wire protocol and every command. REA
   JSON/Variant value conversions. Copy this folder into a Godot project's
   `addons/` directory and enable it under Project Settings > Plugins to use
   it.
-- `src/protocol.rs` — the wire protocol and the synchronous TCP client.
-- `src/main.rs` — the CLI commands.
+- `src/protocol.rs` - the wire protocol and the synchronous TCP client.
+- `src/main.rs` - the CLI: the fixed options, and the generic engine that
+  builds every command's request from the interface the plugin publishes.
+- `tests/schema_fixture.json` - the interface the plugin publishes, copied
+  from its own reply so the engine is tested against it.
 
 ## Protocol
 
@@ -549,37 +552,169 @@ Godot editor instance can host the plugin on a given machine at a time.
 Override the CLI's port with `--port` if the plugin is configured to listen
 elsewhere.
 
+### Command interface
+
+The plugin publishes the interface of its commands and the CLI reads it.
+The client sends `{"command":"commands"}` with no other field. The plugin
+answers that request without checking a project path and without needing an
+open scene.
+
+The reply is `{"status":"ok","data":{"protocol_version":1,"commands":[...]}}`
+with 17 entries in the order of the `COMMANDS` table. `protocol_version` is
+the integer 1.
+
+One command entry has `name` (the wire name sent as `command`, with `_`
+shown as `-` on the command line), `description` (the one-line summary shown
+by `commands` and per-command help), `needs_project_path` (true means the
+CLI requires `--project-path`, canonicalizes it, and sends `project_path`;
+false means the CLI accepts the flag but ignores it and sends no
+`project_path`), `edits_scene` (true means the command changes the edited
+scene through the undo stack), `refresh_poll` (true only for
+`list_resources`, which drives the `--refresh` wait), and `arguments` (the
+argument list in command-line order). One argument entry has `name` (the
+wire field name), `flag` (the command-line flag such as `--limit`, or null
+for a positional-only argument), `positional` (the positional index, or null
+for a flag-only argument), `type` (one of the five types below), `required`
+(true means a missing value is refused before anything is sent), `default`
+(the value sent when an absent optional argument is left out), and `help`
+(the one-line text shown in per-command help).
+
+The five types are `string`, `boolean`, `json`, `res_path`, and `integer`.
+A `string` value is sent unchanged; every content check is done by the
+plugin. A `boolean` flag takes no value: presence sends true and absence
+sends the default. A `json` value is sent as parsed JSON when the text parses
+as JSON and as a plain string otherwise; the plugin coerces the result
+strictly to the declared property type. A `res_path` value is a string plus
+one CLI check: a symlink that resolves outside the project is refused before
+anything is sent; the `res://` prefix, `..` segments, `uid://` values, and
+existence are checked by the plugin. An `integer` value must match
+`-?(0|[1-9][0-9]*)` and fit in 64 bits: `0`, `-3`, and `100` pass, while the
+empty string, `abc`, `+5`, `1e2`, `1.5`, `007`, `-`, and a value beyond the
+64-bit range are refused by the CLI with
+`error: invalid --limit value: expected an integer, got abc` before anything
+is sent; the numeric range (for example `1..1000` for a limit) is checked by
+the plugin after the project path.
+
+A client must refuse an interface it does not know instead of guessing. When
+`protocol_version` is not 1, both `call` and `commands` (including
+`commands --json`) print
+`error: unsupported protocol version: 2 (this godot-cli knows 1)` and exit 1.
+When the plugin predates the interface it answers the fetch with
+`{"status":"error","message":"unknown command: commands"}`; the CLI then
+prints `error: the editor plugin is too old for this godot-cli; update the
+plugin` and exits 1.
+
+The interface reply is bounded at 8388608 bytes (8 MiB): a larger reply is
+refused with
+`error: unexpected response from the plugin: the reply is larger than 8388608 bytes`
+and exit 1.
+Command replies have no bound and are read whole, including replies of many
+megabytes.
+
+One `call` opens one connection for the interface fetch, then a fresh
+connection for the command request. A rejected invocation sends only the
+fetch; no command request is sent. `list-resources --refresh` sends the
+command request with `refresh` true on its own connection, then repeats the
+same request with `refresh` false on fresh connections every 250 ms until
+the reply reports the scan as finished or 60 seconds pass.
+
+Each plugin command declares itself where it is implemented: every handler
+script under `commands/` exposes a static `interface()` beside its static
+`run(plugin, request)`. The `COMMANDS` table in `editor_plugin.gd` maps each
+wire name to its handler in one line per command. Discovery walks the table
+values in order and returns each `interface()` result.
+
+The first entry, which takes no arguments:
+
+```
+{
+ "name": "status",
+ "description": "Report the editor version, whether a scene is playing, and the open scene.",
+ "needs_project_path": false,
+ "edits_scene": false,
+ "refresh_poll": false,
+ "arguments": []
+}
+```
+
+One entry with arguments:
+
+```
+{
+ "name": "rename_node",
+ "description": "Rename a node.",
+ "needs_project_path": true,
+ "edits_scene": true,
+ "refresh_poll": false,
+ "arguments": [
+  {
+   "name": "node_path",
+   "flag": null,
+   "positional": 0,
+   "type": "string",
+   "required": true,
+   "default": null,
+   "help": "Scene-relative path of the node; '.' targets the scene root."
+  },
+  {
+   "name": "new_name",
+   "flag": null,
+   "positional": 1,
+   "type": "string",
+   "required": true,
+   "default": null,
+   "help": "The new node name."
+  },
+  {
+   "name": "project_path",
+   "flag": "--project-path",
+   "positional": null,
+   "type": "string",
+   "required": true,
+   "default": null,
+   "help": "Absolute path of the target project; canonicalized before sending."
+  }
+ ]
+}
+```
+
+Both examples are the parsed entries of `tests/schema_fixture.json`.
+
 ## CLI usage
 
 ```sh
-cargo run -- status
-cargo run -- scene-tree
-cargo run -- status --port 47821
-cargo run -- rename-node Child/Deep NewName --project-path /path/to/project
-cargo run -- create-node Child/Deep Label NewLabel --project-path /path/to/project
-cargo run -- set-property Child/Deep position '[10, 20]' --project-path /path/to/project
-cargo run -- set-property Child/Deep modulate '#ff8800' --project-path /path/to/project
-cargo run -- inspect-node --node-path Child/Deep --project-path /path/to/project
-cargo run -- query-nodes --class Node2D --project-path /path/to/project
-cargo run -- query-nodes --group enemies --name 'Leaf*' --limit 50 --project-path /path/to/project
-cargo run -- inspect-class --class Node --project-path /path/to/project
-cargo run -- delete-node Child/Deep --project-path /path/to/project
-cargo run -- connect-signal Source ping Target on_ping --project-path /path/to/project
-cargo run -- connect-signal Source ping Target on_ping --deferred --project-path /path/to/project
-cargo run -- set-group Child/Deep enemies --project-path /path/to/project
-cargo run -- set-group Child/Deep enemies --remove --project-path /path/to/project
-cargo run -- set-unique-name Child/Deep --project-path /path/to/project
-cargo run -- set-unique-name Child/Deep --remove --project-path /path/to/project
-cargo run -- instantiate-scene --scene-path res://scenes/S1.tscn --parent-path . --project-path /path/to/project
-cargo run -- instantiate-scene --scene-path res://scenes/S1.tscn --parent-path Child/Deep --project-path /path/to/project
-cargo run -- save-scene --project-path /path/to/project
-cargo run -- open-scene --scene-path scenes/S1.tscn --project-path /path/to/project
-cargo run -- open-scene --scene-path res://scenes/S1.tscn --save --project-path /path/to/project
-cargo run -- list-resources --project-path /path/to/project
-cargo run -- list-resources --path-prefix res://scenes/ --type Texture2D --limit 50 --project-path /path/to/project
-cargo run -- list-resources --cursor res://scenes/a.png --project-path /path/to/project
-cargo run -- list-resources --refresh --project-path /path/to/project
-cargo run -- inspect-resource --resource-path res://scenes/a.tres --project-path /path/to/project
+cargo run -- commands
+cargo run -- commands --json
+cargo run -- --help
+cargo run -- --version
+cargo run -- call status
+cargo run -- call scene-tree
+cargo run -- call status --port 47821
+cargo run -- call rename-node Child/Deep NewName --project-path /path/to/project
+cargo run -- call create-node Child/Deep Label NewLabel --project-path /path/to/project
+cargo run -- call set-property Child/Deep position '[10, 20]' --project-path /path/to/project
+cargo run -- call set-property Child/Deep modulate '#ff8800' --project-path /path/to/project
+cargo run -- call inspect-node --node-path Child/Deep --project-path /path/to/project
+cargo run -- call query-nodes --class Node2D --project-path /path/to/project
+cargo run -- call query-nodes --group enemies --name 'Leaf*' --limit 50 --project-path /path/to/project
+cargo run -- call inspect-class --class Node --project-path /path/to/project
+cargo run -- call delete-node Child/Deep --project-path /path/to/project
+cargo run -- call connect-signal Source ping Target on_ping --project-path /path/to/project
+cargo run -- call connect-signal Source ping Target on_ping --deferred --project-path /path/to/project
+cargo run -- call set-group Child/Deep enemies --project-path /path/to/project
+cargo run -- call set-group Child/Deep enemies --remove --project-path /path/to/project
+cargo run -- call set-unique-name Child/Deep --project-path /path/to/project
+cargo run -- call set-unique-name Child/Deep --remove --project-path /path/to/project
+cargo run -- call instantiate-scene --scene-path res://scenes/S1.tscn --parent-path . --project-path /path/to/project
+cargo run -- call instantiate-scene --scene-path res://scenes/S1.tscn --parent-path Child/Deep --project-path /path/to/project
+cargo run -- call save-scene --project-path /path/to/project
+cargo run -- call open-scene --scene-path scenes/S1.tscn --project-path /path/to/project
+cargo run -- call open-scene --scene-path res://scenes/S1.tscn --save --project-path /path/to/project
+cargo run -- call list-resources --project-path /path/to/project
+cargo run -- call list-resources --path-prefix res://scenes/ --type Texture2D --limit 50 --project-path /path/to/project
+cargo run -- call list-resources --cursor res://scenes/a.png --project-path /path/to/project
+cargo run -- call list-resources --refresh --project-path /path/to/project
+cargo run -- call inspect-resource --resource-path res://scenes/a.tres --project-path /path/to/project
 ```
 
 `status` reports the editor version, whether a scene is playing, and the
@@ -650,8 +785,9 @@ lists the scenes that still have unsaved changes in `data.unsaved`.
 `list-resources [--path-prefix <res://dir/>] [--type <class>] [--limit <n>] [--cursor <path>] [--refresh] --project-path <dir>`
 lists the resource files the editor file system holds, as a bounded page,
 without loading them (see Protocol above), canonicalizing `--project-path`
-the same way as the other commands. `--limit` defaults to 100 and is
-forwarded as raw JSON, so the plugin validates it after the project check.
+the same way as the other commands. `--limit` defaults to 100: the CLI
+refuses a value outside the integer grammar before anything is sent, and the
+plugin validates the 1..1000 range after the project check.
 With `--refresh` the CLI starts a scan and waits until it finishes (up to
 60 seconds) before printing the listing.
 `inspect-resource --resource-path <res://path> --project-path <dir>` reads a
@@ -669,11 +805,15 @@ cargo test
 cargo clippy -- -D warnings
 ```
 
-`cargo test` includes protocol tests that open a real loopback socket and
-round-trip `Request`/`Response` pairs through the exact wire format, not
-just the Rust data types, plus tests pinning the `rename_node`, `create_node`, `set_property`, `inspect_node`, `query_nodes`, `inspect_class`, `delete_node`, `connect_signal`, `set_group`, `set_unique_name`, `instantiate_scene`, `save_scene`, `open_scene`, `list_resources`, and `inspect_resource` wire
-shapes, the `list-resources` CLI parsing and its `--refresh` wait loop, the
-`inspect-resource` CLI parsing and its symlink containment, and the CLI's `set-property` value parsing.
+`cargo test` includes a protocol test that opens a real loopback socket and
+round-trips a request and a reply through the exact wire format, not just the
+Rust data types, plus the engine tests: the recorded invocations of every
+command, run against a fake plugin that publishes the interface in
+`tests/schema_fixture.json`, each compared with the request that must reach
+the plugin as parsed JSON; the integer grammar; the protocol-version and
+too-old-plugin messages; the help and version output; the `list-resources`
+`--refresh` wait loop; the `inspect-resource` symlink containment; and the
+`set-property` value parsing.
 
 Live verification against a running Godot editor (status, scene tree,
 rename/undo/redo/save, project-path rejection, and the disabled-plugin
