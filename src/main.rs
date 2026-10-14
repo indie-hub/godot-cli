@@ -1609,6 +1609,35 @@ mod tests {
     }
 
     #[test]
+    fn an_io_failure_is_named_as_a_network_error() {
+        let error = describe_client_error(
+            &ClientError::Io(std::io::Error::other("connection reset by peer")),
+            47821,
+        );
+        assert_eq!(
+            error,
+            "network error talking to the plugin: connection reset by peer"
+        );
+    }
+
+    #[test]
+    fn an_interface_reply_without_a_trailing_newline_is_named_as_such() {
+        // The real plugin always ends a reply with its newline, so a missing
+        // one is the editor's own doing and the message must not blame the
+        // size of a reply that is nowhere near the bound.
+        let data = serde_json::from_str(INTERFACE).expect("the interface fixture parses");
+        let reply = serde_json::to_string(&Response::Ok { data }).expect("serialize reply");
+        let (port, server) = raw_plugin(Some(&reply));
+        let error = run(&with_port(port, &["call", "status"])).expect_err("the reply is refused");
+        assert!(
+            error.contains("the reply did not end with a newline"),
+            "{error}"
+        );
+        assert!(!error.contains("larger than"), "{error}");
+        fetch_only(&server.join().expect("server thread does not panic"));
+    }
+
+    #[test]
     fn a_command_reply_larger_than_the_interface_bound_is_still_read() {
         // A node with a very large array answers with megabytes; only the
         // interface fetch is bounded, so this must not be refused.

@@ -99,13 +99,19 @@ pub fn send_request(
             "connection closed before a response was received".to_string(),
         ));
     }
-    match max_reply_bytes {
-        Some(limit) if !response_line.ends_with('\n') => {
-            return Err(ClientError::Protocol(format!(
-                "the reply is larger than {limit} bytes"
-            )));
-        }
-        _ => {}
+    // The bound is read one byte over, so a reply that exactly fills it ends
+    // in its newline and a longer one does not. A reply that ends without a
+    // newline is refused either way; the message says which of the two it was,
+    // because the real plugin always terminates its replies.
+    if let Some(limit) = max_reply_bytes
+        && !response_line.ends_with('\n')
+    {
+        let message = if bytes_read as u64 > limit {
+            format!("the reply is larger than {limit} bytes")
+        } else {
+            "the reply did not end with a newline".to_string()
+        };
+        return Err(ClientError::Protocol(message));
     }
 
     serde_json::from_str(response_line.trim_end())
