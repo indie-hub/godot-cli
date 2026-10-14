@@ -117,7 +117,7 @@ static func interface() -> Dictionary:
 		"arguments": [
 		{"name": "path_prefix", "flag": "--path-prefix", "positional": null, "type": "string", "required": false, "default": null, "help": "Keep entries whose path starts with this string."},
 		{"name": "type", "flag": "--type", "positional": null, "type": "string", "required": false, "default": null, "help": "Keep entries whose engine class equals or inherits this class."},
-		{"name": "limit", "flag": "--limit", "positional": null, "type": "integer", "required": false, "default": 100, "help": "Page bound; forwarded raw so the plugin validates it."},
+		{"name": "limit", "flag": "--limit", "positional": null, "type": "integer", "required": false, "default": 100, "help": "Page bound, an integer; the plugin checks the range."},
 		{"name": "cursor", "flag": "--cursor", "positional": null, "type": "string", "required": false, "default": null, "help": "Resume after the last path of the previous page."},
 		{"name": "refresh", "flag": "--refresh", "positional": null, "type": "boolean", "required": false, "default": false, "help": "Start a file-system scan and wait for it to finish before listing."},
 		{"name": "project_path", "flag": "--project-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Absolute path of the target project; canonicalized before sending."},

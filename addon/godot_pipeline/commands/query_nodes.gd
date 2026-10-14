@@ -69,7 +69,7 @@ static func interface() -> Dictionary:
 		{"name": "class", "flag": "--class", "positional": null, "type": "string", "required": false, "default": null, "help": "Keep nodes of this class."},
 		{"name": "group", "flag": "--group", "positional": null, "type": "string", "required": false, "default": null, "help": "Keep nodes in this group."},
 		{"name": "name", "flag": "--name", "positional": null, "type": "string", "required": false, "default": null, "help": "Keep nodes matching this glob pattern."},
-		{"name": "limit", "flag": "--limit", "positional": null, "type": "integer", "required": false, "default": 100, "help": "Maximum nodes to return; forwarded raw so the plugin validates it."},
+		{"name": "limit", "flag": "--limit", "positional": null, "type": "integer", "required": false, "default": 100, "help": "Maximum nodes to return, an integer; the plugin checks the range."},
 		{"name": "project_path", "flag": "--project-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Absolute path of the target project; canonicalized before sending."},
 		],
 	}

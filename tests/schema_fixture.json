@@ -211,7 +211,7 @@
      "type": "integer",
      "required": false,
      "default": 100,
-     "help": "Maximum nodes to return; forwarded raw so the plugin validates it."
+     "help": "Maximum nodes to return, an integer; the plugin checks the range."
     },
     {
      "name": "project_path",
@@ -283,7 +283,7 @@
      "type": "integer",
      "required": false,
      "default": 100,
-     "help": "Page bound; forwarded raw so the plugin validates it."
+     "help": "Page bound, an integer; the plugin checks the range."
     },
     {
      "name": "cursor",
