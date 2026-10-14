@@ -1,0 +1,615 @@
+{
+ "protocol_version": 1,
+ "commands": [
+  {
+   "name": "status",
+   "description": "Report the editor version, whether a scene is playing, and the open scene.",
+   "needs_project_path": false,
+   "edits_scene": false,
+   "refresh_poll": false,
+   "arguments": []
+  },
+  {
+   "name": "scene_tree",
+   "description": "Show the node tree of the open scene.",
+   "needs_project_path": false,
+   "edits_scene": false,
+   "refresh_poll": false,
+   "arguments": []
+  },
+  {
+   "name": "rename_node",
+   "description": "Rename a node.",
+   "needs_project_path": true,
+   "edits_scene": true,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "node_path",
+     "flag": null,
+     "positional": 0,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Scene-relative path of the node; '.' targets the scene root."
+    },
+    {
+     "name": "new_name",
+     "flag": null,
+     "positional": 1,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "The new node name."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "create_node",
+   "description": "Add a new node under another node.",
+   "needs_project_path": true,
+   "edits_scene": true,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "parent_path",
+     "flag": null,
+     "positional": 0,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Scene-relative path of the parent; '.' targets the scene root."
+    },
+    {
+     "name": "class_name",
+     "flag": null,
+     "positional": 1,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Built-in Node subclass to create."
+    },
+    {
+     "name": "name",
+     "flag": null,
+     "positional": 2,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Name of the new node."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "set_property",
+   "description": "Set one property on a node.",
+   "needs_project_path": true,
+   "edits_scene": true,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "node_path",
+     "flag": null,
+     "positional": 0,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Scene-relative path of the node."
+    },
+    {
+     "name": "property",
+     "flag": null,
+     "positional": 1,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Property name."
+    },
+    {
+     "name": "value",
+     "flag": null,
+     "positional": 2,
+     "type": "json",
+     "required": true,
+     "default": null,
+     "help": "Parsed as JSON when it parses, otherwise sent as a plain string; the plugin coerces it to the declared type."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "inspect_node",
+   "description": "Show a node's class, child count, and property values.",
+   "needs_project_path": true,
+   "edits_scene": false,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "node_path",
+     "flag": "--node-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Scene-relative path of the node; '.' targets the scene root."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "query_nodes",
+   "description": "Find nodes in the open scene by class, group, or name.",
+   "needs_project_path": true,
+   "edits_scene": false,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "class",
+     "flag": "--class",
+     "positional": null,
+     "type": "string",
+     "required": false,
+     "default": null,
+     "help": "Keep nodes of this class."
+    },
+    {
+     "name": "group",
+     "flag": "--group",
+     "positional": null,
+     "type": "string",
+     "required": false,
+     "default": null,
+     "help": "Keep nodes in this group."
+    },
+    {
+     "name": "name",
+     "flag": "--name",
+     "positional": null,
+     "type": "string",
+     "required": false,
+     "default": null,
+     "help": "Keep nodes matching this glob pattern."
+    },
+    {
+     "name": "limit",
+     "flag": "--limit",
+     "positional": null,
+     "type": "integer",
+     "required": false,
+     "default": 100,
+     "help": "Maximum nodes to return, an integer; the plugin checks the range."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "inspect_class",
+   "description": "Show an engine class's properties, methods, and signals.",
+   "needs_project_path": true,
+   "edits_scene": false,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "class",
+     "flag": "--class",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Engine class name."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "list_resources",
+   "description": "List the resource files the editor file system holds.",
+   "needs_project_path": true,
+   "edits_scene": false,
+   "refresh_poll": true,
+   "arguments": [
+    {
+     "name": "path_prefix",
+     "flag": "--path-prefix",
+     "positional": null,
+     "type": "string",
+     "required": false,
+     "default": null,
+     "help": "Keep entries whose path starts with this string."
+    },
+    {
+     "name": "type",
+     "flag": "--type",
+     "positional": null,
+     "type": "string",
+     "required": false,
+     "default": null,
+     "help": "Keep entries whose engine class equals or inherits this class."
+    },
+    {
+     "name": "limit",
+     "flag": "--limit",
+     "positional": null,
+     "type": "integer",
+     "required": false,
+     "default": 100,
+     "help": "Page bound, an integer; the plugin checks the range."
+    },
+    {
+     "name": "cursor",
+     "flag": "--cursor",
+     "positional": null,
+     "type": "string",
+     "required": false,
+     "default": null,
+     "help": "Resume after the last path of the previous page."
+    },
+    {
+     "name": "refresh",
+     "flag": "--refresh",
+     "positional": null,
+     "type": "boolean",
+     "required": false,
+     "default": false,
+     "help": "Start a file-system scan and wait for it to finish before listing."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "inspect_resource",
+   "description": "Show one resource file's class, typed properties, and embedded sub-resources.",
+   "needs_project_path": true,
+   "edits_scene": false,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "resource_path",
+     "flag": "--resource-path",
+     "positional": null,
+     "type": "res_path",
+     "required": true,
+     "default": null,
+     "help": "A res:// path that is not a scene or script file; a symlink that escapes the project is rejected before sending."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "delete_node",
+   "description": "Remove a node and its subtree.",
+   "needs_project_path": true,
+   "edits_scene": true,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "node_path",
+     "flag": null,
+     "positional": 0,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Scene-relative path of the node; the scene root is rejected."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "connect_signal",
+   "description": "Connect a signal on one node to a method on another node.",
+   "needs_project_path": true,
+   "edits_scene": true,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "source_path",
+     "flag": null,
+     "positional": 0,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Scene-relative path of the signal source."
+    },
+    {
+     "name": "signal",
+     "flag": null,
+     "positional": 1,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Signal name."
+    },
+    {
+     "name": "target_path",
+     "flag": null,
+     "positional": 2,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Scene-relative path of the method target."
+    },
+    {
+     "name": "method",
+     "flag": null,
+     "positional": 3,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Method name."
+    },
+    {
+     "name": "deferred",
+     "flag": "--deferred",
+     "positional": null,
+     "type": "boolean",
+     "required": false,
+     "default": false,
+     "help": "Add the deferred connect flag."
+    },
+    {
+     "name": "one_shot",
+     "flag": "--one-shot",
+     "positional": null,
+     "type": "boolean",
+     "required": false,
+     "default": false,
+     "help": "Add the one-shot connect flag."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "set_group",
+   "description": "Add or remove a persistent group on a node.",
+   "needs_project_path": true,
+   "edits_scene": true,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "node_path",
+     "flag": null,
+     "positional": 0,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Scene-relative path of the node."
+    },
+    {
+     "name": "group",
+     "flag": null,
+     "positional": 1,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Group name."
+    },
+    {
+     "name": "remove",
+     "flag": "--remove",
+     "positional": null,
+     "type": "boolean",
+     "required": false,
+     "default": false,
+     "help": "Remove the group instead of adding it."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "set_unique_name",
+   "description": "Set or clear a node's % unique name.",
+   "needs_project_path": true,
+   "edits_scene": true,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "node_path",
+     "flag": null,
+     "positional": 0,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Scene-relative path of the node."
+    },
+    {
+     "name": "remove",
+     "flag": "--remove",
+     "positional": null,
+     "type": "boolean",
+     "required": false,
+     "default": false,
+     "help": "Clear the flag instead of setting it."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "instantiate_scene",
+   "description": "Add an instance of a scene under a node.",
+   "needs_project_path": true,
+   "edits_scene": true,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "scene_path",
+     "flag": "--scene-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "A res:// .tscn or .scn path that loads as a PackedScene."
+    },
+    {
+     "name": "parent_path",
+     "flag": "--parent-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Scene-relative parent path; the scene root or a node owned by it."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "save_scene",
+   "description": "Save the open scene to its existing file.",
+   "needs_project_path": true,
+   "edits_scene": true,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "open_scene",
+   "description": "Open a scene in the editor; with --save, save the current scene first.",
+   "needs_project_path": true,
+   "edits_scene": false,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "scene_path",
+     "flag": "--scene-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Scene path; res://, relative, absolute-inside-project, '..' or uid:// as long as it resolves inside the project."
+    },
+    {
+     "name": "save",
+     "flag": "--save",
+     "positional": null,
+     "type": "boolean",
+     "required": false,
+     "default": false,
+     "help": "Save the dirty edited scene first; without it the dirty scene stays open as a background tab."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  }
+ ]
+}

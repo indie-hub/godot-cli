@@ -1,4 +1,4 @@
-Golden replay harness for the Godot Pipeline editor plugin (764 rows:
+Golden replay harness for the Godot Pipeline editor plugin (827 rows:
 1-148 unchanged, 149-200 cover inspect-class and open-scene, 201-262 cover
 connect-signal, 263-362 cover set-group, 363-413 cover set-unique-name,
 414-477 cover the rename unique-flag fix, 478-530 cover the rename option C
@@ -6,7 +6,8 @@ cases, 531-619 cover the inherited-rename rejection, 620-630 cover the fresh
 reloads of the accepted inherited-rename cases, 631-636 cover the
 instantiate-scene no-scene guards, 637-719 cover instantiate-scene accepted and
 rejected cases, 720-729 cover the fresh reloads of the accepted instances,
-730-764 cover list-resources, and 765-825 cover inspect-resource).
+730-764 cover list-resources, 765-825 cover inspect-resource, and 826-827
+cover the published command interface).
 
 HOW TO RUN
   GODOT=/path/to/Godot python3 replay.py --plugin-dir DIR --port PORT --out FILE
@@ -19,18 +20,19 @@ HOW TO RUN
   Prints the first differing request with both replies, or IDENTICAL.
   Exit 0 identical, 1 different.
 
-  Each run takes about two minutes: one --import plus twenty-three editor launches
+  Each run takes about two minutes: one --import plus twenty-four editor launches
   (in launch order A with no scene, E with no scene, G with no scene, J with no
-  scene, T with no scene, W with no scene, X with no scene, C with no scene,
+  scene, T with no scene, W with no scene, X with no scene, Y with no scene,
+  C with no scene,
   B with res://main.tscn,
   D and F with res://connect.tscn, H and I with res://group.tscn, K and L with
   res://unique.tscn, N, O, P and Q with the rename_*.tscn fixtures, R with
   res://inherit_i3.tscn, S with res://inherit_i1.tscn, and U and V with
-  res://inst_base.tscn), 825
+  res://inst_base.tscn), 827
   requests. The plugin has seventeen commands, a different count. Rows are
-  stored A, B, C, E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, T, U, V, W, X: a fresh
+  stored A, B, C, E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, T, U, V, W, X, Y: a fresh
   editor restores the previous session's open scenes, so the no-scene sessions
-  (A, E, G, J, T, W, X, and C before it opens anything) must run before any scene
+  (A, E, G, J, T, W, X, Y, and C before it opens anything) must run before any scene
   session. Appending the new sessions keeps rows 1-764 byte-identical.
 
 WHAT IT DOES
@@ -287,6 +289,14 @@ WHAT IT DOES
   never warmed by an earlier accepted one; the uid fixture's uid is fixed, so
   its registration is deterministic.
 
+Session Y (requests 826-827, no edited scene, runs right after session X):
+  the published command interface. Request 826 asks for the interface with no
+  other field and gets protocol_version 1 with the seventeen command entries,
+  each handler's own name, description, flags and arguments, in the order of the
+  plugin's COMMANDS table. Request 827 repeats it with a project_path that is
+  not the project's: the interface request checks no project path, so the reply
+  must equal row 826 byte for byte.
+
 NORMALISATION
   The only one: the throwaway project's absolute path is replaced with
   <PROJECT> in stored requests and replies. Replies that carry it are the
@@ -295,6 +305,13 @@ NORMALISATION
   otherwise verbatim; no sorting, no rounding.
 
 DETERMINISM PROOF
+  The command-interface rows were recorded twice; the two full runs are
+  byte-identical (compare.py IDENTICAL, cmp clean, 827 pairs). Rows 1-825 are
+  byte-identical to the 825-row baseline that preceded this change: their
+  sha256 is 99f6ebef9215d318e32ee516db497e9c3a12488b19de1321e135da93991056e7,
+  which is the sha256 of that whole file. The commands request adds a branch to
+  the plugin's dispatch and a static interface() to each handler, reads no
+  project path and no scene, and no earlier row names it.
   The inspect-resource rows were recorded twice; the two full runs are
   byte-identical (cmp clean, 825 pairs). Rows 1-764 are byte-identical to the
   764-row baseline that preceded this change (git show HEAD): the new command
@@ -470,6 +487,9 @@ COVERAGE (request numbers above)
   #758, type #759, cursor #760, refresh #761, project_path #762; a wrong
   project with other invalid fields where the project guard answers first
   #763), and refresh false with a full listing #764.
+  command interface #826-827: Y #826 (the interface, no other field) and #827
+  (the same request with a project_path that is not the project's, which must
+  answer identically).
   Not covered, with reason:
   - "request exceeds the maximum size" (>8 MiB without newline): reaching
     it needs an 8 MB write, and the reported byte count varies with TCP
@@ -519,7 +539,7 @@ NOTES
   one-action Undo/Redo proof lives in the Code4Me task result, from a separate
   isolated-editor probe that sends a real connect-signal request through the
   plugin and then triggers the editor's Undo/Redo through the safe route.
-  The baseline is only valid while the plugin's replies for these 764 requests
+  The baseline is only valid while the plugin's replies for these 827 requests
   are supposed to stay the same. A change that adds or alters a command's
   behavior on purpose needs a new baseline, recorded from the last trusted
   commit, and a fresh determinism check (record three times, compare byte for

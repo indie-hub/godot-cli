@@ -4,6 +4,19 @@ extends RefCounted
 const CommandSupport := preload("command_support.gd")
 
 
+## The interface a client reads for this command: its name, what it does,
+## and its arguments with type, default and help.
+static func interface() -> Dictionary:
+	return {
+		"name": "status",
+		"description": "Report the editor version, whether a scene is playing, and the open scene.",
+		"needs_project_path": false,
+		"edits_scene": false,
+		"refresh_poll": false,
+		"arguments": [],
+	}
+
+
 ## Reports the editor's status and the path of the currently edited scene.
 ## Read-only: no undo/redo action, no dirty flag, no file write.
 static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:

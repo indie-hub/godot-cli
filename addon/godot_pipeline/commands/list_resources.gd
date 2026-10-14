@@ -105,6 +105,26 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 	})
 
 
+## The interface a client reads for this command: its name, what it does,
+## and its arguments with type, default and help.
+static func interface() -> Dictionary:
+	return {
+		"name": "list_resources",
+		"description": "List the resource files the editor file system holds.",
+		"needs_project_path": true,
+		"edits_scene": false,
+		"refresh_poll": true,
+		"arguments": [
+		{"name": "path_prefix", "flag": "--path-prefix", "positional": null, "type": "string", "required": false, "default": null, "help": "Keep entries whose path starts with this string."},
+		{"name": "type", "flag": "--type", "positional": null, "type": "string", "required": false, "default": null, "help": "Keep entries whose engine class equals or inherits this class."},
+		{"name": "limit", "flag": "--limit", "positional": null, "type": "integer", "required": false, "default": 100, "help": "Page bound, an integer; the plugin checks the range."},
+		{"name": "cursor", "flag": "--cursor", "positional": null, "type": "string", "required": false, "default": null, "help": "Resume after the last path of the previous page."},
+		{"name": "refresh", "flag": "--refresh", "positional": null, "type": "boolean", "required": false, "default": false, "help": "Start a file-system scan and wait for it to finish before listing."},
+		{"name": "project_path", "flag": "--project-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Absolute path of the target project; canonicalized before sending."},
+		],
+	}
+
+
 ## Appends matching entries to `state.resources`, in walk order: a directory's
 ## files first (in the editor's own index order), then its subdirectories in
 ## index order. Entries at or before the cursor are skipped, so a page starts

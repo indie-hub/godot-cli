@@ -1,14 +1,14 @@
 //! Wire protocol shared with the `godot_pipeline` GDScript editor plugin.
 //!
 //! The protocol is one line of JSON in, one line of JSON out, over a plain
-//! loopback TCP connection: the client writes a single [`Request`] line and
+//! loopback TCP connection: the client writes a single request object and
 //! reads back a single [`Response`] line before the plugin closes the
-//! connection. There is no discovery step and the port is fixed, so only one
-//! Godot editor instance can host the plugin on a given machine at a time.
+//! connection. Requests are built from the interface the plugin publishes, so
+//! this module knows no command of its own.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
@@ -19,178 +19,6 @@ pub const HOST: &str = "127.0.0.1";
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
-
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
-#[serde(tag = "command", rename_all = "snake_case")]
-pub enum Request {
-    Status,
-    SceneTree,
-    /// Renames a node within the currently edited scene through the
-    /// editor's undo/redo manager. `project_path` must be the canonical
-    /// (symlink-resolved) absolute path of the project the caller intends
-    /// to edit; the plugin rejects the request if it does not match the
-    /// running editor's project, before making any change.
-    RenameNode {
-        node_path: String,
-        new_name: String,
-        project_path: String,
-    },
-    /// Creates a new built-in `Node`-subclass child under a node in the
-    /// currently edited scene through the editor's undo/redo manager.
-    /// `project_path` must be the canonical (symlink-resolved) absolute path
-    /// of the project the caller intends to edit; the plugin rejects the
-    /// request if it does not match the running editor's project, before
-    /// making any change.
-    CreateNode {
-        parent_path: String,
-        class_name: String,
-        name: String,
-        project_path: String,
-    },
-    /// Sets a property on an existing node in the currently edited scene
-    /// through the editor's undo/redo manager. `value` is untyped JSON; the
-    /// plugin coerces it to the property's declared Variant type and rejects
-    /// the request if it cannot. `project_path` follows the same rules as
-    /// [`Request::RenameNode`].
-    SetProperty {
-        node_path: String,
-        property: String,
-        value: serde_json::Value,
-        project_path: String,
-    },
-    /// Reports a node's class, child count, and the values of its inspector
-    /// and storage properties without changing the scene. `project_path`
-    /// follows the same rules as [`Request::RenameNode`].
-    InspectNode {
-        node_path: String,
-        project_path: String,
-    },
-    /// Searches the edited scene's whole node tree for nodes matching every
-    /// provided filter, in tree order, without changing the scene. `class`,
-    /// `group`, and `name` are optional filters; `limit` is a JSON number the
-    /// plugin validates (default 100, max 1000). `project_path` follows the
-    /// same rules as [`Request::RenameNode`].
-    QueryNodes {
-        project_path: String,
-        class: Option<String>,
-        group: Option<String>,
-        name: Option<String>,
-        limit: serde_json::Value,
-    },
-    /// Reports an engine class's ClassDB reflection (ancestors, properties,
-    /// methods, signals) without changing the scene and without requiring an
-    /// edited scene. `class` must name an engine class. `project_path` follows
-    /// the same rules as [`Request::RenameNode`].
-    InspectClass {
-        class: String,
-        project_path: String,
-    },
-    /// Removes a node and its subtree from the currently edited scene
-    /// through the editor's undo/redo manager, without saving. The scene
-    /// root itself is rejected. `project_path` follows the same rules as
-    /// [`Request::RenameNode`].
-    DeleteNode {
-        node_path: String,
-        project_path: String,
-    },
-    /// Connects a signal from one node to a method on another node in the
-    /// currently edited scene through the editor's undo/redo manager, as one
-    /// Undo/Redo step, without saving. `deferred` and `one_shot` add the
-    /// matching connect flags to `CONNECT_PERSIST`. `project_path` follows the
-    /// same rules as [`Request::RenameNode`].
-    ConnectSignal {
-        source_path: String,
-        signal: String,
-        target_path: String,
-        method: String,
-        deferred: bool,
-        one_shot: bool,
-        project_path: String,
-    },
-    /// Adds or removes one persistent group on a node in the currently edited
-    /// scene through the editor's undo/redo manager, as one Undo/Redo step,
-    /// without saving. `remove` false (the default) adds the group; true
-    /// removes it. A group inherited from a sub-scene and a runtime (session)
-    /// group are rejected before any change, because neither survives a save
-    /// or a reload. `project_path` follows the same rules as
-    /// [`Request::RenameNode`].
-    SetGroup {
-        node_path: String,
-        group: String,
-        remove: bool,
-        project_path: String,
-    },
-    /// Sets or clears `Node.unique_name_in_owner` (the `%` name) on a node in
-    /// the currently edited scene through the editor's undo/redo manager, as
-    /// one Undo/Redo step, without saving. `remove` false (the default) sets
-    /// the flag on the node; true clears it. The scene root, a node inside a
-    /// non-editable instance, and a request that would do nothing or collide
-    /// with another unique name in the same owner scope are rejected before
-    /// any change. `project_path` follows the same rules as
-    /// [`Request::RenameNode`].
-    SetUniqueName {
-        node_path: String,
-        remove: bool,
-        project_path: String,
-    },
-    /// Adds an instance of the scene at `scene_path` under `parent_path` in the
-    /// currently edited scene through the editor's undo/redo manager, as one
-    /// Undo/Redo step, without saving. `scene_path` must be a `res://` `.tscn`
-    /// or `.scn` path that loads as a `PackedScene`; a scene that depends on a
-    /// missing resource or would make the edited scene contain itself is
-    /// rejected before any change. `parent_path` must resolve to the scene root
-    /// or a node owned by it. `project_path` follows the same rules as
-    /// [`Request::RenameNode`].
-    InstantiateScene {
-        scene_path: String,
-        parent_path: String,
-        project_path: String,
-    },
-    /// Persists the currently edited scene to the file path it already has,
-    /// so edits made through the other mutating commands survive a reload.
-    /// `project_path` follows the same rules as [`Request::RenameNode`].
-    SaveScene {
-        project_path: String,
-    },
-    /// Opens a scene in the running editor by path, optionally saving a dirty
-    /// edited scene first (`save` defaults to false). `scene_path` may be a
-    /// res://, relative, absolute-inside-project, "..", or uid:// path, as
-    /// long as it resolves to a scene inside the project. `project_path`
-    /// follows the same rules as [`Request::RenameNode`].
-    OpenScene {
-        project_path: String,
-        scene_path: String,
-        save: bool,
-    },
-    /// Lists the resource files the editor's file system view holds, as a
-    /// bounded page, without changing the scene and without loading or reading
-    /// any resource. `path_prefix` keeps entries whose full path starts with
-    /// it; `type` keeps entries whose engine class equals it or inherits it;
-    /// `cursor` is the path of the last entry of the previous page; `limit` is
-    /// a JSON number the plugin validates (default 100, max 1000); `refresh`
-    /// asks the plugin to start a file-system scan and reply in the scanning
-    /// state. `project_path` follows the same rules as
-    /// [`Request::RenameNode`].
-    ListResources {
-        project_path: String,
-        path_prefix: Option<String>,
-        #[serde(rename = "type")]
-        r#type: Option<String>,
-        limit: serde_json::Value,
-        cursor: Option<String>,
-        refresh: bool,
-    },
-    /// Reports one resource file's class and its typed property values,
-    /// without changing the scene and without loading any project code (a
-    /// resource whose dependency chain contains a `@tool` script is refused).
-    /// `resource_path` must be a `res://` path that does not contain a `..`
-    /// segment or `uid://` and is not a scene or script file. `project_path`
-    /// follows the same rules as [`Request::RenameNode`].
-    InspectResource {
-        project_path: String,
-        resource_path: String,
-    },
-}
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -220,8 +48,17 @@ impl std::error::Error for ClientError {}
 
 /// Sends `request` to `host:port` and returns the plugin's single-line
 /// response. Opens a fresh connection per call, matching the plugin's
-/// one-request-per-connection contract.
-pub fn send_request(host: &str, port: u16, request: &Request) -> Result<Response, ClientError> {
+/// one-request-per-connection contract. `max_reply_bytes` bounds what is read
+/// back: the interface fetch passes its bound so a hostile or broken editor
+/// cannot make the client allocate without limit, and a command passes `None`
+/// because the plugin answers with whatever the command produced, which can be
+/// tens of megabytes.
+pub fn send_request(
+    host: &str,
+    port: u16,
+    request: &serde_json::Value,
+    max_reply_bytes: Option<u64>,
+) -> Result<Response, ClientError> {
     let address = (host, port)
         .to_socket_addrs()
         .map_err(ClientError::Connect)?
@@ -246,13 +83,35 @@ pub fn send_request(host: &str, port: u16, request: &Request) -> Result<Response
 
     let mut reader = BufReader::new(stream);
     let mut response_line = String::new();
-    let bytes_read = reader
-        .read_line(&mut response_line)
-        .map_err(ClientError::Io)?;
+    let bytes_read = match max_reply_bytes {
+        // One byte over the bound: a reply that exactly fills it still ends
+        // in its newline, and a longer one does not, so one read decides.
+        Some(limit) => reader
+            .take(limit + 1)
+            .read_line(&mut response_line)
+            .map_err(ClientError::Io)?,
+        None => reader
+            .read_line(&mut response_line)
+            .map_err(ClientError::Io)?,
+    };
     if bytes_read == 0 {
         return Err(ClientError::Protocol(
             "connection closed before a response was received".to_string(),
         ));
+    }
+    // The bound is read one byte over, so a reply that exactly fills it ends
+    // in its newline and a longer one does not. A reply that ends without a
+    // newline is refused either way; the message says which of the two it was,
+    // because the real plugin always terminates its replies.
+    if let Some(limit) = max_reply_bytes
+        && !response_line.ends_with('\n')
+    {
+        let message = if bytes_read as u64 > limit {
+            format!("the reply is larger than {limit} bytes")
+        } else {
+            "the reply did not end with a newline".to_string()
+        };
+        return Err(ClientError::Protocol(message));
     }
 
     serde_json::from_str(response_line.trim_end())
@@ -265,13 +124,15 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
 
-    /// Runs the request against a real loopback socket that speaks the exact
+    /// Runs one request against a real loopback socket that speaks the exact
     /// wire format (one JSON line in, one JSON line out), proving the framing
-    /// and serialization round-trip rather than just the data types.
+    /// round-trip rather than just the data types.
     #[test]
     fn send_request_round_trips_over_a_real_socket() {
         let listener = TcpListener::bind((HOST, 0)).expect("bind ephemeral port");
         let port = listener.local_addr().expect("local addr").port();
+        let request = serde_json::json!({"command": "status"});
+        let expected = request.clone();
 
         let server = thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept connection");
@@ -280,26 +141,26 @@ mod tests {
             reader
                 .read_line(&mut request_line)
                 .expect("read request line");
-            let request: Request =
+            let received: serde_json::Value =
                 serde_json::from_str(request_line.trim_end()).expect("parse request");
-            assert_eq!(request, Request::Status);
+            assert_eq!(received, expected);
 
-            let response = Response::Ok {
-                data: serde_json::json!({ "editor": "Godot Editor", "playing": false }),
-            };
             let mut writer = stream;
-            let mut response_line = serde_json::to_string(&response).expect("serialize response");
+            let mut response_line = serde_json::to_string(&Response::Ok {
+                data: serde_json::json!({}),
+            })
+            .expect("serialize response");
             response_line.push('\n');
             writer
                 .write_all(response_line.as_bytes())
                 .expect("write response");
         });
 
-        let response = send_request(HOST, port, &Request::Status).expect("send_request succeeds");
+        let response = send_request(HOST, port, &request, None).expect("send_request succeeds");
         assert_eq!(
             response,
             Response::Ok {
-                data: serde_json::json!({ "editor": "Godot Editor", "playing": false }),
+                data: serde_json::json!({}),
             }
         );
 
@@ -312,427 +173,8 @@ mod tests {
         let port = listener.local_addr().expect("local addr").port();
         drop(listener); // Free the port so the connection below is refused.
 
-        let error = send_request(HOST, port, &Request::Status).expect_err("connection should fail");
+        let error = send_request(HOST, port, &serde_json::json!({}), None)
+            .expect_err("connection should fail");
         assert!(matches!(error, ClientError::Connect(_)));
-    }
-
-    /// Pins the exact wire shape the GDScript plugin matches on
-    /// (`"command":"rename_node"` plus the three snake_case fields); a
-    /// silent rename in `#[serde(...)]` here would desync the two sides
-    /// without either one failing to compile.
-    #[test]
-    fn rename_node_request_serializes_to_the_documented_wire_shape() {
-        let request = Request::RenameNode {
-            node_path: "Child/Deep".to_string(),
-            new_name: "Renamed".to_string(),
-            project_path: "/tmp/project".to_string(),
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"rename_node","node_path":"Child/Deep","new_name":"Renamed","project_path":"/tmp/project"}"#
-        );
-    }
-
-    /// Pins the exact wire shape the GDScript plugin matches on
-    /// (`"command":"create_node"` plus the four snake_case fields); a silent
-    /// rename in `#[serde(...)]` here would desync the two sides without
-    /// either one failing to compile.
-    #[test]
-    fn create_node_request_serializes_to_the_documented_wire_shape() {
-        let request = Request::CreateNode {
-            parent_path: "Child/Deep".to_string(),
-            class_name: "Node2D".to_string(),
-            name: "NewNode".to_string(),
-            project_path: "/tmp/project".to_string(),
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"create_node","parent_path":"Child/Deep","class_name":"Node2D","name":"NewNode","project_path":"/tmp/project"}"#
-        );
-    }
-
-    /// Pins the exact wire shape the GDScript plugin matches on
-    /// (`"command":"set_property"` plus the four snake_case fields, with
-    /// `value` passed through as raw JSON rather than a string).
-    #[test]
-    fn set_property_request_serializes_to_the_documented_wire_shape() {
-        let request = Request::SetProperty {
-            node_path: "Child/Deep".to_string(),
-            property: "position".to_string(),
-            value: serde_json::json!([1.5, -2]),
-            project_path: "/tmp/project".to_string(),
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"set_property","node_path":"Child/Deep","property":"position","value":[1.5,-2],"project_path":"/tmp/project"}"#
-        );
-    }
-
-    /// Pins the exact wire shape the GDScript plugin matches on
-    /// (`"command":"inspect_node"` plus the two snake_case fields); a silent
-    /// rename in `#[serde(...)]` here would desync the two sides without
-    /// either one failing to compile.
-    #[test]
-    fn inspect_node_request_serializes_to_the_documented_wire_shape() {
-        let request = Request::InspectNode {
-            node_path: "Child/Deep".to_string(),
-            project_path: "/tmp/project".to_string(),
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"inspect_node","node_path":"Child/Deep","project_path":"/tmp/project"}"#
-        );
-    }
-
-    /// Pins the exact wire shape the GDScript plugin matches on
-    /// (`"command":"query_nodes"` plus the filter, limit, and project_path
-    /// fields); a silent rename in `#[serde(...)]` here would desync the two
-    /// sides without either one failing to compile.
-    #[test]
-    fn query_nodes_request_serializes_to_the_documented_wire_shape() {
-        let request = Request::QueryNodes {
-            project_path: "/tmp/project".to_string(),
-            class: Some("Node2D".to_string()),
-            group: Some("enemies".to_string()),
-            name: Some("Leaf*".to_string()),
-            limit: serde_json::json!(50),
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"query_nodes","project_path":"/tmp/project","class":"Node2D","group":"enemies","name":"Leaf*","limit":50}"#
-        );
-    }
-
-    /// Pins the no-filter wire shape: absent filters serialize as null and the
-    /// CLI's default limit is 100, which the plugin treats the same as a typed
-    /// request.
-    #[test]
-    fn query_nodes_without_filters_serializes_null_filters_and_default_limit() {
-        let request = Request::QueryNodes {
-            project_path: "/tmp/project".to_string(),
-            class: None,
-            group: None,
-            name: None,
-            limit: serde_json::json!(100),
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"query_nodes","project_path":"/tmp/project","class":null,"group":null,"name":null,"limit":100}"#
-        );
-    }
-
-    /// Pins the exact wire shape the GDScript plugin matches on
-    /// (`"command":"inspect_class"` plus the two snake_case fields); a silent
-    /// rename in `#[serde(...)]` here would desync the two sides without
-    /// either one failing to compile.
-    #[test]
-    fn inspect_class_request_serializes_to_the_documented_wire_shape() {
-        let request = Request::InspectClass {
-            class: "Node".to_string(),
-            project_path: "/tmp/project".to_string(),
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"inspect_class","class":"Node","project_path":"/tmp/project"}"#
-        );
-    }
-
-    /// Pins the exact wire shape the GDScript plugin matches on
-    /// (`"command":"delete_node"` plus the two snake_case fields); a silent
-    /// rename in `#[serde(...)]` here would desync the two sides without
-    /// either one failing to compile.
-    #[test]
-    fn delete_node_request_serializes_to_the_documented_wire_shape() {
-        let request = Request::DeleteNode {
-            node_path: "Child/Deep".to_string(),
-            project_path: "/tmp/project".to_string(),
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"delete_node","node_path":"Child/Deep","project_path":"/tmp/project"}"#
-        );
-    }
-
-    /// Pins the exact wire shape the GDScript plugin matches on
-    /// (`"command":"connect_signal"` plus the seven snake_case fields, with
-    /// `deferred` and `one_shot` as JSON bools).
-    #[test]
-    fn connect_signal_request_serializes_to_the_documented_wire_shape() {
-        let request = Request::ConnectSignal {
-            source_path: "Child/Source".to_string(),
-            signal: "ping".to_string(),
-            target_path: "Child/Target".to_string(),
-            method: "on_ping".to_string(),
-            deferred: false,
-            one_shot: false,
-            project_path: "/tmp/project".to_string(),
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"connect_signal","source_path":"Child/Source","signal":"ping","target_path":"Child/Target","method":"on_ping","deferred":false,"one_shot":false,"project_path":"/tmp/project"}"#
-        );
-    }
-
-    /// Pins that `--deferred` and `--one-shot` reach the wire as real JSON
-    /// bools, not null or absent.
-    #[test]
-    fn connect_signal_with_flags_serializes_them_as_true() {
-        let request = Request::ConnectSignal {
-            source_path: "A".to_string(),
-            signal: "ping".to_string(),
-            target_path: "B".to_string(),
-            method: "on_ping".to_string(),
-            deferred: true,
-            one_shot: true,
-            project_path: "/tmp/project".to_string(),
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"connect_signal","source_path":"A","signal":"ping","target_path":"B","method":"on_ping","deferred":true,"one_shot":true,"project_path":"/tmp/project"}"#
-        );
-    }
-
-    /// Pins the exact wire shape the GDScript plugin matches on
-    /// (`"command":"set_group"` plus the four snake_case fields, with `remove`
-    /// as a JSON bool).
-    #[test]
-    fn set_group_request_serializes_to_the_documented_wire_shape() {
-        let request = Request::SetGroup {
-            node_path: "Child/Deep".to_string(),
-            group: "enemies".to_string(),
-            remove: false,
-            project_path: "/tmp/project".to_string(),
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"set_group","node_path":"Child/Deep","group":"enemies","remove":false,"project_path":"/tmp/project"}"#
-        );
-    }
-
-    /// Pins that `--remove` reaches the wire as the real JSON bool true, not
-    /// null or absent.
-    #[test]
-    fn set_group_with_remove_serializes_remove_as_true() {
-        let request = Request::SetGroup {
-            node_path: ".".to_string(),
-            group: "heroes".to_string(),
-            remove: true,
-            project_path: "/tmp/project".to_string(),
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"set_group","node_path":".","group":"heroes","remove":true,"project_path":"/tmp/project"}"#
-        );
-    }
-
-    /// Pins the exact wire shape the GDScript plugin matches on
-    /// (`"command":"set_unique_name"` plus the three snake_case fields, with
-    /// `remove` as a JSON bool).
-    #[test]
-    fn set_unique_name_request_serializes_to_the_documented_wire_shape() {
-        let request = Request::SetUniqueName {
-            node_path: "Child/Deep".to_string(),
-            remove: false,
-            project_path: "/tmp/project".to_string(),
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"set_unique_name","node_path":"Child/Deep","remove":false,"project_path":"/tmp/project"}"#
-        );
-    }
-
-    /// Pins that `--remove` reaches the wire as the real JSON bool true, not
-    /// null or absent.
-    #[test]
-    fn set_unique_name_with_remove_serializes_remove_as_true() {
-        let request = Request::SetUniqueName {
-            node_path: "Child".to_string(),
-            remove: true,
-            project_path: "/tmp/project".to_string(),
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"set_unique_name","node_path":"Child","remove":true,"project_path":"/tmp/project"}"#
-        );
-    }
-
-    /// Pins the exact wire shape the GDScript plugin matches on
-    /// (`"command":"instantiate_scene"` plus the three snake_case fields); a
-    /// silent rename in `#[serde(...)]` here would desync the two sides
-    /// without either one failing to compile.
-    #[test]
-    fn instantiate_scene_request_serializes_to_the_documented_wire_shape() {
-        let request = Request::InstantiateScene {
-            scene_path: "res://scenes/S1.tscn".to_string(),
-            parent_path: "Child/Deep".to_string(),
-            project_path: "/tmp/project".to_string(),
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"instantiate_scene","scene_path":"res://scenes/S1.tscn","parent_path":"Child/Deep","project_path":"/tmp/project"}"#
-        );
-    }
-
-    /// Pins the exact wire shape the GDScript plugin matches on
-    /// (`"command":"save_scene"` plus the one snake_case field); a silent
-    /// rename in `#[serde(...)]` here would desync the two sides without
-    /// either one failing to compile.
-    #[test]
-    fn save_scene_request_serializes_to_the_documented_wire_shape() {
-        let request = Request::SaveScene {
-            project_path: "/tmp/project".to_string(),
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"save_scene","project_path":"/tmp/project"}"#
-        );
-    }
-
-    /// Pins the exact wire shape the GDScript plugin matches on
-    /// (`"command":"open_scene"` plus the three snake_case fields, with
-    /// `save` passed through as a JSON bool).
-    #[test]
-    fn open_scene_request_serializes_to_the_documented_wire_shape() {
-        let request = Request::OpenScene {
-            project_path: "/tmp/project".to_string(),
-            scene_path: "scenes/S1.tscn".to_string(),
-            save: true,
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"open_scene","project_path":"/tmp/project","scene_path":"scenes/S1.tscn","save":true}"#
-        );
-    }
-
-    /// Pins the default wire shape when `--save` is not given: `save` is a
-    /// real JSON bool false, not null or absent, so the plugin sees a typed
-    /// field.
-    #[test]
-    fn open_scene_without_save_serializes_save_as_false() {
-        let request = Request::OpenScene {
-            project_path: "/tmp/project".to_string(),
-            scene_path: "scenes/S1.tscn".to_string(),
-            save: false,
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"open_scene","project_path":"/tmp/project","scene_path":"scenes/S1.tscn","save":false}"#
-        );
-    }
-
-    /// Pins the exact wire shape the GDScript plugin matches on
-    /// (`"command":"inspect_resource"` plus the two snake_case fields); a
-    /// silent rename in `#[serde(...)]` here would desync the two sides
-    /// without either one failing to compile.
-    #[test]
-    fn inspect_resource_request_serializes_to_the_documented_wire_shape() {
-        let request = Request::InspectResource {
-            project_path: "/tmp/project".to_string(),
-            resource_path: "res://scenes/a.tres".to_string(),
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"inspect_resource","project_path":"/tmp/project","resource_path":"res://scenes/a.tres"}"#
-        );
-    }
-
-    /// Pins the exact wire shape the GDScript plugin matches on
-    /// (`"command":"list_resources"` plus the six snake_case fields, with the
-    /// Rust keyword `type` serialized as `type`).
-    #[test]
-    fn list_resources_request_serializes_to_the_documented_wire_shape() {
-        let request = Request::ListResources {
-            project_path: "/tmp/project".to_string(),
-            path_prefix: Some("res://scenes/".to_string()),
-            r#type: Some("Texture2D".to_string()),
-            limit: serde_json::json!(50),
-            cursor: Some("res://scenes/a.png".to_string()),
-            refresh: true,
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"list_resources","project_path":"/tmp/project","path_prefix":"res://scenes/","type":"Texture2D","limit":50,"cursor":"res://scenes/a.png","refresh":true}"#
-        );
-    }
-
-    /// Pins the default wire shape: absent filters and cursor serialize as
-    /// null, the CLI's default limit is 100, and `refresh` is a real JSON bool.
-    #[test]
-    fn list_resources_without_filters_serializes_nulls_and_defaults() {
-        let request = Request::ListResources {
-            project_path: "/tmp/project".to_string(),
-            path_prefix: None,
-            r#type: None,
-            limit: serde_json::json!(100),
-            cursor: None,
-            refresh: false,
-        };
-
-        let json = serde_json::to_string(&request).expect("serialize request");
-
-        assert_eq!(
-            json,
-            r#"{"command":"list_resources","project_path":"/tmp/project","path_prefix":null,"type":null,"limit":100,"cursor":null,"refresh":false}"#
-        );
     }
 }

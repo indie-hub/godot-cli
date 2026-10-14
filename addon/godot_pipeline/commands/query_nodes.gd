@@ -56,6 +56,25 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 	return CommandSupport.ok({"nodes": matches, "truncated": truncated})
 
 
+## The interface a client reads for this command: its name, what it does,
+## and its arguments with type, default and help.
+static func interface() -> Dictionary:
+	return {
+		"name": "query_nodes",
+		"description": "Find nodes in the open scene by class, group, or name.",
+		"needs_project_path": true,
+		"edits_scene": false,
+		"refresh_poll": false,
+		"arguments": [
+		{"name": "class", "flag": "--class", "positional": null, "type": "string", "required": false, "default": null, "help": "Keep nodes of this class."},
+		{"name": "group", "flag": "--group", "positional": null, "type": "string", "required": false, "default": null, "help": "Keep nodes in this group."},
+		{"name": "name", "flag": "--name", "positional": null, "type": "string", "required": false, "default": null, "help": "Keep nodes matching this glob pattern."},
+		{"name": "limit", "flag": "--limit", "positional": null, "type": "integer", "required": false, "default": 100, "help": "Maximum nodes to return, an integer; the plugin checks the range."},
+		{"name": "project_path", "flag": "--project-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Absolute path of the target project; canonicalized before sending."},
+		],
+	}
+
+
 ## Reads an optional string filter from `request`; a missing or non-string
 ## value counts as no filter (an empty string).
 static func _optional_string(request: Dictionary, key: String) -> String:

@@ -4,6 +4,24 @@ extends RefCounted
 const CommandSupport := preload("command_support.gd")
 
 
+## The interface a client reads for this command: its name, what it does,
+## and its arguments with type, default and help.
+static func interface() -> Dictionary:
+	return {
+		"name": "create_node",
+		"description": "Add a new node under another node.",
+		"needs_project_path": true,
+		"edits_scene": true,
+		"refresh_poll": false,
+		"arguments": [
+		{"name": "parent_path", "flag": null, "positional": 0, "type": "string", "required": true, "default": null, "help": "Scene-relative path of the parent; '.' targets the scene root."},
+		{"name": "class_name", "flag": null, "positional": 1, "type": "string", "required": true, "default": null, "help": "Built-in Node subclass to create."},
+		{"name": "name", "flag": null, "positional": 2, "type": "string", "required": true, "default": null, "help": "Name of the new node."},
+		{"name": "project_path", "flag": "--project-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Absolute path of the target project; canonicalized before sending."},
+		],
+	}
+
+
 ## Creates a new built-in `Node`-subclass child under a node in the currently
 ## edited scene through the editor's undo/redo stack, so the creation shows
 ## up as one Undo/Redo step and marks the scene dirty without saving it.

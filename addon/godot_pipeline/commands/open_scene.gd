@@ -80,6 +80,23 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 	return CommandSupport.ok({"path": edited_after.scene_file_path, "saved": saved, "unsaved": editor.get_unsaved_scenes()})
 
 
+## The interface a client reads for this command: its name, what it does,
+## and its arguments with type, default and help.
+static func interface() -> Dictionary:
+	return {
+		"name": "open_scene",
+		"description": "Open a scene in the editor; with --save, save the current scene first.",
+		"needs_project_path": true,
+		"edits_scene": false,
+		"refresh_poll": false,
+		"arguments": [
+		{"name": "scene_path", "flag": "--scene-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Scene path; res://, relative, absolute-inside-project, '..' or uid:// as long as it resolves inside the project."},
+		{"name": "save", "flag": "--save", "positional": null, "type": "boolean", "required": false, "default": false, "help": "Save the dirty edited scene first; without it the dirty scene stays open as a background tab."},
+		{"name": "project_path", "flag": "--project-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Absolute path of the target project; canonicalized before sending."},
+		],
+	}
+
+
 ## Resolves `scene_path` to the normalized res:// path the editor stores in
 ## the edited root's `scene_file_path`: `ProjectSettings.localize_path` for
 ## res://, relative, absolute-inside-project and ".." paths, and

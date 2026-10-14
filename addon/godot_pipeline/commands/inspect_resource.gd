@@ -85,6 +85,22 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 	})
 
 
+## The interface a client reads for this command: its name, what it does,
+## and its arguments with type, default and help.
+static func interface() -> Dictionary:
+	return {
+		"name": "inspect_resource",
+		"description": "Show one resource file's class, typed properties, and embedded sub-resources.",
+		"needs_project_path": true,
+		"edits_scene": false,
+		"refresh_poll": false,
+		"arguments": [
+		{"name": "resource_path", "flag": "--resource-path", "positional": null, "type": "res_path", "required": true, "default": null, "help": "A res:// path that is not a scene or script file; a symlink that escapes the project is rejected before sending."},
+		{"name": "project_path", "flag": "--project-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Absolute path of the target project; canonicalized before sending."},
+		],
+	}
+
+
 ## Returns the size of the text file at `path` in bytes, or -1 when it cannot
 ## be opened. `FileAccess.open` with READ keeps the editor on a plain file
 ## read, so the 4 MiB cap check runs no project code.

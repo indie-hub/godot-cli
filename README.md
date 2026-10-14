@@ -40,7 +40,7 @@ Start the editor with the plugin installed and the scene open:
 
 Read the editor status and the scene tree:
 
-    $ cargo run -- status
+    $ cargo run -- call status
     {
       "editor": "Godot Editor",
       "playing": false,
@@ -48,7 +48,7 @@ Read the editor status and the scene tree:
       "version": "4.7.2-stable (official)"
     }
 
-    $ cargo run -- scene-tree
+    $ cargo run -- call scene-tree
     {
       "children": [
         {
@@ -63,7 +63,7 @@ Read the editor status and the scene tree:
 
 Add a `Node2D` named `Player` under the root, move it, and save the scene:
 
-    $ cargo run -- create-node . Node2D Player --project-path /path/to/project
+    $ cargo run -- call create-node . Node2D Player --project-path /path/to/project
     {
       "class_name": "Node2D",
       "name": "Player",
@@ -71,7 +71,7 @@ Add a `Node2D` named `Player` under the root, move it, and save the scene:
       "requested_name": "Player"
     }
 
-    $ cargo run -- set-property Player position '[120, 80]' --project-path /path/to/project
+    $ cargo run -- call set-property Player position '[120, 80]' --project-path /path/to/project
     {
       "node_path": "Player",
       "old_value": "Vector2(0, 0)",
@@ -80,7 +80,7 @@ Add a `Node2D` named `Player` under the root, move it, and save the scene:
       "value": "Vector2(120, 80)"
     }
 
-    $ cargo run -- save-scene --project-path /path/to/project
+    $ cargo run -- call save-scene --project-path /path/to/project
     {
       "path": "res://world.tscn"
     }
