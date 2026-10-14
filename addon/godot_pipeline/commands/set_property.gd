@@ -5,6 +5,24 @@ const CommandSupport := preload("command_support.gd")
 const ValueCodec := preload("../value_codec.gd")
 
 
+## The interface a client reads for this command: its name, what it does,
+## and its arguments with type, default and help.
+static func interface() -> Dictionary:
+	return {
+		"name": "set_property",
+		"description": "Set one property on a node.",
+		"needs_project_path": true,
+		"edits_scene": true,
+		"refresh_poll": false,
+		"arguments": [
+		{"name": "node_path", "flag": null, "positional": 0, "type": "string", "required": true, "default": null, "help": "Scene-relative path of the node."},
+		{"name": "property", "flag": null, "positional": 1, "type": "string", "required": true, "default": null, "help": "Property name."},
+		{"name": "value", "flag": null, "positional": 2, "type": "json", "required": true, "default": null, "help": "Parsed as JSON when it parses, otherwise sent as a plain string; the plugin coerces it to the declared type."},
+		{"name": "project_path", "flag": "--project-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Absolute path of the target project; canonicalized before sending."},
+		],
+	}
+
+
 ## Sets a property on an existing node in the currently edited scene through
 ## the editor's undo/redo stack, so the change shows up as one Undo/Redo step
 ## and marks the scene dirty without saving it.

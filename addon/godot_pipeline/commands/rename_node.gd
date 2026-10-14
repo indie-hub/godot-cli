@@ -4,6 +4,23 @@ extends RefCounted
 const CommandSupport := preload("command_support.gd")
 
 
+## The interface a client reads for this command: its name, what it does,
+## and its arguments with type, default and help.
+static func interface() -> Dictionary:
+	return {
+		"name": "rename_node",
+		"description": "Rename a node.",
+		"needs_project_path": true,
+		"edits_scene": true,
+		"refresh_poll": false,
+		"arguments": [
+		{"name": "node_path", "flag": null, "positional": 0, "type": "string", "required": true, "default": null, "help": "Scene-relative path of the node; '.' targets the scene root."},
+		{"name": "new_name", "flag": null, "positional": 1, "type": "string", "required": true, "default": null, "help": "The new node name."},
+		{"name": "project_path", "flag": "--project-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Absolute path of the target project; canonicalized before sending."},
+		],
+	}
+
+
 ## Renames a node in the currently edited scene through the editor's
 ## undo/redo stack, so the rename shows up as one Undo/Redo step and marks
 ## the scene dirty without saving it.

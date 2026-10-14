@@ -67,6 +67,10 @@ const COMMANDS := {
 	"open_scene": preload("commands/open_scene.gd"),
 }
 
+## Version of the command interface the plugin publishes. A client that does
+## not know it must refuse the interface instead of guessing.
+const PROTOCOL_VERSION := 1
+
 var _server: TCPServer
 var _connection: StreamPeerTCP
 
@@ -196,6 +200,14 @@ func _handle_request(raw_text: String, raw_bytes: int) -> void:
 		_reply_error("malformed request (received %d bytes)" % raw_bytes)
 		return
 	var command: Variant = parsed["command"]
+	if typeof(command) == TYPE_STRING and command == "commands":
+		# Discovery reads no scene and checks no project path: every handler
+		# supplies its own entry, in the order of the `COMMANDS` table.
+		var interfaces: Array = []
+		for handler in COMMANDS.values():
+			interfaces.append(handler.interface())
+		_reply({"status": "ok", "data": {"protocol_version": PROTOCOL_VERSION, "commands": interfaces}})
+		return
 	var handler: Variant = COMMANDS.get(command)
 	if handler == null:
 		_reply_error("unknown command: %s" % str(command))

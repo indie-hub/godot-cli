@@ -2093,7 +2093,7 @@ def ir(resource, project="<PROJ>"):
 def build_x():
     # Session X: inspect-resource (read-only, no edited scene). Runs right
     # after W, so its fixture files are written just before it and no earlier
-    # session sees them; its rows are stored last. Covers every refusal and
+    # session sees them; its rows are stored after W, before Y. Covers every refusal and
     # every accepted case with a row: typed reads (.tres/.res/.gdshader), the
     # object-valued encoding (inline embedded sub-resource, depth limit,
     # loop guard, {path,type} external reference, null), the 4 MiB .tres cap
@@ -2181,6 +2181,18 @@ def build_x():
         ("line", '{"command":"inspect_resource","project_path":"<PROJ>"}'),
         ("line", '{"command":"inspect_resource","resource_path":"res://insp_data.tres"}'),
         ("line", '{"command":"inspect_resource","project_path":"<PROJ>","resource_path":7}'),
+    ]
+
+
+def build_y():
+    # Session Y: the published command interface. Runs right after X, with no
+    # edited scene, so the reply carries no state of its own. The second request
+    # carries a project_path that is not the project's: the interface request
+    # checks no project path, so both requests must answer with the same
+    # interface.
+    return [
+        ("line", '{"command":"commands"}'),
+        ("line", '{"command":"commands","project_path":"/no/replay-mismatch"}'),
     ]
 
 
@@ -2423,14 +2435,14 @@ def main():
         if r.returncode != 0:
             raise SystemExit("godot --import failed")
         rows = []
-        # Run order is A, E, G, J, T, W, X, C, B, D, F, H, I, K, L, N, O, P, Q,
+        # Run order is A, E, G, J, T, W, X, Y, C, B, D, F, H, I, K, L, N, O, P, Q,
         # R, S, U, V: a fresh editor restores the previous session's open
-        # scenes, so the no-scene sessions (A, E, G, J, T, W, X, and C before
+        # scenes, so the no-scene sessions (A, E, G, J, T, W, X, Y, and C before
         # it opens anything) must run before the scene sessions. Rows are stored
         # A, B, C, E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, then the T, U
-        # and V rows, then the new W rows, then the new X rows, so the first
-        # 764 rows stay byte-identical to the previous baseline and the
-        # inspect-resource rows are appended last.
+        # and V rows, then the new W rows, then the new X rows, then the new Y
+        # rows, so the first 764 rows stay byte-identical to the previous
+        # baseline and the inspect-resource rows are appended before the Y rows.
         rows_a = run_session(a.port, proj, None, REQ_A, None)
         rows_e = run_session(a.port, proj, None, build_e(), None)
         rows_g = run_session(a.port, proj, None, build_g(), None)
@@ -2456,6 +2468,7 @@ def main():
                 f.write(current_plugin)
         write_inspect_fixtures(proj)
         rows_x = run_session(a.port, proj, None, build_x(), None)
+        rows_y = run_session(a.port, proj, None, build_y(), None)
         rows_c = run_session(a.port, proj, None, build_c(), None)
         rows_b = run_session(a.port, proj, "res://main.tscn", build_b(), "res://main.tscn")
         rows_d = run_session(a.port, proj, "res://connect.tscn", build_d(), "res://connect.tscn")
@@ -2475,7 +2488,7 @@ def main():
         rows = (rows_a + rows_b + rows_c + rows_e + rows_d + rows_f + rows_g
                 + rows_h + rows_i + rows_j + rows_k + rows_l + rows_n + rows_o
                 + rows_p + rows_q + rows_r + rows_s + rows_t + rows_u + rows_v
-                + rows_w + rows_x)
+                + rows_w + rows_x + rows_y)
         with open(a.out, "w") as f:
             for req, rep in rows:
                 f.write(json.dumps({"request": req, "reply": rep}, separators=(",", ":")) + "\n")

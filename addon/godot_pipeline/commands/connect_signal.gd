@@ -100,3 +100,22 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 		"method": method,
 		"flags": applied_flags,
 	})
+## The interface a client reads for this command: its name, what it does,
+## and its arguments with type, default and help.
+static func interface() -> Dictionary:
+	return {
+		"name": "connect_signal",
+		"description": "Connect a signal on one node to a method on another node.",
+		"needs_project_path": true,
+		"edits_scene": true,
+		"refresh_poll": false,
+		"arguments": [
+		{"name": "source_path", "flag": null, "positional": 0, "type": "string", "required": true, "default": null, "help": "Scene-relative path of the signal source."},
+		{"name": "signal", "flag": null, "positional": 1, "type": "string", "required": true, "default": null, "help": "Signal name."},
+		{"name": "target_path", "flag": null, "positional": 2, "type": "string", "required": true, "default": null, "help": "Scene-relative path of the method target."},
+		{"name": "method", "flag": null, "positional": 3, "type": "string", "required": true, "default": null, "help": "Method name."},
+		{"name": "deferred", "flag": "--deferred", "positional": null, "type": "boolean", "required": false, "default": false, "help": "Add the deferred connect flag."},
+		{"name": "one_shot", "flag": "--one-shot", "positional": null, "type": "boolean", "required": false, "default": false, "help": "Add the one-shot connect flag."},
+		{"name": "project_path", "flag": "--project-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Absolute path of the target project; canonicalized before sending."},
+		],
+	}

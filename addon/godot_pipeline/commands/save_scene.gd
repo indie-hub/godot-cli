@@ -4,6 +4,21 @@ extends RefCounted
 const CommandSupport := preload("command_support.gd")
 
 
+## The interface a client reads for this command: its name, what it does,
+## and its arguments with type, default and help.
+static func interface() -> Dictionary:
+	return {
+		"name": "save_scene",
+		"description": "Save the open scene to its existing file.",
+		"needs_project_path": true,
+		"edits_scene": true,
+		"refresh_poll": false,
+		"arguments": [
+		{"name": "project_path", "flag": "--project-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Absolute path of the target project; canonicalized before sending."},
+		],
+	}
+
+
 ## Saves the currently edited scene to the file path it already has, so edits
 ## made through the other commands persist on disk. This is the one command
 ## that writes the scene file; it never prompts for a location (save-as and

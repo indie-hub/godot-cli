@@ -77,6 +77,22 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 	})
 
 
+## The interface a client reads for this command: its name, what it does,
+## and its arguments with type, default and help.
+static func interface() -> Dictionary:
+	return {
+		"name": "inspect_class",
+		"description": "Show an engine class's properties, methods, and signals.",
+		"needs_project_path": true,
+		"edits_scene": false,
+		"refresh_poll": false,
+		"arguments": [
+		{"name": "class", "flag": "--class", "positional": null, "type": "string", "required": true, "default": null, "help": "Engine class name."},
+		{"name": "project_path", "flag": "--project-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Absolute path of the target project; canonicalized before sending."},
+		],
+	}
+
+
 ## Renders an entry's Variant type as a stable type name: `type_string` for
 ## ordinary types, the class name for an Object-typed entry that names one
 ## (e.g. "InputEvent"), "Variant" for a NIL entry declared as an untyped

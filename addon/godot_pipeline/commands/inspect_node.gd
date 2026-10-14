@@ -5,6 +5,22 @@ const CommandSupport := preload("command_support.gd")
 const ValueCodec := preload("../value_codec.gd")
 
 
+## The interface a client reads for this command: its name, what it does,
+## and its arguments with type, default and help.
+static func interface() -> Dictionary:
+	return {
+		"name": "inspect_node",
+		"description": "Show a node's class, child count, and property values.",
+		"needs_project_path": true,
+		"edits_scene": false,
+		"refresh_poll": false,
+		"arguments": [
+		{"name": "node_path", "flag": "--node-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Scene-relative path of the node; '.' targets the scene root."},
+		{"name": "project_path", "flag": "--project-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Absolute path of the target project; canonicalized before sending."},
+		],
+	}
+
+
 ## Reports a node's class, child count, and the current values of its
 ## inspector and storage properties without changing the scene: no undo/redo
 ## action is created, no dirty flag is set, and no file is written. Reads are

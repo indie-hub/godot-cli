@@ -94,6 +94,23 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 	})
 
 
+## The interface a client reads for this command: its name, what it does,
+## and its arguments with type, default and help.
+static func interface() -> Dictionary:
+	return {
+		"name": "instantiate_scene",
+		"description": "Add an instance of a scene under a node.",
+		"needs_project_path": true,
+		"edits_scene": true,
+		"refresh_poll": false,
+		"arguments": [
+		{"name": "scene_path", "flag": "--scene-path", "positional": null, "type": "string", "required": true, "default": null, "help": "A res:// .tscn or .scn path that loads as a PackedScene."},
+		{"name": "parent_path", "flag": "--parent-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Scene-relative parent path; the scene root or a node owned by it."},
+		{"name": "project_path", "flag": "--project-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Absolute path of the target project; canonicalized before sending."},
+		],
+	}
+
+
 ## Walks the scene files `path` instantiates, directly or through nested
 ## instances or scene inheritance, and returns an empty string when the walk is
 ## safe or a short error message when it is not. A dependency that does not
