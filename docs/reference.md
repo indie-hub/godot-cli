@@ -53,6 +53,12 @@ One TCP connection per request, on `127.0.0.1:47821` by default:
    `{"command":"list_resources","project_path":"...","path_prefix":<prefix or null>,"type":<class or null>,"limit":<int>,"cursor":<path or null>,"refresh":false}`,
    or
    `{"command":"inspect_resource","project_path":"...","resource_path":"res://..."}`,
+   or
+   `{"command":"set_parent","node_path":"...","new_parent_path":"...","index":<int or null>,"keep_global_transform":true,"project_path":"..."}`,
+   or
+   `{"command":"console","project_path":"...","tail":<int>,"level":<level or null>,"since":<int>,"clear":false}`,
+   or
+   `{"command":"eval","project_path":"...","code":"...","timeout":5000}`,
    then keeps the socket open for the reply.
 2. The plugin writes one line of JSON back:
    `{"status":"ok","data":...}` or `{"status":"error","message":"..."}`.
@@ -154,10 +160,16 @@ sub-scene, the roots of nested instances, and nodes with no owner. Instance
 roots owned by the edited scene, local nodes under an editable instance, and
 plain nodes rename and persist. The unique-name check runs first: an
 inherited unique node renamed onto a claimed name gets the unique-name
-collision message. When the edited scene itself derives from a base scene,
-renaming a base-scene child (whose owner is the edited root) is accepted and,
-after a save and reload, shows the new name as a new local node and the
-original child again. That behavior is outside this check and unchanged.
+collision message. A check after the ownership check rejects a rename of a node
+inherited from the edited scene's base scene, with or without a local property,
+script, group or signal override: the node's owner is the edited scene root, so
+the ownership check lets it through, and the engine would write a local copy
+beside the inherited node, so a save and a fresh reload would show the subtree
+twice. The inherited node, an inherited descendant, and an instance root that
+comes from the base scene are all rejected before the undo action with
+`node is inherited from the base scene and its rename would not be saved:
+<path>`. The scene root itself is the base instance and is not rejected; a
+local node under an inherited parent still renames and persists.
 The check reads the scene as it is before the rename. A script, a setter or a
 renamed-signal observer can change the node's name during the real rename to
 a different name that another unique node in the same owner scope holds. The
@@ -264,7 +276,13 @@ persists after a save and reload; Redo removes it again. As with
 `set_property`, a node inside an instanced sub-scene is only deleted when
 every instance between it and the edited scene root has Editable Children
 enabled; otherwise it is rejected up front, because the deletion would not
-be saved. The reply's `data.name` is the removed node's name and
+be saved. A node inherited from the scene's base scene is rejected too, with or
+without a local property, script, group or signal override: its owner is the
+edited scene root, so the instance check above lets it through, but the editor
+writes no removal for it, so the node returns on a fresh reload. The message is
+`node is inherited from the base scene and its deletion would not be saved:
+<path>`. A local node under an inherited parent still deletes and persists.
+The reply's `data.name` is the removed node's name and
 `data.parent_path` is its parent's path relative to the scene root.
 
 `connect_signal` connects a signal on one node of the currently edited scene
@@ -394,11 +412,92 @@ is not supported. That last rejection is conservative: the persistence of an
 instance added under an editable inner node is not proven. A parent node with
 no owner is rejected for the same reason.
 
+`set_parent` moves one node of the currently edited scene under a new parent,
+through the editor's `EditorUndoRedoManager` as a single Undo/Redo step,
+without saving the scene. `node_path` and `project_path` follow the same rules
+as `rename_node`'s, except that the scene root itself (".") is rejected;
+`new_parent_path` follows the same rules as `create_node`'s `parent_path`.
+`index` is optional: it is the node's final position among the new parent's
+children (an integer, 0 for the first position; the default appends). The
+optional bool `keep_global_transform` (default true) preserves the full global
+transform of a `Node2D` and a `Node3D`, and the global position only of a
+`Control`; every other node type ignores it. The engine implements this in its
+own re-parent call: a `Node2D` and a `Node3D` restore the saved global
+transform, while a `Control` restores the saved global origin only, so a
+`Control` under a parent with a different scale takes that parent's scale. As
+with every boolean the interface declares, the CLI's flag can only request the
+value true, so a caller that wants false sends the raw request (the plugin
+accepts false).
+
+`new_parent_path` must resolve to the scene root or to a node owned by it,
+exactly as `create_node` requires; a new parent inside an instanced sub-scene's
+own internal structure would not persist, so it is rejected. An inherited node
+is owned by the edited scene root, so it is an eligible new parent, the same
+way it is for `create_node`. The moved node must be one the edited scene
+stores: the scene root is rejected, a node with no owner is rejected, a node
+inherited from a sub-scene is rejected, and a node inherited from the scene's
+base scene is rejected (an instance root owned by the edited scene root, and a
+local node the edited scene owns, are accepted and keep their scene file).
+
+A node inherited from the base scene is rejected whether or not the derived
+scene overrides it. A property, script, group or signal override does not make
+the node local: it still comes from the base scene, and moving it would write a
+local copy beside the inherited node, so a save and a fresh reload would show
+the subtree twice. The plugin packs the edited scene and walks the chain of base
+states; the node is inherited when its packed path is listed in any of them.
+Every level of the chain is visited, because an intermediate base can hold only
+the instance row and list the node further down, which happens when the edited
+scene inherits a scene that itself inherits. A scene with no base scene yields
+an empty chain, so nothing is inherited and no extra node is rejected. A node
+the derived scene owns itself stays movable even when it sits under an inherited
+parent, and its move survives a save and a fresh reload.
+
+The base-scene check is one shared helper
+(`CommandSupport.node_is_inherited_from_base`), and `rename_node` and
+`delete_node` call the same helper, so a node inherited from the base scene is
+refused as a structural edit by all three commands. Reading the base chain costs
+one `PackedScene.pack` of the edited scene followed by a walk over every level
+of the base-state chain. Measured in real Godot 4.7.2 headless editors with 300
+calls per case: a 201-node `Node2D` scene with no base scene costs about 1.7 ms
+(the detector 1.653 to 1.698 ms; the full rename and delete handlers 1.684 to
+1.712 ms); a 201-node scene whose nodes come from a base scene costs about
+5.3 ms (the detector 5.262 ms; the rejected rename 5.489 ms and delete
+5.117 ms); the fixture of 201 inherited nodes plus one local node costs about
+4.7 ms (the detector 4.683 ms; rename 4.557 ms; delete 3.868 ms); and a 401-node
+edited scene with 200 local nodes under a 201-node base costs about 6.7 ms. The
+cost follows the number of serialized nodes and properties of the edited scene
+and whether the scene inherits from a base scene, and it is paid once per call
+of `set-parent`, `rename-node` and `delete-node`. The earlier figures of about
+1.5 ms, 1.5 ms and 3.0 ms came from `PackedScene.instantiate()` outside the
+editor, which discards the editor's inheritance state, so they describe an
+ordinary scene and not the command handlers.
+
+A new parent inside the moved node's own subtree is rejected. A move within the
+same parent to the node's current position is rejected as a no-op. A move that
+would rename the node is rejected: when the new parent already holds a child
+with the node's name, the engine's own re-parent call would replace the name
+with an internal placeholder, so the collision is refused up front (the
+sibling-name rule `create_node` and `rename_node` rely on). Every check runs
+before the undo action is created, so a rejected request leaves the scene, the
+dirty flag, the undo history, and the file untouched.
+
+The move changes only the position. The engine's own re-parent call keeps every
+node of the moved subtree at exactly the owner it already had: a node the
+edited scene saved before the move is still saved after it, a node it did not
+save stays unsaved, and Undo restores the owners exactly. Groups, signal
+connections and unique names are untouched, and a `%` unique name keeps
+resolving in the same scope because the owner does not change. Exported
+`NodePath` values stored on other nodes are not rewritten: a node that holds a
+`NodePath` to the moved node still names its old path, and the caller updates
+it with `set-property`. The success reply is
+`{"status":"ok","data":{"node_path":"...","new_parent_path":"...","index":<int>,"name":"..."}}`,
+with `data.index` the applied position and `data.name` the applied name.
+
 `save_scene` persists the currently edited scene to the file path it already
 has, using the editor's own save path (the same one Ctrl+S uses), so every
 edit made through `rename_node`, `create_node`, `set_property`,
-`delete_node`, and `connect_signal` is written to disk and survives a
-reload. It is the one
+`delete_node`, `connect_signal` and `set_parent` is written to disk and
+survives a reload. It is the one
 command that writes the scene file; it never prompts for a location, and
 save-as or creating new files are out of scope. `project_path` follows the
 same rules as `rename_node`'s and is checked before anything else, so a
@@ -526,6 +625,236 @@ object that an open scene may hold. A file that exists but does not load (a
 corrupt, an empty, or a text-scene-named-`.res` file) replies
 `resource failed to load`.
 
+`eval` compiles a submitted GDScript source, instantiates it, and calls its
+`run` entry on the main thread of the live editor, then reports the returned
+value, the captured errors and printed output, and whether the edited scene
+changed. `code` is a complete GDScript source (with or without `@tool`) that
+defines `func run(editor: EditorInterface, undo_redo: EditorUndoRedoManager) ->
+Variant`; the plugin builds a `GDScript`, sets `source_code`, reloads it,
+creates an instance, and calls `run`, passing the editor interface and the
+editor undo manager. `project_path` follows the same rules as `rename_node`'s
+and is checked first, before `code` or `timeout` is validated, so a mismatched
+caller is rejected before anything is compiled or run, whatever else is also
+wrong with the request. `timeout` is an optional whole number of milliseconds
+(default 5000, must be positive); an absent field gets the default, while an
+explicit null is refused like any other invalid value. A JSON float with no fractional part is
+accepted, because Godot parses every JSON number as a float, and a float too
+large for 64 bits clamps to the largest 64-bit integer. It is best effort and
+never interrupts the call, because an endless loop on the main thread cannot be
+stopped from inside the editor.
+
+`eval` is the one command that may break rule 3 and rule 6. A direct scene edit
+made by the submitted code creates no undo entry and does not mark the scene
+unsaved (rule 3); only an `EditorUndoRedoManager` action the snippet itself
+creates does. The code can hold the main thread for as long as it runs (rule 6).
+A snippet that edits through `undo_redo` (`create_action`, `add_do_property`,
+`add_undo_property`, `commit_action`) produces exactly one Undo/Redo action that
+undoes and redoes; a direct property set produces none. `eval` never saves the
+scene and never refuses a caller.
+
+The reply is `{"status":"ok","data":{"value":...,"completed":...,"errors":[...],"output":[...],"scene_changed":...,"elapsed_msec":...,"timeout_exceeded":...}}`.
+`elapsed_msec` is the measured wall-clock duration of the compile and the call.
+`timeout_exceeded` is true when `elapsed_msec` is greater than `timeout` (equal
+is not enough); the call is never interrupted, so a snippet that blocks past the
+timeout still runs to completion and returns normally. `output` is the list of
+`print()` lines with their spaces kept: only the trailing line break is removed,
+and ASCII control characters other than tab, newline and carriage return are
+dropped so the reply stays valid JSON. `errors` is the list of `{file, line, function, message, type}`,
+where `type` is `warning`, `error`, `script` or `shader` after the `console`
+command's names.
+`completed` is true only when the code compiled and `run` returned without a
+non-warning error during reload, construction or the call; a warning keeps
+`completed` true and keeps the returned value, while `push_error` and script
+errors set it false. A runtime error in `_init` counts like one in `run`, and
+so does one raised while the reload initializes the submitted script: a static
+initializer that fails, a `_static_init` that calls `push_error`, and a
+preloaded `@tool` script that raises while loading each set `completed` false
+with `value` null.
+
+### What the logger can and cannot capture
+
+A `Logger` is installed with `OS.add_logger` just before the call and removed
+right after the returned value is encoded, on every path: success, a runtime
+error, a compile error, an early return and an oversized value. A second call
+therefore never sees the first call's messages. The same logger produces both
+`output` and `errors`, and that has consequences worth knowing:
+
+- A compile error is reported at `reload` and a runtime error during the call;
+  both set `completed` to false without a `status` error. An error raised while
+  `reload` initializes the submitted script is counted as well, so a `@tool`
+  static initializer, a `_static_init` that calls `push_error`, and a preloaded
+  `@tool` script that raises while loading all set `completed` false with
+  `value` null. A runtime error in `_init` is counted before the instance is
+  created, so it also sets `completed` false.
+- Encoding the returned value happens inside the same window, so a value the
+  engine refuses to write out is named in `errors` (see the table below) and
+  sets `completed` false with `value` null.
+- `push_warning()` is reported with `type` `warning`, keeps `completed` true
+  and keeps the returned value; `push_error()` uses `type` `error` and sets
+  `completed` false. Script errors use `type` `script`, shader errors `shader`.
+- `printerr()` writes to the editor's own stderr and is not captured at all.
+- `print_rich()` is captured with its escape codes stripped of raw control
+  bytes, so the reply stays valid JSON; the visible text keeps its spaces.
+- A submitted script that extends `Object` is freed after the call, and so is a
+  `Node` the snippet left parentless and outside the tree. A `RefCounted`
+  frees itself and is never touched. A `Node` stays alive when it is inside the
+  tree, and also when some other `Node` is its parent: a parent that is itself
+  outside the tree but that the snippet retains still owns its children, so the
+  cleanup must not take them away. A snippet that frees itself produces the
+  engine's own error and no double free. The cleanup frees the submitted
+  instance only, and only when it is not `RefCounted`, has no parent and is
+  outside the tree; it does not reclaim the snippet's other allocations. An
+  orphan parent that the snippet did not keep, together with its child, is
+  therefore left alive rather than reclaimed, and a separate `Node` that a
+  freed `Object` holds as a member survives it.
+- Anything else the engine logs while the snippet runs, including an unrelated
+  error from a `@tool` resource the snippet loaded, is attributed to this call.
+  The `file` field says where it came from, so check it before blaming the
+  snippet.
+
+### Value encoding
+
+`value` is the returned Variant encoded with `JSON.from_native` with objects
+off, so the types survive. A client decodes it with `JSON.to_native`, which
+inverts the tagged form:
+
+| Snippet returns | `value` | `JSON.to_native` gives back |
+| --- | --- | --- |
+| `42` | `"i:42"` | `42` |
+| `3.5` | `"f:3.5"` | `3.5` |
+| `"hi"` | `"s:hi"` | `"hi"` |
+| `true` | `true` | `true` |
+| `Vector2(1, 2)` | `{"args":[1.0,2.0],"type":"Vector2"}` | `Vector2(1, 2)` |
+| `Color(1, 0, 0)` | `{"args":[1.0,0.0,0.0,1.0],"type":"Color"}` | `Color(1, 0, 0)` |
+| `[1, "a", 2.5]` | `["i:1","s:a","f:2.5"]` | the same array |
+| `{"k": 1}` | `{"args":["s:k","i:1"],"type":"Dictionary"}` | the same dictionary |
+| `null` | `null` | `null` |
+| a `Node`, an `Object`, any other instance | `null` | `null` (unusable; `errors` names the refusal and `completed` is false) |
+| a `Callable` | `{"type":"Callable"}` | an empty invalid `Callable` (`typeof` 25, `is_null` true; unusable) |
+| an `RID` | `{"type":"RID"}` | a **new empty** `RID(0)` |
+
+The last three rows do not survive the round trip, so check for them before
+trusting a decoded value. An `Object` becomes `null`, and `errors` then carries
+the engine's own refusal, `Condition "!p_full_objects" is true. Returning:
+Variant()`, with `completed` false. A `Callable` has no `args` to carry and
+decodes to an empty invalid `Callable`, not to null. An `RID`
+decodes to a fresh `RID(0)` that looks real but is not the original, so treat it
+as unusable. `Callable`, `RID` and `Object` results are not returned as usable
+values.
+
+A returned value nested deeper than 100 tagged levels is not returned: the
+reply is valid JSON with `value` null, `completed` false, and one `errors`
+entry saying the value was nested deeper than 100 levels and was not returned;
+`scene_changed` and the side effects are still reported. An `Object` encoding
+failure uses the same shape (`value` null, `completed` false, `errors` entry).
+
+What the limit counts is the nesting of the encoded `value` itself, measured in
+JSON container levels: an `Array` costs one level and a `Dictionary` costs two
+(the outer object and its `args` array). Scalars cost nothing, and the
+container being examined is part of the total, so a value the walk counts as
+exactly 100 levels comes back exactly and one level more is refused. The count
+does not see the containers that the encoding itself adds. `JSON.from_native`
+writes a tagged terminal value (a `Vector2`, a packed array, a `Transform3D`,
+and similar) as an object plus an `args` array, so a value whose deepest element
+is such a value reaches up to 102 levels in the reply while the walk still
+counted 100.
+
+That limit was derived from the real command line, which cannot read a reply
+deeper than 125 JSON levels. Measured through `godot-cli` against the original
+editor, with the handler's own limit raised in a scratch copy only so the values
+could reach the encoder: 125 nested `Array` containers read with exit 0, while
+126, 127 and 128 fail with `recursion limit exceeded`; 62 nested `Dictionary`
+wrappers read, while 63 and 64 fail; and a shape alternating an `Array` with a
+`Dictionary` wrapper reads at 41 wrappers and fails at 42 and 43. One
+`Array`-plus-`Dictionary` wrapper costs three levels, which is why the three
+shapes reach the same ceiling at different wrapper counts. Note that a loop
+appending N child `Array`s to an initial empty `Array` produces N+1 containers,
+not N. The margin is 25 levels for a value the walk counts exactly, and at
+least 23 levels in the worst case where the encoding adds two uncounted levels.
+
+A returned value larger than 1 MiB (1048576 bytes) is replaced by a `status`
+error that names the size and says the code ran. That error reply carries no
+`data`. The message claims the scene is marked unsaved only when the plugin
+actually called `mark_scene_as_unsaved` in that request; a mere scene switch
+never marks.
+
+`scene_changed` compares a fingerprint of the edited scene tree taken before and
+after the call, built from each node's path, class, owner, script, groups,
+signal connections, and stored property values. When it differs and the edited
+scene root is the same object as before the call, the plugin calls
+`EditorInterface.mark_scene_as_unsaved`; otherwise the dirty state is left alone,
+and nothing is ever saved. The fingerprint found all ten tested edits (add with
+an owner, add without an owner, remove, rename, a property change, a reorder, a
+property change inside an instanced sub-scene, a signal connection, a group add,
+and a script attach) and gave identical results for an unchanged scene. With no
+edited scene at all both captures are empty, so `scene_changed` is false and
+nothing is marked.
+
+Two cases are deliberate. A snippet that adds a node and removes it again
+before returning leaves the fingerprint unchanged, so `scene_changed` is false;
+the same holds for a stored property set and restored. A snippet that opens
+another scene reports `scene_changed` true, because the scene being edited did
+change, but the newly opened scene is **not** marked unsaved: the snippet
+replaced the scene rather than editing it, and an untouched scene must not pick
+up a false dirty flag. A snippet that switches scenes is outside the
+dirty-marking guarantee: an edit made before or after the switch cannot be
+attributed to the current scene and is not marked, so the caller should check
+`status` and the unsaved list instead of trusting `scene_changed` alone.
+
+On a scene of 203 nodes the fingerprint took 39.608, 29.792, 18.240, 17.741
+and 19.789 ms over five runs (mean 25.034 ms) on an isolated fixture with 198
+extra nodes plus the root and three children, measured by five direct calls to
+the handler inside one `eval` request. This does not reproduce the PLAN.md mean
+of 20.5732 ms exactly; the scene shape and load differ, so no exact
+reproduction is claimed.
+
+The fingerprint cannot see an edit the code undoes before the call returns,
+state that is not stored, other open scenes, or a deep change inside a
+referenced resource, so a false `scene_changed` does not prove the code had no
+side effects. Marking the scene unsaved does not make ownerless nodes, or
+non-persistent signal connections and groups, saveable. This command is the
+second-vendor re-measurement of the `eval` behavior that PLAN.md describes.
+
+`eval` is the only command whose replies the replay harness normalises, and only
+inside the harness: `elapsed_msec` is replaced by `"<ELAPSED>"` and the
+anonymous `gdscript://-<id>.gd` source path by `<ANON>` so a stored row is
+reproducible. Both fields are unmodified on the wire. A real caller reads a whole
+`elapsed_msec` and the real temporary path of the compiled script, which the
+engine discards with the script.
+
+`console` returns the editor log messages a `Logger` registered with
+`OS.add_logger` captured since the plugin loaded, and changes nothing unless
+asked: no Undo/Redo step, no dirty flag, no file write, and no edited scene
+is required. `project_path` follows the same rules as `rename_node`'s and is
+checked first. Optional `tail` (default 100) keeps only the last N matching
+messages and must be an integer in 1..1000; optional `level` (default `"all"`)
+keeps one of `info`, `warning`, `error`, `script` or `shader`; optional
+`since` (default 0) keeps messages with a sequence number greater than it;
+optional bool `clear` (default false) empties the buffer after the reply is
+built, while the sequence numbers continue. Every check runs before the
+buffer is read, so a rejected request (a wrong project path, a missing or
+mistyped argument, an unknown level) leaves the buffer untouched. The reply
+is
+`{"status":"ok","data":{"messages":[...],"count":N,"dropped":D,"next_since":S}}`;
+each message has `seq` (ascending from 1, never restarted), `level`, `text`,
+and `truncated`. `next_since` is the cursor for the next call (pass it as
+`since` to read only newer messages, which returns an empty list when nothing
+is new); `dropped` counts messages evicted from the full buffer. The buffer
+holds at most 1000 messages; each text is cut to at most 4096 bytes of valid
+UTF-8 with `truncated` true (a cut that lands inside a multibyte character
+backs off to the character boundary), and ASCII control characters (editor
+progress lines carry ANSI escapes)
+are dropped so the reply stays valid JSON. Levels: `print` is `info`,
+`printerr` and `push_error` are `error`, `push_warning` is `warning`, a
+GDScript runtime error is `script`, and a shader compile error is `shader`.
+An error message carries its origin file (base name), line, function and
+detail. The logger callbacks can arrive from any thread, so the buffer is
+protected by a `Mutex`. The logger is registered when the plugin loads and
+removed with `OS.remove_logger` when it unloads, so disabling and enabling
+the plugin leaves exactly one logger. Not covered, by design: messages logged
+before the plugin loaded, the editor Output panel history, and the output of
+the running game (a separate process).
+
 There is no length prefix beyond the newline: a request is one
 newline-terminated JSON object and a reply is one newline-terminated JSON
 object. The plugin buffers the bytes of the request in its own state and
@@ -560,7 +889,7 @@ answers that request without checking a project path and without needing an
 open scene.
 
 The reply is `{"status":"ok","data":{"protocol_version":1,"commands":[...]}}`
-with 17 entries in the order of the `COMMANDS` table. `protocol_version` is
+with 20 entries in the order of the `COMMANDS` table. `protocol_version` is
 the integer 1.
 
 One command entry has `name` (the wire name sent as `command`, with `_`
@@ -715,6 +1044,11 @@ cargo run -- call list-resources --path-prefix res://scenes/ --type Texture2D --
 cargo run -- call list-resources --cursor res://scenes/a.png --project-path /path/to/project
 cargo run -- call list-resources --refresh --project-path /path/to/project
 cargo run -- call inspect-resource --resource-path res://scenes/a.tres --project-path /path/to/project
+cargo run -- call console --project-path /path/to/project
+cargo run -- call console --tail 20 --level error --since 41 --project-path /path/to/project
+cargo run -- call console --clear --project-path /path/to/project
+cargo run -- call set-parent Box Target --project-path /path/to/project
+cargo run -- call set-parent Box/Empty Target --index 0 --project-path /path/to/project
 ```
 
 `status` reports the editor version, whether a scene is playing, and the
@@ -796,6 +1130,24 @@ canonicalizing `--project-path` the same way as the other commands and
 resolving symlinks first: a `res://` path whose symlink resolves outside the
 project is rejected locally (`resource path resolves outside the project`)
 instead of being sent, because the plugin cannot detect a symlink escape.
+`console [--tail <n>] [--level <level>] [--since <n>] [--clear] --project-path <dir>`
+shows the editor log messages captured since the plugin loaded (see Protocol
+above), canonicalizing `--project-path` the same way as the other commands.
+`--tail` defaults to 100: the CLI refuses a value outside the integer grammar
+before anything is sent, and the plugin validates the 1..1000 range after the
+project check; `--level` (default `all`) keeps one of `info`, `warning`,
+`error`, `script` or `shader`; `--since` (default 0) keeps messages newer
+than that cursor; `--clear` empties the buffer after the reply is built.
+
+`set-parent <scene-relative-path> <new-parent-scene-relative-path> --project-path <dir> [--index <n>] [--keep-global-transform]`
+moves that node under the new parent through the editor's undo/redo stack
+(see Protocol above), canonicalizing `--project-path` the same way as the
+other mutating commands. `--index` sets the node's position among the new
+parent's children (default appends); `--keep-global-transform` is the default
+and preserves the full global transform of a `Node2D` and a `Node3D`, and the
+global position only of a `Control`. The
+CLI's boolean flag can only request true, so a caller that wants a false value
+sends the raw request. Nothing is saved until `save-scene` runs.
 
 ## Verification
 
@@ -803,6 +1155,7 @@ instead of being sent, because the plugin cannot detect a symlink escape.
 cargo fmt --check
 cargo test
 cargo clippy -- -D warnings
+GODOT=/path/to/Godot godot --headless --script tools/console_truncate_check.gd
 ```
 
 `cargo test` includes a protocol test that opens a real loopback socket and
@@ -814,6 +1167,11 @@ the plugin as parsed JSON; the integer grammar; the protocol-version and
 too-old-plugin messages; the help and version output; the `list-resources`
 `--refresh` wait loop; the `inspect-resource` symlink containment; and the
 `set-property` value parsing.
+
+`tools/console_truncate_check.gd` drives the console message byte cap through
+the handler itself: a split euro and a split emoji (which the naive cut stores
+over the cap), an exact-boundary cut (which the fix keeps whole), and a short
+text. It exits 0 when every case passes.
 
 Live verification against a running Godot editor (status, scene tree,
 rename/undo/redo/save, project-path rejection, and the disabled-plugin

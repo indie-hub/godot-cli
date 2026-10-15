@@ -99,15 +99,18 @@ The new node is in the scene and in the file now. You can undo the edits in the 
 | read | `list-resources` | List the resource files the editor file system holds. |
 | read | `inspect-resource` | Show one resource file's class, typed properties, and embedded sub-resources. |
 | read | `open-scene` | Open a scene in the editor; with `--save`, save the current scene first. |
-| edit | `rename-node` | Rename a node. |
+| read | `console` | Show the editor log messages captured since the plugin loaded. |
+| edit | `rename-node` | Rename a node. Rejects a node inherited from a base scene, because the rename would not be saved. |
 | edit | `create-node` | Add a new node under another node. |
 | edit | `set-property` | Set one property on a node. |
-| edit | `delete-node` | Remove a node and its subtree. |
+| edit | `delete-node` | Remove a node and its subtree. Rejects a node inherited from a base scene, because the deletion would not be saved. |
 | edit | `connect-signal` | Connect a signal on one node to a method on another node. |
 | edit | `set-group` | Add or remove a persistent group on a node. |
 | edit | `set-unique-name` | Set or clear a node's `%` unique name. |
 | edit | `instantiate-scene` | Add an instance of a scene under a node. |
+| edit | `set-parent` | Move a node under a new parent. `--keep-global-transform` (the default) keeps a Node2D/Node3D global transform and a Control's global position. |
 | edit | `save-scene` | Save the open scene to its existing file. |
+| edit | `eval` | Run a GDScript snippet in the live editor and return its value; may break the one-undo-action and no-main-thread-blocking rules. |
 
 Every edit command except `save-scene` goes through the editor's undo and redo stack and saves nothing. Run `save-scene` to write the scene to disk. `open-scene` changes which scene is open and writes no file unless you pass `--save`.
 

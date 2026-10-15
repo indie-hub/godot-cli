@@ -15,6 +15,11 @@ const SelfScript := preload("delete_node.gd")
 ## The project-path check runs before anything else is resolved, and every
 ## other check runs before the undo action is created, so a rejected request
 ## never touches the scene or the undo history.
+##
+## A node inherited from the scene's base scene is rejected, with or without a
+## local override: its owner is the edited scene root, so the instance walk
+## below lets it through, but the editor writes no removal for it, so the node
+## returns on a fresh reload.
 static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 	var node_path_value: Variant = request.get("node_path")
 	var project_path_value: Variant = request.get("project_path")
@@ -41,6 +46,16 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 				"node is not editable in this scene: %s is inside an instanced sub-scene without Editable Children enabled, so the deletion would not be saved" % node_path
 			)
 		owner_node = owner_node.owner
+
+	# A node that comes from the scene's base scene cannot be deleted, with or
+	# without a local override: its owner is the edited scene root, so the
+	# instance walk above lets it through, but the editor writes no removal for
+	# it, so the node returns on a fresh reload. Reject it before the undo
+	# action.
+	if CommandSupport.node_is_inherited_from_base(scene_root, target):
+		return CommandSupport.error(
+			"node is inherited from the base scene and its deletion would not be saved: %s" % node_path
+		)
 
 	# Captured before the node leaves the tree, so the undo step can restore
 	# it to its exact prior position and every node to its exact prior owner
