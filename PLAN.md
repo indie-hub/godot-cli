@@ -4,13 +4,13 @@ Godot Pipeline is a Rust CLI plus a GDScript EditorPlugin for stock Godot. An ag
 
 ## Status
 
-- The command table in `README.md` holds 17 commands. The plugin publishes their names and arguments, and `godot-cli` dispatches them from that interface.
+- The command table in `README.md` holds 20 commands. The plugin publishes their names and arguments, and `godot-cli` dispatches them from that interface.
 - Phase 1, read and navigate, is complete. `inspect-node`, `query-nodes`, `open-scene` and `inspect-class` shipped in 0.5.0.
 - Phase 2, Godot scene edits, is complete. `connect-signal`, `set-group`, `set-unique-name` and `instantiate-scene` shipped in 0.6.0.
-- `list-resources` and `inspect-resource` are built on this working tree. `CHANGELOG.md` lists both under `[Unreleased]`, so neither is in a release yet.
+- `list-resources`, `inspect-resource`, `console`, `set-parent` and `eval` are built on this working tree. `CHANGELOG.md` lists them under `[Unreleased]`, so none is in a release yet.
 - The version in `Cargo.toml` is 0.6.0.
-- The replay baseline in `tools/replay/baseline.jsonl` holds 827 rows.
-- `cargo test --locked` passes: 23 passed, 0 failed, 0 ignored.
+- The replay baseline in `tools/replay/baseline.jsonl` holds 1172 rows.
+- `cargo test --locked` passes: 25 passed, 0 failed, 0 ignored.
 - `set-property` accepts 17 scalar types and ten `Packed*Array` types, plus a typed `Array[T]` of those types. It rejects untyped arrays, object and resource references, `Dictionary`, `Callable`, `Signal` and `RID`.
 - The plugin assembles each request across editor ticks. It caps a request at 8 MiB (`MAX_REQUEST_BYTES` in `addon/godot_pipeline/editor_plugin.gd`) and drops an idle connection after 5 seconds (`REQUEST_IDLE_TIMEOUT_MSEC`).
 - The add-on is a prototype and is not ready for distribution.
@@ -21,10 +21,10 @@ Godot Pipeline is a Rust CLI plus a GDScript EditorPlugin for stock Godot. An ag
 - Three rooms mapped the list in three chunks of 39, 50 and 53 commands. Each chunk was mapped by one room and then re-derived blind by a room from a different vendor.
 - The rooms agreed on 106 commands. On 14 commands they differed only on how large the gap is: one room wrote `DIRECT`, the other wrote `ADAPT`, and both named the same mechanism. On 22 commands they differed on facts.
 - The 22 contested commands were measured in a real Godot 4.7.2 editor. 10 of them were measured by two rooms each. 12 were measured by one room.
-- `eval` and `eval_file` were measured in a real Godot 4.7.2 editor by one room of one vendor. That room answered nine questions about running code and, in a second task, two questions about marking the scene unsaved and detecting a scene change. A second vendor has not re-run either measurement.
+- `eval` was measured in a real Godot 4.7.2 editor by one room of one vendor. That room answered nine questions about running code and, in a second task, two questions about marking the scene unsaved and detecting a scene change. A second vendor re-ran the `eval` measurement. `eval_file` was measured by one vendor and has not been re-run.
 - Every Godot class, method, signal and property in the map was checked by script against the Godot 4.8-dev engine documentation: 323 entries from the author rooms and 403 entries from the blind rooms, all resolved. The script proves that the API exists. It does not prove that the mapping is right.
-- Evidence levels, with their counts from the data file: 10 rows are measured and replicated, 14 rows are measured by one vendor, and 118 rows are docs and source only. A `docs and source only` row is a reading of the Godot 4.8-dev documentation and the engine source. Nobody measured it in a 4.7.2 editor.
-- Nothing in this plan is built. No Unity command listed here works in Godot Pipeline beyond the 25 commands that a built command already covers, which are listed under "What exists".
+- Evidence levels, with their counts from the table in `docs/unity-parity.md`: 11 rows are measured and replicated, 13 rows are measured by one vendor, and 118 rows are docs and source only. A `docs and source only` row is a reading of the Godot 4.8-dev documentation and the engine source. Nobody measured it in a 4.7.2 editor.
+- Twenty commands are built. They cover 30 of the 142 Unity commands, which are listed under "What exists".
 - A row proposes scope. It is not a promise that a command exists or will work.
 - An earlier version of this plan mapped a different Unity surface: an MCP server with 100 tools on port 3333. That surface is not the target. The earlier plan was wrong. Its table was removed, and it stays in git history.
 
@@ -72,7 +72,30 @@ CLI decisions of 2026-10-14:
 | Which argument types exist? | Five: `string`, `boolean`, `json`, `res_path`, and `integer`. An integer argument is checked by the CLI before sending (a JSON integer literal that fits 64 bits). |
 | What is the binary called? | The binary is renamed from `godot-pipeline` to `godot-cli`. The add-on folder `godot_pipeline`, `plugin.cfg`, and the product name `Godot Pipeline` stay. |
 | Is old usage kept? | Nothing was released, so no compatibility was kept: old top-level invocations no longer exist; there is no shim. |
-| How many commands moved at once? | The 17 commands were migrated all at once to the interface; no hand-written command is left beside it (no hybrid). |
+| How many commands moved at once? | The 17 commands that existed then were migrated all at once to the interface; `console`, `set-parent` and `eval` were added afterwards on the same interface. No hand-written command is left beside it (no hybrid). |
+
+Decisions of 2026-10-14 and 2026-10-15:
+
+| Question | Decision |
+| --- | --- |
+| What does `set-parent` keep? | Every node of the moved subtree keeps its exact owner. A node the edited scene saved before the move is still saved after it, and Undo restores owners exactly. |
+| Is `keep_global_transform=false` reachable through the CLI? | It is not reachable through `godot-cli`. The CLI boolean flag sends true only. A later task lets the CLI take `--flag=false`. |
+| What does `keep_global_transform` preserve? (implemented behaviour, not a recorded decision of Bruno) | For a `Control` it preserves the global position only. A `Node2D` and a `Node3D` keep the full global transform. Every other node type ignores the flag. |
+| Which edits of a base-inherited node are refused? | `rename-node`, `delete-node` and `set-parent` refuse a structural edit of a node inherited from a base scene. The plugin packs the edited scene and walks every level of `SceneState.get_base_scene_state()`. Property, script, group, signal and new-child edits of an inherited node stay allowed as overrides. |
+| What does `eval` return as its value? | `eval` keeps the tagged `JSON.from_native` encoding as its only value. `completed` is false when the value cannot be encoded intact or is deeper than the limit. `errors` entries carry a type (`warning`, `error`, `script`, `shader`), and a warning leaves `completed` true with the value. |
+| What is the `eval` depth limit? | `eval` has an explicit depth limit of 100 JSON levels. An `Array` costs one level and a `Dictionary` costs two. The count reaches up to 102 when the deepest value is a tagged terminal value. The real command line reads about 125 levels. |
+| Are `Callable`, `RID` and `Object` results usable values? | They are documented as not returned as values. A `Callable` round-trips to an empty invalid `Callable`. An `RID` round-trips to a fresh `RID(0)`. An `Object` gives value null. |
+| What does a scene-switching snippet guarantee? | A snippet that switches scenes is outside the dirty-marking guarantee. |
+| Was `set-parent` accepted? | Bruno accepted `set-parent` after repeated validation rounds. It was not independently validated as a final tree on its own. The combined tree that contains it passed an independent validation that re-ran a regression sample of its behaviour. |
+| Was `eval` accepted? | Bruno accepted `eval` after repeated validation rounds. Its depth count reaches 102 for tagged terminal values. The combined tree that contains it passed an independent validation that re-ran a regression sample of its behaviour. |
+
+Queued follow-up tasks:
+
+- `shared-inherited-guard`: move the inherited-node check into the shared request guard.
+- `harness-and-cost`: measure and trim the replay harness and the detector cost.
+- `cli-boolean-explicit-false`: let the CLI take `--flag=false`.
+- `eval-readable-value`: a readable field beside the tagged value.
+- `eval-depth-exact`: count the containers of tagged terminal values.
 
 ## Rules every new command must keep
 
@@ -88,11 +111,11 @@ CLI decisions of 2026-10-14:
 
 ## The eval command
 
-Godot Pipeline has no `eval` command yet. Nothing in this section is built. It says what the two Unity commands do, and what was measured in a Godot 4.7.2 editor by one vendor. A second vendor has not re-run the measurements.
+`eval` is built. `eval_file` is not built. This section says what the two Unity commands do, and what was measured in a Godot 4.7.2 editor by rooms of two vendors.
 
 **What the Unity commands take.** Unity compiles C# with Roslyn. `eval` takes the source. `eval_file` takes a file. Both take a timeout in milliseconds, with a default of 5000. Both run in the live editor, need the main thread, and carry no `confirm` and no `dry_run`.
 
-**How the two commands would work.** The plugin reads the source, or reads the file as UTF-8 text with `FileAccess`. It then compiles the source, creates an instance, and calls a fixed entry function. That function receives the editor interface and the editor undo manager. The plugin returns the value as typed JSON, together with the captured errors and the captured output. Before and after the call the plugin fingerprints the edited scene tree. If the two fingerprints differ, the reply sets `scene_changed` to true and the plugin marks the scene unsaved. `eval_file` follows the same steps after the read. Which file paths it may read is not decided.
+**How the two commands work.** The plugin reads the source, or reads the file as UTF-8 text with `FileAccess`. It then compiles the source, creates an instance, and calls a fixed entry function. That function receives the editor interface and the editor undo manager. The plugin returns the value as typed JSON, together with the captured errors and the captured output. Before and after the call the plugin fingerprints the edited scene tree. If the two fingerprints differ, the reply sets `scene_changed` to true and the plugin marks the scene unsaved. `eval_file` follows the same steps after the read. Which file paths it may read is not decided.
 
 **What Godot can do.** A plugin can compile GDScript from a string at run time. It builds a `GDScript`, sets `source_code`, reloads it, creates an instance, and calls a fixed entry function. The script runs with or without the `@tool` annotation and reaches the real edited scene. The entry function receives the editor interface and the editor undo manager.
 
@@ -100,7 +123,7 @@ Godot Pipeline has no `eval` command yet. Nothing in this section is built. It s
 
 **The timeout is best effort.** An endless loop on the main thread cannot be stopped from inside the editor. A `Thread` stays responsive but cannot be force-stopped. Only a child process killed with `OS.kill` gives a hard deadline. In five measured runs a child process started in a mean of 418.9104 ms and was gone a mean of 6.7484 ms after the kill. So the live timeout is best effort.
 
-**Errors and the reply.** A `Logger` added with `OS.add_logger` captures the file, the line, the function and the message of a compile or runtime error. A null return alone is ambiguous. `JSON.from_native` and `JSON.to_native` keep the types when objects are off. Plain JSON turns an integer into a float. `var_to_str` is not a stable machine reply. A 1 MiB byte array expands above a 1 MiB reply cap.
+**Errors and the reply.** A `Logger` added with `OS.add_logger` captures the file, the line, the function and the message of a compile or runtime error. A null return alone is ambiguous. `JSON.from_native` and `JSON.to_native` keep the types when objects are off. A `Callable` result round-trips to an empty invalid `Callable`, not to null. Plain JSON turns an integer into a float. `var_to_str` is not a stable machine reply. A 1 MiB byte array expands above a 1 MiB reply cap.
 
 **The code has the reach of the editor process.** In the measured editor the compiled code wrote a file outside the project, read a file, and started a program. The `Expression` class is not a read-only boundary. It ignores text after a valid expression, and `const_calls_only` did not stop a script mutation.
 
@@ -110,7 +133,7 @@ Godot Pipeline has no `eval` command yet. Nothing in this section is built. It s
 
 **The two exceptions to the rules.** Rule 3 requires one Undo/Redo action per scene edit. Rule 6 requires that the main thread never blocks. `eval` is an exception to both. Direct scene edits from the submitted code create no undo entry and do not mark the scene unsaved. One `EditorUndoRedoManager` action does. The code can hold the main thread for as long as it runs. The rules section itself is not edited.
 
-**What `scene_changed` can see.** The plugin fingerprints the live scene tree before and after the call. The fingerprint uses the path, the class, the owner, the script, the groups, the connections and the stored properties. It found all ten tested edits: add with an owner, add without an owner, remove, rename, a property change, a reorder, a property change inside an instanced sub-scene, a signal connection, a group add, and a script attach. Repeated captures of an unchanged scene gave identical results. On a scene of 203 nodes the fingerprint took a mean of 20.5732 ms over five runs.
+**What `scene_changed` can see.** The plugin fingerprints the live scene tree before and after the call. The fingerprint uses the path, the class, the owner, the script, the groups, the connections and the stored properties. It found all ten tested edits: add with an owner, add without an owner, remove, rename, a property change, a reorder, a property change inside an instanced sub-scene, a signal connection, a group add, and a script attach. Repeated captures of an unchanged scene gave identical results. On a scene of 203 nodes the fingerprint took a mean of 20.5732 ms over five runs. A second vendor re-ran the fingerprint on a 203-node fixture and measured 20.9 to 25.0 ms.
 
 **What `scene_changed` cannot see.** The fingerprint misses an edit that the code undoes before the call returns, state that is not stored, other open scenes, and a deep change inside a referenced resource. A false value does not prove that the code had no side effects. Marking the scene unsaved does not make ownerless nodes, or non-persistent signal connections and groups, saveable.
 
@@ -118,11 +141,11 @@ Godot Pipeline has no `eval` command yet. Nothing in this section is built. It s
 
 **Marking the scene unsaved.** `EditorInterface.mark_scene_as_unsaved` works from a plugin on a saved scene and on a never-saved scene. It does not change the undo history, and it is idempotent. It marks even an unchanged scene dirty, so the plugin calls it only when a change was detected. A later `save_scene` writes a direct edit of an owned node to disk. A never-saved scene needs `save_scene_as` first.
 
-**Evidence level.** All of this is from one vendor. `docs/unity-parity.md` shows both rows at the class `ADAPT` and the evidence level measured, one vendor.
+**Evidence level.** `docs/unity-parity.md` shows `eval` at the class `ADAPT` and the evidence level measured and replicated, and `eval_file` at the class `ADAPT` and the evidence level measured, one vendor.
 
 ## What exists
 
-17 commands are built. The table names each one and the Unity commands it covers. The Unity command names are the `unity_command` values in [the parity map](docs/unity-parity.md).
+20 commands are built. The table names each one and the Unity commands it covers. The Unity command names are the `unity_command` values in [the parity map](docs/unity-parity.md).
 
 | Godot Pipeline command | Unity commands it covers |
 | --- | --- |
@@ -143,14 +166,17 @@ Godot Pipeline has no `eval` command yet. Nothing in this section is built. It s
 | `set-unique-name` | none. Godot-only. |
 | `instantiate-scene` | `instantiate_prefab` |
 | `save-scene` | `save_scene` |
+| `console` | `console`, `get_console_logs`, `clear_console` |
+| `set-parent` | `set_parent` |
+| `eval` | `eval` (`eval_file` is not covered) |
 
-14 of the 17 built commands cover 25 of the 142 Unity commands. Three built commands, `inspect-class`, `connect-signal` and `set-unique-name`, cover no Unity command, because the Unity command list has nothing like them. They are the Godot-only capabilities marked as built below.
+17 of the 20 built commands cover 30 of the 142 Unity commands. Three built commands, `inspect-class`, `connect-signal` and `set-unique-name`, cover no Unity command, because the Unity command list has nothing like them. They are the Godot-only capabilities marked as built below.
 
 ## The parity map in numbers
 
-`docs/unity-parity.md` holds the full map, one row per Unity command, with the class, the evidence level, the Godot mechanism and the gaps. Every number below was recomputed from the same data file.
+`docs/unity-parity.md` holds the full map, one row per Unity command, with the class, the evidence level, the Godot mechanism and the gaps. Every number below was recomputed from the rows of that table.
 
-`docs/unity-parity.md` is the detail page. It is generated from the capability map, so its rows are not retyped by hand.
+`docs/unity-parity.md` is the detail page. Its rows are written and edited by hand. The consolidated capability map lives in a session scratchpad that this repository does not keep, so there is no generator and no data file to regenerate the page from.
 
 ### By class
 
@@ -168,8 +194,8 @@ Godot Pipeline has no `eval` command yet. Nothing in this section is built. It s
 
 | Evidence level | Rows |
 | --- | --- |
-| measured and replicated | 10 |
-| measured, one vendor | 14 |
+| measured and replicated | 11 |
+| measured, one vendor | 13 |
 | docs and source only | 118 |
 | total | 142 |
 
@@ -259,7 +285,7 @@ A row needs a measurement when at least one room wrote `needs_measurement` in th
 
 That is 21 Unity commands. The other 97 rows are docs and source only, and neither room marked them as needing a measurement.
 
-- A second vendor re-runs the `eval` and `eval_file` measurements. One vendor measured both, and the vendor difference can change a class.
+- A second vendor re-ran the `eval` measurement. `eval` is now measured and replicated. `eval_file` still has a measurement from one vendor.
 
 ## Open questions for Bruno
 
@@ -268,7 +294,7 @@ That is 21 Unity commands. The other 97 rows are docs and source only, and neith
 - Should the exceptions to rule 3 and rule 6 be written into the rules section itself, instead of being stated in the `eval` section? This plan leaves the rules section unchanged.
 - How would a C# `eval` be compiled? No working route was found in the tested editor, and external compilers were not tested.
 - Governance gates: does Godot adopt the Unity per-call model of `dry_run` and `confirm`, and do the gates cover direct command-line calls as well as any other interface?
-- External writes: when do project settings, resource files, scripts, imports and exports start? Nothing is built today.
+- External writes: when do project settings, resource files, scripts, imports and exports start? No external-write command is built.
 - The `commands` discovery subcommand, which prints every command with its argument schema as JSON, exists: the plugin publishes the schema and `godot-cli` reads it from the running editor, with no cache.
 - How much measurement does a `docs and source only` row need before it is built?
 - The 15 `UNITY_ONLY` rows: is a Godot-flavored alternative wanted for each, or is the gap accepted?

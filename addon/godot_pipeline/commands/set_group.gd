@@ -145,7 +145,7 @@ static func _classify(scene_root: Node, target: Node, group: String) -> Dictiona
 	var target_path := "." if target == scene_root else "./" + str(scene_root.get_path_to(target))
 
 	var local := false
-	var target_index := _index_for_path(state, target_path)
+	var target_index := CommandSupport.packed_node_index(state, target_path)
 	if target_index >= 0:
 		for candidate in state.get_node_groups(target_index):
 			if str(candidate) == group:
@@ -166,15 +166,6 @@ static func _classify(scene_root: Node, target: Node, group: String) -> Dictiona
 	return {"local": local, "inherited": inherited, "nested": nested}
 
 
-## Returns the index of the node with the given packed path (".", "./Child",
-## "./Sub/Inner") in `state`, or -1 when the path is not listed.
-static func _index_for_path(state: SceneState, packed_path: String) -> int:
-	for i in state.get_node_count():
-		if str(state.get_node_path(i)) == packed_path:
-			return i
-	return -1
-
-
 ## Reads the groups a node inherits from its instanced source scene. Returns
 ## {"resolved": true, "groups": [...]} when the source row is found, and
 ## {"resolved": false, "groups": []} when the node lies under more than one
@@ -189,7 +180,7 @@ static func _source_groups(state: SceneState, target_path: String) -> Dictionary
 	var prefix := ""
 	for part in target_path.substr(2).split("/"):
 		prefix = part if prefix.is_empty() else prefix + "/" + part
-		var index := _index_for_path(state, "./" + prefix)
+		var index := CommandSupport.packed_node_index(state, "./" + prefix)
 		if index >= 0 and state.get_node_instance(index) != null:
 			instance_indices.append(index)
 	if instance_indices.is_empty():
@@ -204,7 +195,7 @@ static func _source_groups(state: SceneState, target_path: String) -> Dictionary
 	var instance_path := str(state.get_node_path(instance_indices[0]))
 	var inner := "" if target_path == instance_path else target_path.substr(instance_path.length() + 1)
 	var source_path := "." if inner.is_empty() else "./" + inner
-	var source_index := _index_for_path(source_state, source_path)
+	var source_index := CommandSupport.packed_node_index(source_state, source_path)
 	if source_index < 0:
 		return {"resolved": true, "groups": []}
 

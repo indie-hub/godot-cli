@@ -1,4 +1,4 @@
-Golden replay harness for the Godot Pipeline editor plugin (827 rows:
+Golden replay harness for the Godot Pipeline editor plugin (1172 rows:
 1-148 unchanged, 149-200 cover inspect-class and open-scene, 201-262 cover
 connect-signal, 263-362 cover set-group, 363-413 cover set-unique-name,
 414-477 cover the rename unique-flag fix, 478-530 cover the rename option C
@@ -6,8 +6,14 @@ cases, 531-619 cover the inherited-rename rejection, 620-630 cover the fresh
 reloads of the accepted inherited-rename cases, 631-636 cover the
 instantiate-scene no-scene guards, 637-719 cover instantiate-scene accepted and
 rejected cases, 720-729 cover the fresh reloads of the accepted instances,
-730-764 cover list-resources, 765-825 cover inspect-resource, and 826-827
-cover the published command interface).
+730-764 cover list-resources, 765-825 cover inspect-resource, 826-827
+cover the published command interface (now twenty entries, with console,
+set_parent and eval last), 828-842 cover console validation, 843-938 cover
+set-parent, 939-945 cover the fresh reload of the accepted set-parent moves,
+946-976 cover set-parent in a derived scene, 977-982 cover the fresh reload of
+the derived-scene moves, 983-1051 cover set-parent against the inherited-node
+matrix, 1052-1128 cover the base-inherited rename and delete rejections and
+their fresh reloads, and 1129-1172 cover eval).
 
 HOW TO RUN
   GODOT=/path/to/Godot python3 replay.py --plugin-dir DIR --port PORT --out FILE
@@ -20,20 +26,30 @@ HOW TO RUN
   Prints the first differing request with both replies, or IDENTICAL.
   Exit 0 identical, 1 different.
 
-  Each run takes about two minutes: one --import plus twenty-four editor launches
+  Each run takes several minutes: one --import plus thirty-eight editor launches
   (in launch order A with no scene, E with no scene, G with no scene, J with no
-  scene, T with no scene, W with no scene, X with no scene, Y with no scene,
-  C with no scene,
+  scene, T with no scene, W with no scene, X with no scene, Y with no scene, the
+  console session with no scene, the eval session with no scene, C with no
+  scene,
   B with res://main.tscn,
   D and F with res://connect.tscn, H and I with res://group.tscn, K and L with
   res://unique.tscn, N, O, P and Q with the rename_*.tscn fixtures, R with
-  res://inherit_i3.tscn, S with res://inherit_i1.tscn, and U and V with
-  res://inst_base.tscn), 827
-  requests. The plugin has seventeen commands, a different count. Rows are
-  stored A, B, C, E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, T, U, V, W, X, Y: a fresh
-  editor restores the previous session's open scenes, so the no-scene sessions
-  (A, E, G, J, T, W, X, Y, and C before it opens anything) must run before any scene
-  session. Appending the new sessions keeps rows 1-764 byte-identical.
+  res://inherit_i3.tscn, S with res://inherit_i1.tscn, U and V with
+  res://inst_base.tscn, Z and AA with res://sp_base.tscn, AB and AC with
+  res://sp_dderived.tscn, AD with res://sp2_override.tscn, AE with
+  res://sp2_plain.tscn, AF with res://sp2_twolevel.tscn, AG and AH with
+  res://sp2_local.tscn, AI and AK with res://ib_rename.tscn, and AJ with
+  res://ib_delete.tscn), 1172 stored rows (1053 requests and 119 file checks).
+  The plugin has twenty commands, a different count. Rows are stored A, B, C,
+  E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, T, U, V, W, X, Y, CONSOLE,
+  Z, AA, AB, AC, AD, AE, AF, AG, AH, AI, AJ, AK, EVAL: a fresh editor restores
+  the previous session's open scenes, so the no-scene sessions (A, E, G, J, T,
+  W, X, Y, the console session and the eval session, and C before it opens
+  anything) must run before any scene session. The console session runs right
+  after the interface and the eval session right after it; both are no-scene, so
+  they run before the first scene session. Appending the new sessions keeps rows
+  1-825 byte-identical; rows 826-827 carry the published command interface with
+  console, set_parent and eval appended as entries 18, 19 and 20.
 
 WHAT IT DOES
   Session A (requests 1-23, no edited scene): status ok with scene_path null;
@@ -291,20 +307,227 @@ WHAT IT DOES
 
 Session Y (requests 826-827, no edited scene, runs right after session X):
   the published command interface. Request 826 asks for the interface with no
-  other field and gets protocol_version 1 with the seventeen command entries,
+  other field and gets protocol_version 1 with the twenty command entries,
   each handler's own name, description, flags and arguments, in the order of the
   plugin's COMMANDS table. Request 827 repeats it with a project_path that is
   not the project's: the interface request checks no project path, so the reply
   must equal row 826 byte for byte.
 
+Session Z (requests 843-938, sp_base.tscn open, runs after session V): the
+  set-parent matrix. status, a file sha256 of sp_base.tscn, a baseline
+  scene_tree, then the accepted moves, each with its own mover node so no undo
+  is needed between cases: a plain node appended under a new parent; a Node2D, a
+  Node3D and a Control moved with the default keep_global_transform (the
+  inspect_node of each transform node shows the local position the parent
+  transform adjusted to); an instanced sub-scene root moved under a plain node;
+  and a same-parent move to an explicit index. Then a raw request with
+  keep_global_transform false, because the CLI's boolean flag can only send
+  true. Every rejection is bracketed by identical scene_tree snapshots: missing
+  fields, a non-string node_path, a non-bool keep_global_transform, the scene
+  root as the moved node, a new parent equal to the node and a new parent inside
+  the node's subtree, a same-parent no-op, a sibling name collision, a node
+  inside a non-editable instance, a node inherited from an editable instance, a
+  new parent inside a non-editable and an editable instance, an index above and
+  below the range (and one fractional and one string), an unknown node, a wrong
+  project with other invalid fields (the project guard answers first) and a
+  wrong project with an out-of-range index, an empty node path and an empty,
+  absolute, colon and ".." new parent path. The file sha256 before and after the
+  rejections is equal, and no accepted move is on disk yet
+  (file_not_contains); then Box and Uniq are moved under Target, save_scene
+  runs, and file_contains proves the persisted connection (now
+  Target/Box -> Target), the moved Box row, the MSub instance row and the unique
+  name flag. The post-save bytes are not hashed: the save adds generated uids
+  and unique_ids.
+
+Session AA (requests 939-945, a fresh editor on the saved sp_base.tscn): status,
+  scene_tree, inspect_node of the moved Uniq (the flag survives) and of the
+  moved Node2D (its local position survives), a query_nodes for the moved
+  group, a connect_signal on Target/Box -> Target that must be rejected as a
+  duplicate (the connection survived the reload), and a file_contains for the
+  persisted connection line.
+
+Session AB (requests 946-976, sp_dderived.tscn open; it inherits
+  sp_dbase.tscn, so BaseNode and BaseChild are owned by the edited scene root
+  but are not stored by the edited scene): the set-parent derived-scene matrix.
+  status, a file sha256 of sp_dderived.tscn, a baseline scene_tree, then six
+  rejections bracketed by identical scene_tree snapshots: a wrong project path
+  with a fractional index, a wrong project path with a non-bool
+  keep_global_transform, a wrong project path with a non-string node_path and
+  a wrong project path with a non-string new_parent_path (the project guard
+  answers first in all four), and a move of BaseNode and of BaseNode/BaseChild
+  (both inherited from the base scene, rejected with the base-scene message).
+  The file sha256 before and after the rejections is equal and no move is on
+  disk yet (file_not_contains). Then a local node (MoveMe) moves under a local
+  parent and a local node (Local) moves under the inherited BaseNode (an
+  inherited node is an eligible parent, as for create_node); save_scene writes
+  both, file_contains proves the two rows, and file_not_contains proves the
+  derived scene did not store a BaseNode row.
+
+Session AC (requests 977-982, a fresh editor on the saved sp_dderived.tscn):
+  status, scene_tree, inspect_node of the moved Holder/MoveMe and of
+  BaseNode/Local, a query_nodes for the name BaseNode (exactly one node, no
+  copy was written), and a file_contains for the persisted MoveMe row.
+
+Session AD (requests 983-1006, sp2_override.tscn): the inherited-node
+  matrix. sp2_base.tscn holds a three-level chain (BaseCold, ChildCold,
+  NestedCold), a plain node and an instanced sub-scene; sp2_override.tscn
+  inherits it and overrides a property on all three levels plus a script and a
+  group on the plain node. All six moves are rejected, each bracketed by
+  identical scene_tree snapshots. The file sha256 is equal before and after
+  (cdaca1f1...) and the file holds no node under Target, so no local copy was
+  written. SubCold/InnerCold is refused by the earlier sub-scene rule.
+Session AE (requests 1007-1017, sp2_plain.tscn): the control that inherits with
+  no override at all. Both moves are rejected the same way and the file is
+  unchanged (1e35dc05...).
+Session AF (requests 1018-1034, sp2_twolevel.tscn): a two-level base chain.
+  sp2_mid.tscn inherits sp2_base.tscn and adds one node, so the intermediate
+  base state holds only the instance row; the inherited node is found one level
+  further down. All four moves are rejected and the file is unchanged
+  (77056cca...).
+Session AG (requests 1035-1043, sp2_local.tscn): a node the derived scene owns
+  itself, added under an inherited parent, stays movable. The move succeeds,
+  the file sha256 is unchanged until the explicit save_scene, and the saved
+  file holds one copy under Target and none under BaseCold.
+Session AH (requests 1044-1051, a fresh editor on the saved sp2_local.tscn):
+  Target/AddedUnderInherited is present after the reload, and query_nodes
+  returns exactly one node each for AddedUnderInherited, BaseCold, ChildCold
+  and NestedCold, so nothing was duplicated.
+Session AI (requests 1052-1084, ib_rename.tscn open; it inherits sp2_base.tscn,
+  so its inherited nodes have the edited scene root as owner while Target is
+  local): status, a file sha256 of ib_rename.tscn, a baseline scene_tree, then
+  seven rejections each bracketed by identical scene_tree replies and with an
+  equal before/after file hash: a rename of a base-inherited node with a
+  property override (BaseCold), with a property and script override
+  (BasePlain), of two inherited descendants (BaseCold/ChildCold and
+  BaseCold/ChildCold/NestedCold), of the base scene's instanced sub-scene root
+  (SubCold), and a wrong project path on an inherited target (the project guard
+  answers first); the last rejection is a set_parent of BaseCold, which shows
+  the rename-then-set-parent composition cannot start because the rename is
+  refused. Then the local node Target is renamed to TargetX, its scene_tree is
+  recorded, the file hash is still equal before the save, save_scene runs, and
+  file_contains proves the persisted TargetX row and the inherited BaseCold
+  override row; file_not_contains proves no renamed copy was written.
+Session AJ (requests 1085-1113, ib_delete.tscn open, the same text as
+  ib_rename.tscn): status, a file sha256, a baseline scene_tree, then six
+  rejections each bracketed by identical scene_tree replies and with an equal
+  before/after file hash: a deletion of BaseCold, BasePlain, BaseCold/ChildCold
+  and SubCold (all base-inherited), a wrong project path on an inherited target
+  (the project guard answers first), and a set_parent of BaseCold after the
+  refused delete, which shows the delete-then-create-then-set-parent
+  composition cannot start. Then the local node Target is deleted, its
+  scene_tree is recorded, the file hash is still equal before the save,
+  save_scene runs, and file_not_contains proves Target is gone while file_contains
+  proves the inherited BaseCold override row is untouched.
+Session AK (requests 1114-1128, a fresh editor on the scene sessions AI and AJ
+  saved): status and scene_tree, then inspect_node and query_nodes prove the
+  renamed local TargetX is present and BaseCold and ChildCold are exactly one
+  node each (no copy was written), and a file_contains proves the persisted
+  TargetX row; open_scene loads the saved ib_delete.tscn, then inspect_node
+  reports Target as not found and query_nodes returns no Target and exactly one
+  node each for BaseCold, ChildCold and NestedCold, so the allowed local delete
+  persisted and the inherited chain was not duplicated.
+
+Session CONSOLE (requests 828-842, no edited scene, runs right after session Y):
+  the console command's validation. Every row is rejected before the buffer is
+  read, except the last one: the project guard answering first on a wrong
+  project with other invalid fields, the missing and non-string project path,
+  the mistyped and out-of-range tail (abc, 0, 1001, 1.5), the unknown and
+  non-string level, the mistyped and negative since, and the non-bool clear.
+  The last row is a successful read with a cursor past every message, which
+  returns no messages, only the cursor state. A successful read of real
+  messages is not recorded: the editor's startup log text varies by run, so it
+  cannot be byte-deterministic; the happy path (levels, tail, since, clear,
+  eviction, truncation, single logger after disable/enable) is proved by
+  isolated-editor probes instead.
+Session EVAL (requests 1129-1172, starts with no edited scene, runs right after the console session):
+  the eval command. The eval.gd script and its COMMANDS line are restored into
+  the copied plugin just before this session, so session Y's interface carries
+  eval as entry 20 and rows 1-825 (whose sessions never saw the file) stay
+  byte-identical. The fixture res://eval_bad_preload.gd is written just before
+  this session, not earlier: session W lists the project files, so a file added
+  before it would change rows 730-764. Rows 828-869 run with no edited scene,
+  so scene_changed is false and no request mutates stored state except the two
+  editor-meta markers (the Object leak marker and the retained parent); rows
+  870-871 open res://main.tscn and then edit it, so scene_changed is true.
+  The rows are: seven value
+  returns (int, float, string, Vector2, Array, Dictionary, null, each shown as
+  typed JSON through JSON.from_native), a print-output snippet, a compile error,
+  a runtime error, a snippet that blocks past a small timeout (timeout 100,
+  elapsed about 300 ms, so timeout_exceeded true), and five rejected requests
+  (a wrong project path, a missing code field, a non-string code, a zero
+  timeout, and a wrong project path paired with a non-string code where the
+  project guard answers first), the refused encodings (an Object result as
+  completed false, a 2000-deep Array refused past the tagged depth, and the
+  oversized value), and the repair rows (an Array of exactly the 100 tagged
+  levels that still returns exactly, rich and spaced output, an explicit null
+  timeout refused, a warning that keeps its value, a push_error that fails, an
+  _init error that fails, an Object instance held in editor meta and reported
+  freed on the next call, three cases where an error raised while the reload
+  initializes the submitted @tool script (a failing static initializer, a
+  _static_init that calls push_error, and a preloaded @tool script with an
+  error) each answered with completed false and value null and each followed by
+  a clean call, the tagged depth boundary for an Array (100 levels returned, 101
+  refused), a Dictionary (100 levels returned, 102 refused) and a mixed shape
+  (100 levels returned, 103 refused), a Node that another Node parents kept
+  alive across two calls, a scene switch that stays clean, and a switch with an
+  edit that reports the
+  change). Each reply is normalised by
+  normalize_eval_reply, so the run-dependent elapsed milliseconds and the
+  anonymous gdscript:// source path are placeholders. Every recorded eval reply
+  body parses as JSON, so an invalid reply fails the recording.
+
 NORMALISATION
-  The only one: the throwaway project's absolute path is replaced with
-  <PROJECT> in stored requests and replies. Replies that carry it are the
-  "project path mismatch" errors (10, 46, 54, 61, 70, 131, 141, 146, 158,
-  159, 203, 244, 265, 323, 365, 400, 606, 633, 693, 696, 763). Reply text is
-  otherwise verbatim; no sorting, no rounding.
+  The throwaway project's absolute path is replaced with <PROJECT> in stored
+  requests and replies. Replies that carry it are the "project path mismatch"
+  errors (10, 46, 54, 61, 70, 131, 141, 146, 158, 159, 203, 244, 265, 323,
+  365, 400, 606, 633, 693, 696, 763, 818, 821, 829, 909, 912, 950, 953, 956,
+  959, 1071, 1101, 1140, 1144). For the eval rows two run-dependent values are
+  also replaced, by normalize_eval_reply: the elapsed milliseconds become the
+  string "<ELAPSED>" and an anonymous gdscript://-<id>.gd source path (a
+  compile or runtime error's file, which is a pointer that differs every run)
+  becomes "<ANON>". Reply text is otherwise verbatim; no sorting, no rounding.
+  Every recorded eval reply body parses as JSON.
 
 DETERMINISM PROOF
+  The combined rows were recorded twice; the two full runs are byte-identical
+  (compare.py IDENTICAL, 1172 pairs, and cmp clean between the two runs). Rows
+  1-825 are byte-identical to the baseline that preceded this change: their
+  sha256 is
+  99f6ebef9215d318e32ee516db497e9c3a12488b19de1321e135da93991056e7. Rows
+  826-827 change only because the interface now carries console, set_parent and
+  eval as entries 18, 19 and 20. The three new command scripts and the console
+  Logger wiring are staged out of the copied plugin while sessions A..W record
+  (so session W's commands-folder listing keeps the pre-existing command set)
+  and restored together before session Y; the set-parent fixtures are written
+  only before the set-parent sessions and the eval fixture only before the eval
+  session. A separate script maps every row of the three accepted baselines
+  beyond row 827 to its combined row and finds every one byte-identical.
+  The base-inherited rename and delete rows were recorded twice; the two full
+  runs are byte-identical (compare.py IDENTICAL, 1113 pairs). Rows 1-1036 are
+  byte-identical to the 1036-row baseline that preceded this change, whose
+  sha256 is
+  52754cd8c00d56a58762cd20403a26e8c9bd3913e4c12bf41fb66121205458d0; rows
+  1-825 keep their sha256
+  99f6ebef9215d318e32ee516db497e9c3a12488b19de1321e135da93991056e7. The new
+  fixtures ib_rename.tscn and ib_delete.tscn are written only after session AH
+  records, so the earlier listings (session W) never name them. Every rejection
+  is bracketed by identical scene_tree replies, each session's file hash is
+  equal before and after them, and the two accepted local edits are not hashed
+  after their save (the save adds generated uids and unique_ids).
+  The set-parent rows were recorded twice; the two full runs are byte-identical
+  (compare.py IDENTICAL, cmp clean, 967 pairs). Rows 1-825 are byte-identical
+  to the 825-row baseline that preceded this change; their sha256 is
+  99f6ebef9215d318e32ee516db497e9c3a12488b19de1321e135da93991056e7, which is
+  the sha256 of that whole file. Rows 826-827 (the published command interface)
+  change only by the set_parent entry appended as the last entry of the COMMANDS
+  table. The new command script is staged out of the copied plugin while
+  sessions A..W record and restored only before session Y, and the new fixture
+  files are written only after session Y, so the earlier commands-folder and
+  file listings never change. Rows 828-923 are the set-parent session and rows
+  931-961 are the derived-scene session; their replies carry no generated id,
+  and the post-save file bytes (which do carry generated uids and unique_ids)
+  are never hashed. Rows 924-930 and 962-967 are the fresh reloads of the saved
+  scenes.
   The command-interface rows were recorded twice; the two full runs are
   byte-identical (compare.py IDENTICAL, cmp clean, 827 pairs). Rows 1-825 are
   byte-identical to the 825-row baseline that preceded this change: their
@@ -490,6 +713,98 @@ COVERAGE (request numbers above)
   command interface #826-827: Y #826 (the interface, no other field) and #827
   (the same request with a project_path that is not the project's, which must
   answer identically).
+  console #828-842: Z #828 (status), the project guard answering first on a
+  wrong project with other invalid fields #829, the missing and non-string
+  project path #830-831, the mistyped and out-of-range tail #832-835, the
+  unknown and non-string level #836-837, the mistyped and negative since
+  #838-840, the non-bool clear #841, and a successful read with a cursor past
+  every message #842.
+  set-parent #843-945: Z #843-938 (status #843; unchanged-file hash #844;
+  baseline scene_tree #845; accepted moves #846-852: MNode under Target, M2D
+  under Holder2D, M3D under Holder3D, MCtl under HolderCtl, MSub under Target,
+  MIndex/IB to index 0, and MNoKeep under HolderNoKeep with
+  keep_global_transform false as a raw request; post-move scene_tree #853 and
+  the transform inspect_node replies #854-856; rejections with identical
+  scene_tree pairs: missing fields #857-859, non-string node_path #860-862,
+  non-bool keep_global_transform #863-865, the scene root #866-868, a parent
+  equal to the node #869-871, a parent inside the node's subtree #872-874, a
+  same-parent no-op #875-877, a sibling name collision #878-880, a node inside
+  a non-editable instance #881-883, an inherited node #884-886, a new parent
+  inside a non-editable instance #887-889 and an editable one #890-892, an
+  index above the range #893-895, below it #896-898, fractional #899-901 and a
+  string #902-904, an unknown node #905-907, a wrong project with other invalid
+  fields #908-910, a wrong project with an out-of-range index #911-913, an
+  empty node path #914-916, and an empty #917-919, absolute #920-922, colon
+  #923-925 and ".." #926-928 new parent path; unchanged-file hash #929; no
+  moved Box on disk yet #930; Box and Uniq under Target #931-932; save_scene
+  #933; the persisted connection, Box row, MSub instance row and unique flag
+  #934-938). AA #939-945 (status #939, scene_tree #940, the moved Uniq #941,
+  the moved Node2D #942, the moved group query #943, the duplicate connection
+  #944, and the persisted connection line #945).
+  set-parent derived scene #946-982: AB #946-976 (status #946; unchanged-file
+  hash #947; baseline scene_tree #948; six rejections with identical scene_tree
+  pairs: a wrong project path with a fractional index #949-951, with a non-bool
+  keep_global_transform #952-954, with a non-string node_path #955-957 and with
+  a non-string new_parent_path #958-960, and a move of the base-inherited
+  BaseNode #961-963 and of BaseNode/BaseChild #964-966; unchanged-file hash
+  #967; no MoveMe row on disk yet #968; MoveMe under Holder #969 and Local
+  under the inherited BaseNode #970; scene_tree #971; unchanged-file hash #972;
+  save_scene #973; the persisted MoveMe row #974, the persisted Local row #975
+  and no BaseNode row in the derived scene #976). AC #977-982 (status #977,
+  scene_tree #978, the moved Holder/MoveMe #979, the local node under the
+  inherited BaseNode #980, one BaseNode by name #981, and the persisted MoveMe
+  line #982).
+  set-parent inherited-node matrix #983-1051: AD #983-1006 (status #983,
+  unchanged-file hash #984, baseline scene_tree #985, six rejected moves each
+  bracketed by identical scene_tree pairs #986-1003, unchanged-file hash #1004,
+  no node under Target #1005-1006); AE #1007-1017 (the no-override control);
+  AF #1018-1034 (the two-level base chain); AG #1035-1043 (a local node under
+  an inherited parent moves, is saved, and one copy is written under Target);
+  AH #1044-1051 (the fresh reload; each inherited node is a single node by
+  name).
+  base-inherited rename and delete #1052-1128: AI #1052-1084 (status #1052,
+  unchanged-file hash #1053, baseline scene_tree #1054, seven rejections each
+  bracketed by identical scene_tree pairs with an equal before/after file hash
+  #1055-1075, unchanged-file hash #1076, no renamed copy #1077-1078, the local
+  rename to TargetX #1079, scene_tree #1080, unchanged-file hash #1081,
+  save_scene #1082, the persisted TargetX row #1083 and the inherited BaseCold
+  row #1084). AJ #1085-1113 (status #1085, unchanged-file hash #1086, baseline
+  scene_tree #1087, six rejections bracketed by identical scene_tree pairs with
+  an equal before/after file hash #1088-1105, unchanged-file hash #1106, no
+  Target copy #1107, the local delete of Target #1108, scene_tree #1109,
+  unchanged-file hash #1110, save_scene #1111, Target gone #1112 and the
+  inherited BaseCold row untouched #1113). AK #1114-1128 (status #1114,
+  scene_tree #1115, the renamed TargetX #1116, query_nodes proving one TargetX
+  #1117 and one each of BaseCold #1118 and ChildCold #1119, the persisted
+  TargetX row #1120, open_scene of the saved ib_delete.tscn #1121, scene_tree
+  #1122, Target not found #1123, no Target #1124, one each of BaseCold #1125,
+  ChildCold #1126 and NestedCold #1127, and Target gone #1128).
+  eval #1129-1172: Z (rows 1129-1170 start with no edited scene; rows 1171-1172 open
+  res://main.tscn):
+  value returns int #1129, float #1130, string #1131, Vector2 #1132, Array #1133,
+  Dictionary #1134 and null #1135 (typed JSON, the int kept as i:); print output
+  #1136; compile error #1137 and runtime error #1138 (completed false, the error
+  captured with function, line, message and type, the anonymous source path
+  normalised); a snippet blocking past a small timeout #1139 (timeout_exceeded
+  true); and the rejected requests #1140-1144 (wrong project, missing code,
+  non-string code, zero timeout, and a wrong project paired with a non-string
+  code where the project guard answers first); refused encodings #1145 (Object
+  as completed false with type error), #1146 (2000-deep Array refused past the
+  tagged depth) and #1147 (oversized value); repair rows #1148 (an Array of
+  exactly the 100 tagged levels, returned exact), #1149 (rich output), #1150
+  (spaced output), #1151 (explicit null timeout refused), #1152 (warning keeps
+  value) and #1153 (push_error fails), #1154 (_init error fails), #1155-1156
+  (Object instance freed, checked via editor meta), #1157 (a failing @tool
+  static initializer: completed false, value null, one error) and #1158 (a clean
+  call with errors and output empty), #1159 (_static_init calling push_error)
+  and #1160 (clean call), #1161 (a preloaded @tool script with an error) and #1162
+  (clean call), #1163 (Array at exactly 100 levels returned exact) and #1164
+  (Array at 101 levels refused), #1165 (Dictionary at exactly 100 levels returned
+  exact) and #1166 (Dictionary at 102 levels refused), #1167 (mixed shape at
+  exactly 100 levels returned exact) and #1168 (mixed shape at 103 levels
+  refused), #1169 (a Node parented to a Node the snippet retains, parent child
+  count 1) and #1170 (the next call still finds that one child), #1171 (scene
+  switch clean) and #1172 (switch with edit reports the change).
   Not covered, with reason:
   - "request exceeds the maximum size" (>8 MiB without newline): reaching
     it needs an 8 MB write, and the reported byte count varies with TCP
@@ -537,9 +852,10 @@ NOTES
   Undo and redo are not proved by this harness: it talks over the socket only
   and cannot trigger the editor's Undo action. As for the earlier commands,
   one-action Undo/Redo proof lives in the Code4Me task result, from a separate
-  isolated-editor probe that sends a real connect-signal request through the
-  plugin and then triggers the editor's Undo/Redo through the safe route.
-  The baseline is only valid while the plugin's replies for these 827 requests
+  isolated-editor probe that sends a real set-parent (and, for the earlier
+  commands, connect-signal) request through the plugin and then triggers the
+  editor's Undo/Redo through the safe route.
+  The baseline is only valid while the plugin's replies for these 1172 requests
   are supposed to stay the same. A change that adds or alters a command's
   behavior on purpose needs a new baseline, recorded from the last trusted
   commit, and a fresh determinism check (record three times, compare byte for

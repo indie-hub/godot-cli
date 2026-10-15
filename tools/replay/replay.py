@@ -11,11 +11,14 @@ Port patch (the only edit ever made to the copied plugin): the single line
 `const PORT := 47821` in the copied editor_plugin.gd is replaced with
 `const PORT := <port>`. The repo checkout is never touched.
 
-Normalisation (the only one): the throwaway project's absolute path is
-replaced with `<PROJECT>` in both stored request and reply text, so fresh
-temporary directories compare equal. Replies that carry it are the
-`project path mismatch` errors. Nothing else is normalised, sorted or
-rounded; reply text is stored verbatim otherwise.
+Normalisation (eval only, inside the harness): the throwaway project's absolute
+path is replaced with `<PROJECT>` in both stored request and reply text, so fresh
+temporary directories compare equal; eval replies additionally replace the
+measured `elapsed_msec` with `"<ELAPSED>"` and the anonymous `gdscript://-<id>.gd`
+source path with `<ANON>`, so stored rows are reproducible. Nothing else is
+normalised, sorted or rounded; reply text is stored verbatim otherwise. Every
+recorded eval reply body must parse as JSON, so an invalid reply fails the
+recording instead of being blessed into the baseline.
 
 Stdlib only. Never connects to 47821.
 """
@@ -24,6 +27,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -34,6 +38,32 @@ import time
 GODOT = os.environ.get("GODOT", "godot")
 PORT_LINE = "const PORT := 47821"
 WRONG_PROJECT = "/no/replay-mismatch"
+
+# Commands a later session adds, staged out of the copied plugin while the
+# earlier sessions record and restored just before the session that needs
+# them: (path relative to the plugin, COMMANDS line, anchor line to insert the
+# COMMANDS line after). Session W's listing rows name the commands folder, so
+# every command added after the 825-row baseline must be absent while A..W
+# record. inspect-resource is restored before session X; console (which also
+# wires a Logger into editor_plugin.gd), set_parent and eval are restored
+# together before session Y.
+STAGED_COMMANDS = [
+    (
+        os.path.join("commands", "inspect_resource.gd"),
+        '\t"inspect_resource": preload("commands/inspect_resource.gd"),',
+        '\t"list_resources": preload("commands/list_resources.gd"),',
+    ),
+    (
+        os.path.join("commands", "set_parent.gd"),
+        '\t"set_parent": preload("commands/set_parent.gd"),',
+        '\t"console": preload("commands/console.gd"),',
+    ),
+    (
+        os.path.join("commands", "eval.gd"),
+        '\t"eval": preload("commands/eval.gd"),',
+        '\t"set_parent": preload("commands/set_parent.gd"),',
+    ),
+]
 
 PROJECT_GODOT = """; Engine configuration file.
 config_version=5
@@ -2196,6 +2226,739 @@ def build_y():
     ]
 
 
+# Set-parent fixtures (sessions Z and AA). Sessions A-Y never reference these
+# paths, and the files are written only after session Y records, so no earlier
+# listing row (session W) or interface row (session Y) sees them. sp_base.tscn
+# is written fresh by main() every run; session Z saves it, so session AA opens
+# that saved file. Each accepted case has its own mover node, so the moves do
+# not need an undo to keep the later paths stable.
+SP_FIXTURE_GD = """extends Node
+signal ping(value)
+
+
+func on_ping(value):
+	pass
+"""
+
+SP_SUB_TSCN = """[gd_scene format=3 uid="uid://gp054spsub1"]
+[node name="SubRoot" type="Node"]
+[node name="Inner" type="Node" parent="."]
+"""
+
+SP_BASE_TSCN = """[gd_scene load_steps=3 format=3 uid="uid://gp054spbase1"]
+[ext_resource type="Script" path="res://sp_fixture.gd" id="1"]
+[ext_resource type="PackedScene" path="res://sp_sub.tscn" id="2"]
+[node name="SpRoot" type="Node"]
+[node name="Box" type="Node" parent="." groups=["boxg"]]
+script = ExtResource("1")
+[node name="KidA" type="Node" parent="Box"]
+[node name="KidB" type="Node" parent="Box"]
+[node name="Target" type="Node" parent="." groups=["tg"]]
+script = ExtResource("1")
+[node name="Clash" type="Node" parent="Target"]
+[node name="KidA" type="Node" parent="Target"]
+[node name="MNode" type="Node" parent="."]
+[node name="MIndex" type="Node" parent="."]
+[node name="IA" type="Node" parent="MIndex"]
+[node name="IB" type="Node" parent="MIndex"]
+[node name="Holder2D" type="Node2D" parent="."]
+position = Vector2(10, 10)
+[node name="M2D" type="Node2D" parent="."]
+position = Vector2(100, 50)
+[node name="Holder3D" type="Node3D" parent="."]
+position = Vector3(5, 5, 5)
+[node name="M3D" type="Node3D" parent="."]
+position = Vector3(30, 40, 50)
+[node name="HolderCtl" type="Node2D" parent="."]
+position = Vector2(2, 3)
+[node name="MCtl" type="Control" parent="."]
+position = Vector2(7, 8)
+[node name="HolderNoKeep" type="Node2D" parent="."]
+position = Vector2(1, 1)
+[node name="MNoKeep" type="Node2D" parent="."]
+position = Vector2(3, 4)
+[node name="Uniq" type="Node" parent="."]
+unique_name_in_owner = true
+[node name="MSub" parent="." instance=ExtResource("2")]
+[node name="Edit" parent="." instance=ExtResource("2")]
+[editable path="Edit"]
+[node name="LocalUnderEdit" type="Node" parent="Edit"]
+owner="."
+[connection signal="ping" from="Box" to="Target" method="on_ping"]
+"""
+
+# Derived-scene fixtures (sessions AB and AC). sp_dbase.tscn is the base scene;
+# sp_dderived.tscn inherits it, so BaseNode and BaseChild have the edited scene
+# root as their owner but are not stored by the edited scene, while Local,
+# LocalKid, MoveMe and Holder are. Session AB rejects a move of an inherited
+# node and accepts a move of a local node, and session AC reloads the result.
+SP_DBASE_TSCN = """[gd_scene format=3 uid="uid://gp054dbase1"]
+[node name="BaseRoot" type="Node"]
+[node name="BaseNode" type="Node" parent="."]
+[node name="BaseChild" type="Node" parent="BaseNode"]
+[node name="BasePlain" type="Node" parent="."]
+"""
+
+SP_DDERIVED_TSCN = """[gd_scene load_steps=2 format=3 uid="uid://gp054dderiv1"]
+[ext_resource type="PackedScene" path="res://sp_dbase.tscn" id="1_base"]
+[node name="DerivedRoot" instance=ExtResource("1_base")]
+[node name="Local" type="Node" parent="."]
+[node name="LocalKid" type="Node" parent="Local"]
+[node name="MoveMe" type="Node" parent="."]
+[node name="Holder" type="Node" parent="."]
+"""
+
+
+def write_set_parent_fixtures(proj):
+    for name, text in [
+        ("sp_fixture.gd", SP_FIXTURE_GD),
+        ("sp_sub.tscn", SP_SUB_TSCN),
+        ("sp_base.tscn", SP_BASE_TSCN),
+        ("sp_dbase.tscn", SP_DBASE_TSCN),
+        ("sp_dderived.tscn", SP_DDERIVED_TSCN),
+    ]:
+        with open(os.path.join(proj, name), "w") as f:
+            f.write(text)
+    write_sp2_fixtures(proj)
+
+
+def sp(node, parent, index=None, keep=True, project="<PROJ>"):
+    d = {"command": "set_parent", "node_path": node, "new_parent_path": parent,
+         "index": index, "keep_global_transform": keep, "project_path": project}
+    return ("line", json.dumps(d, separators=(",", ":")))
+
+
+def build_z():
+    # Session Z: set-parent against sp_base.tscn. Accepted moves run first
+    # (each case has its own mover node), then every rejection is bracketed by
+    # identical scene_tree snapshots. Nothing is saved until save_scene; the
+    # file hash before and after the rejections is equal. The keep_global_
+    # transform=false case is a raw request, because the CLI's boolean flag can
+    # only ever send true.
+    out = [
+        ("line", '{"command":"status"}'),
+        ("file_sha256", "sp_base.tscn"),
+        ("line", '{"command":"scene_tree"}'),
+    ]
+    accepted = [
+        sp("MNode", "Target"),                     # plain node, append
+        sp("M2D", "Holder2D"),                     # Node2D, keep global (default)
+        sp("M3D", "Holder3D"),                     # Node3D, keep global
+        sp("MCtl", "HolderCtl"),                   # Control, keep global
+        sp("MSub", "Target"),                      # instanced sub-scene root
+        sp("MIndex/IB", "MIndex", index=0),        # explicit index, same parent
+        ("line", '{"command":"set_parent","node_path":"MNoKeep","new_parent_path":"HolderNoKeep","index":null,"keep_global_transform":false,"project_path":"<PROJ>"}'),
+    ]
+    out.extend(accepted)
+    out.append(("line", '{"command":"scene_tree"}'))
+    for node in ["Holder2D/M2D", "Holder3D/M3D", "HolderNoKeep/MNoKeep"]:
+        out.append(ins(node))
+    rejections = [
+        ("line", '{"command":"set_parent"}'),
+        ("line", '{"command":"set_parent","node_path":7,"new_parent_path":"Target","project_path":"<PROJ>"}'),
+        sp("Box", "Target", keep="yes"),
+        sp(".", "Target"),
+        sp("Box", "Box"),
+        sp("Box", "Box/KidA"),
+        sp("Box/KidA", "Box", index=0),
+        sp("Box/KidA", "Target"),
+        sp("Sub/Inner", "Target"),
+        sp("Edit/Inner", "Target"),
+        sp("Box", "Sub/Inner"),
+        sp("Box", "Edit/Inner"),
+        sp("Box", "Target", index=99),
+        sp("Box", "Target", index=-1),
+        sp("Box", "Target", index=1.5),
+        ("line", '{"command":"set_parent","node_path":"Box","new_parent_path":"Target","index":"2","project_path":"<PROJ>"}'),
+        sp("NoSuch", "Target"),
+        ("line", '{"command":"set_parent","node_path":"NoSuch","new_parent_path":"NoSuch2","project_path":"/no/replay-mismatch"}'),
+        ("line", '{"command":"set_parent","node_path":"Box","new_parent_path":"Target","index":99,"project_path":"/no/replay-mismatch"}'),
+        sp("", "Target"),
+        sp("Box", ""),
+        sp("Box", "/Target"),
+        sp("Box", "A:B"),
+        sp("Box", "../Target"),
+    ]
+    for request in rejections:
+        out.append(("line", '{"command":"scene_tree"}'))
+        out.append(request)
+        out.append(("line", '{"command":"scene_tree"}'))
+    # No implicit save: the file is unchanged since the session opened, and Box
+    # is not under Target yet.
+    out.append(("file_sha256", "sp_base.tscn"))
+    out.append(("file_not_contains", 'sp_base.tscn|name="Box" type="Node" parent="Target"'))
+    # Persistence: move a subtree with a group, a signal connection and a
+    # unique name, and an instance root, then save. The post-save bytes are not
+    # hashed (the save adds generated uids and unique_ids), so the write is
+    # proven by the file_contains checks; session AA reads the saved state back.
+    out.append(sp("Box", "Target"))
+    out.append(sp("Uniq", "Target"))
+    out.append(("line", '{"command":"save_scene","project_path":"<PROJ>"}'))
+    out.append(("file_contains", 'sp_base.tscn|[connection signal="ping" from="Target/Box" to="Target" method="on_ping"]'))
+    out.append(("file_contains", 'sp_base.tscn|name="Box" type="Node" parent="Target"'))
+    out.append(("file_contains", 'sp_base.tscn|name="MSub" parent="Target"'))
+    out.append(("file_not_contains", 'sp_base.tscn|name="MSub" parent="Target" type='))
+    out.append(("file_contains", 'sp_base.tscn|unique_name_in_owner = true'))
+    return out
+
+
+def build_aa():
+    # Session AA: a fresh editor on the sp_base.tscn session Z saved. The moved
+    # subtree, its group, its signal connection and its unique name must all be
+    # present under the new parent after the reload; re-connecting the moved
+    # connection must be rejected as a duplicate.
+    return [
+        ("line", '{"command":"status"}'),
+        ("line", '{"command":"scene_tree"}'),
+        ins("Target/Uniq"),
+        ins("Holder2D/M2D"),
+        q(**{"group": "boxg"}),
+        cs("Target/Box", "ping", "Target", "on_ping"),
+        ("file_contains", 'sp_base.tscn|[connection signal="ping" from="Target/Box" to="Target" method="on_ping"]'),
+    ]
+
+
+def build_ab():
+    # Session AB: set-parent in a derived scene (sp_dderived.tscn inherits
+    # sp_dbase.tscn). Rejections are bracketed by identical scene_tree
+    # snapshots, and the file hash is equal before and after them: a wrong
+    # project path answers first even when another field is malformed (a
+    # fractional index, a non-bool keep_global_transform, a non-string
+    # node_path, a non-string new_parent_path), and a node inherited from the
+    # base scene and a node inside it are rejected. Then a local node moves, and
+    # a local node moves under an inherited parent; save_scene writes both, and
+    # the inherited nodes are not stored by the derived scene.
+    out = [
+        ("line", '{"command":"status"}'),
+        ("file_sha256", "sp_dderived.tscn"),
+        ("line", '{"command":"scene_tree"}'),
+    ]
+    rejections = [
+        ("line", '{"command":"set_parent","node_path":"MoveMe","new_parent_path":"Holder","index":1.5,"project_path":"/no/replay-mismatch"}'),
+        ("line", '{"command":"set_parent","node_path":"MoveMe","new_parent_path":"Holder","keep_global_transform":"yes","project_path":"/no/replay-mismatch"}'),
+        ("line", '{"command":"set_parent","node_path":7,"new_parent_path":"Holder","project_path":"/no/replay-mismatch"}'),
+        ("line", '{"command":"set_parent","node_path":"MoveMe","new_parent_path":7,"project_path":"/no/replay-mismatch"}'),
+        sp("BaseNode", "Local"),
+        sp("BaseNode/BaseChild", "Local"),
+    ]
+    for request in rejections:
+        out.append(("line", '{"command":"scene_tree"}'))
+        out.append(request)
+        out.append(("line", '{"command":"scene_tree"}'))
+    # No implicit save, and no rejection changed the scene.
+    out.append(("file_sha256", "sp_dderived.tscn"))
+    out.append(("file_not_contains", 'sp_dderived.tscn|name="MoveMe" type="Node" parent="Holder"'))
+    out.append(sp("MoveMe", "Holder"))
+    out.append(sp("Local", "BaseNode"))
+    out.append(("line", '{"command":"scene_tree"}'))
+    out.append(("file_sha256", "sp_dderived.tscn"))
+    out.append(("line", '{"command":"save_scene","project_path":"<PROJ>"}'))
+    out.append(("file_contains", 'sp_dderived.tscn|name="MoveMe" type="Node" parent="Holder"'))
+    out.append(("file_contains", 'sp_dderived.tscn|name="Local" type="Node" parent="BaseNode"'))
+    out.append(("file_not_contains", 'sp_dderived.tscn|name="BaseNode"'))
+    return out
+
+
+def build_ac():
+    # Session AC: a fresh editor on the sp_dderived.tscn session AB saved. The
+    # local node moved under Holder is present, the local node under the
+    # inherited parent is present, and the inherited node is still a single
+    # node (no copy was written).
+    return [
+        ("line", '{"command":"status"}'),
+        ("line", '{"command":"scene_tree"}'),
+        ins("Holder/MoveMe"),
+        ins("BaseNode/Local"),
+        q(**{"name": "BaseNode"}),
+        ("file_contains", 'sp_dderived.tscn|name="MoveMe" type="Node" parent="Holder"'),
+    ]
+
+
+# Inherited-node matrix fixtures (session AD onwards). sp2_base.tscn holds a
+# three-level chain, a plain node and an instanced sub-scene; every derived
+# scene below inherits it. sp2_override.tscn overrides a property on all three
+# levels of the chain plus a script and a group on the plain node, so one editor
+# session covers five inherited cases. sp2_plain.tscn inherits with no override
+# at all and is the control. sp2_twolevel.tscn inherits a scene that itself
+# inherits, where the intermediate base holds only the instance row.
+# sp2_local.tscn adds a node of its own under an inherited parent, which must
+# stay movable.
+SP2_SUB_GD = """extends Node2D
+"""
+
+SP2_SUB_TSCN = """[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://sp2_sub.gd" id="1_s"]
+
+[node name="SubCold" type="Node2D"]
+script = ExtResource("1_s")
+
+[node name="InnerCold" type="Node2D" parent="."]
+"""
+
+SP2_BASE_TSCN = """[gd_scene load_steps=2 format=3]
+
+[ext_resource type="PackedScene" path="res://sp2_sub.tscn" id="1_s"]
+
+[node name="Sp2Base" type="Node2D"]
+
+[node name="BaseCold" type="Node2D" parent="."]
+
+[node name="ChildCold" type="Node2D" parent="BaseCold"]
+
+[node name="NestedCold" type="Node2D" parent="BaseCold/ChildCold"]
+
+[node name="BasePlain" type="Node2D" parent="."]
+
+[node name="SubCold" parent="." instance=ExtResource("1_s")]
+"""
+
+SP2_OVERRIDE_TSCN = """[gd_scene load_steps=3 format=3]
+
+[ext_resource type="PackedScene" path="res://sp2_base.tscn" id="1_b"]
+[ext_resource type="Script" path="res://sp2_sub.gd" id="2_s"]
+
+[node name="Sp2Override" instance=ExtResource("1_b")]
+
+[node name="BaseCold" parent="." index="0"]
+position = Vector2(11, 12)
+
+[node name="ChildCold" parent="BaseCold" index="0"]
+position = Vector2(21, 22)
+
+[node name="NestedCold" parent="BaseCold/ChildCold" index="0"]
+position = Vector2(31, 32)
+
+[node name="BasePlain" parent="." index="3"]
+position = Vector2(41, 42)
+script = ExtResource("2_s")
+groups = ["sp2group"]
+
+[node name="Target" type="Node2D" parent="."]
+"""
+
+SP2_PLAIN_TSCN = """[gd_scene load_steps=2 format=3]
+
+[ext_resource type="PackedScene" path="res://sp2_base.tscn" id="1_b"]
+
+[node name="Sp2Plain" instance=ExtResource("1_b")]
+
+[node name="Target" type="Node2D" parent="."]
+"""
+
+SP2_MID_TSCN = """[gd_scene load_steps=2 format=3]
+
+[ext_resource type="PackedScene" path="res://sp2_base.tscn" id="1_b"]
+
+[node name="Sp2Mid" instance=ExtResource("1_b")]
+
+[node name="MidLocal" type="Node2D" parent="."]
+"""
+
+SP2_TWOLEVEL_TSCN = """[gd_scene load_steps=2 format=3]
+
+[ext_resource type="PackedScene" path="res://sp2_mid.tscn" id="1_m"]
+
+[node name="Sp2Two" instance=ExtResource("1_m")]
+
+[node name="BasePlain" parent="." index="3"]
+position = Vector2(51, 52)
+
+[node name="Target" type="Node2D" parent="."]
+"""
+
+SP2_LOCAL_TSCN = """[gd_scene load_steps=2 format=3]
+
+[ext_resource type="PackedScene" path="res://sp2_base.tscn" id="1_b"]
+
+[node name="Sp2Local" instance=ExtResource("1_b")]
+
+[node name="AddedUnderInherited" type="Node2D" parent="BaseCold"]
+owner = "."
+
+[node name="Target" type="Node2D" parent="."]
+"""
+
+
+def write_sp2_fixtures(proj):
+    for name, text in [
+        ("sp2_sub.gd", SP2_SUB_GD),
+        ("sp2_sub.tscn", SP2_SUB_TSCN),
+        ("sp2_base.tscn", SP2_BASE_TSCN),
+        ("sp2_override.tscn", SP2_OVERRIDE_TSCN),
+        ("sp2_plain.tscn", SP2_PLAIN_TSCN),
+        ("sp2_mid.tscn", SP2_MID_TSCN),
+        ("sp2_twolevel.tscn", SP2_TWOLEVEL_TSCN),
+        ("sp2_local.tscn", SP2_LOCAL_TSCN),
+    ]:
+        with open(os.path.join(proj, name), "w") as f:
+            f.write(text)
+
+
+def build_ad():
+    # Session AD: five inherited nodes that carry a local override (property on
+    # three levels of the chain, script and group on the plain node). Every one
+    # is rejected, the scene and the file are unchanged by the rejections, and
+    # no local copy is written under Target.
+    out = [
+        ("line", '{"command":"status"}'),
+        ("file_sha256", "sp2_override.tscn"),
+        ("line", '{"command":"scene_tree"}'),
+    ]
+    for node in ["BaseCold", "BaseCold/ChildCold", "BaseCold/ChildCold/NestedCold",
+                 "BasePlain", "SubCold", "SubCold/InnerCold"]:
+        out.append(("line", '{"command":"scene_tree"}'))
+        out.append(sp(node, "Target"))
+        out.append(("line", '{"command":"scene_tree"}'))
+    out.append(("file_sha256", "sp2_override.tscn"))
+    out.append(("file_not_contains", 'sp2_override.tscn|parent="Target"'))
+    out.append(("file_not_contains", 'sp2_override.tscn|name="BaseCold" type="Node2D" parent="Target"'))
+    return out
+
+
+def build_ae():
+    # Session AE: the control that inherits with no override at all, and the
+    # two-level base chain where the intermediate base holds only the instance
+    # row. Both are rejected the same way.
+    out = [
+        ("line", '{"command":"status"}'),
+        ("file_sha256", "sp2_plain.tscn"),
+        ("line", '{"command":"scene_tree"}'),
+    ]
+    for node in ["BaseCold", "BasePlain"]:
+        out.append(("line", '{"command":"scene_tree"}'))
+        out.append(sp(node, "Target"))
+        out.append(("line", '{"command":"scene_tree"}'))
+    out.append(("file_sha256", "sp2_plain.tscn"))
+    out.append(("file_not_contains", 'sp2_plain.tscn|parent="Target"'))
+    return out
+
+
+def build_af():
+    # Session AF: the two-level base chain. BasePlain carries an override at the
+    # top, BaseCold carries none, and MidLocal belongs to the intermediate base.
+    out = [
+        ("line", '{"command":"status"}'),
+        ("file_sha256", "sp2_twolevel.tscn"),
+        ("line", '{"command":"scene_tree"}'),
+    ]
+    for node in ["BasePlain", "BaseCold", "BaseCold/ChildCold", "MidLocal"]:
+        out.append(("line", '{"command":"scene_tree"}'))
+        out.append(sp(node, "Target"))
+        out.append(("line", '{"command":"scene_tree"}'))
+    out.append(("file_sha256", "sp2_twolevel.tscn"))
+    out.append(("file_not_contains", 'sp2_twolevel.tscn|parent="Target"'))
+    return out
+
+
+def build_ag():
+    # Session AG: a node the derived scene owns itself, added under an inherited
+    # parent, stays movable. It is saved and the file must hold exactly one copy
+    # under Target and none beside the inherited parent.
+    out = [
+        ("line", '{"command":"status"}'),
+        ("file_sha256", "sp2_local.tscn"),
+        ("line", '{"command":"scene_tree"}'),
+        sp("BaseCold/AddedUnderInherited", "Target"),
+        ("line", '{"command":"scene_tree"}'),
+        ("file_sha256", "sp2_local.tscn"),
+        ("line", '{"command":"save_scene","project_path":"<PROJ>"}'),
+        ("file_contains", 'sp2_local.tscn|name="AddedUnderInherited" type="Node2D" parent="Target"'),
+        ("file_not_contains", 'sp2_local.tscn|name="AddedUnderInherited" type="Node2D" parent="BaseCold"'),
+    ]
+    return out
+
+
+def build_ah():
+    # Session AH: a fresh editor on the scene session AG saved. The node added
+    # under the inherited parent was moved under Target and persisted, and the
+    # inherited chain is still a single node each.
+    return [
+        ("line", '{"command":"status"}'),
+        ("line", '{"command":"scene_tree"}'),
+        ins("Target/AddedUnderInherited"),
+        q(**{"name": "AddedUnderInherited"}),
+        q(**{"name": "BaseCold"}),
+        q(**{"name": "ChildCold"}),
+        q(**{"name": "NestedCold"}),
+        ("file_contains", 'sp2_local.tscn|name="AddedUnderInherited" type="Node2D" parent="Target"'),
+    ]
+
+
+# Base-inherited rename and delete fixtures (sessions AI to AK). Both scenes
+# inherit sp2_base.tscn, so BaseCold, ChildCold, NestedCold, BasePlain and
+# SubCold are inherited nodes that the edited scene root owns while Target is a
+# local node. ib_rename.tscn and ib_delete.tscn hold the same text so the
+# rename session and the delete session each hash a fresh file before their one
+# accepted save.
+IB_DERIVED_TSCN = """[gd_scene load_steps=3 format=3]
+
+[ext_resource type="PackedScene" path="res://sp2_base.tscn" id="1_b"]
+[ext_resource type="Script" path="res://sp2_sub.gd" id="2_s"]
+
+[node name="IbRoot" instance=ExtResource("1_b")]
+
+[node name="BaseCold" parent="." index="0"]
+position = Vector2(11, 12)
+
+[node name="BasePlain" parent="." index="1"]
+position = Vector2(41, 42)
+script = ExtResource("2_s")
+
+[node name="Target" type="Node2D" parent="."]
+"""
+
+
+def write_ib_fixtures(proj):
+    for name in ("ib_rename.tscn", "ib_delete.tscn"):
+        with open(os.path.join(proj, name), "w") as f:
+            f.write(IB_DERIVED_TSCN)
+
+
+def dele(node, project="<PROJ>"):
+    return ("line", json.dumps({"command": "delete_node", "node_path": node,
+                                "project_path": project}, separators=(",", ":")))
+
+
+def build_ai():
+    # Session AI: rename-node against ib_rename.tscn, a derived scene. Every
+    # inherited target is rejected before the undo action: an inherited node
+    # with a property override, an inherited node with a property and script
+    # override, two inherited descendants, the root of the base scene's
+    # instanced sub-scene, and a wrong project path (the project guard answers
+    # first). The rejected set-parent of the same inherited node shows that the
+    # rename-then-set-parent composition is unreachable. Each rejection is
+    # bracketed by identical scene_tree snapshots and the file hash is equal
+    # before and after them. Then the one local node is renamed and saved.
+    out = [
+        ("line", '{"command":"status"}'),
+        ("file_sha256", "ib_rename.tscn"),
+        ("line", '{"command":"scene_tree"}'),
+    ]
+    rejections = [
+        rn("BaseCold", "BaseColdX"),
+        rn("BasePlain", "BasePlainX"),
+        rn("BaseCold/ChildCold", "ChildColdX"),
+        rn("BaseCold/ChildCold/NestedCold", "NestedX"),
+        rn("SubCold", "SubColdX"),
+        rn("BaseCold", "BaseColdX", project="/no/replay-mismatch"),
+        sp("BaseCold", "Target"),
+    ]
+    for request in rejections:
+        out.append(("line", '{"command":"scene_tree"}'))
+        out.append(request)
+        out.append(("line", '{"command":"scene_tree"}'))
+    out.append(("file_sha256", "ib_rename.tscn"))
+    out.append(("file_not_contains", 'ib_rename.tscn|name="BaseColdX"'))
+    out.append(("file_not_contains", 'ib_rename.tscn|name="ChildColdX"'))
+    out.append(rn("Target", "TargetX"))
+    out.append(("line", '{"command":"scene_tree"}'))
+    out.append(("file_sha256", "ib_rename.tscn"))
+    out.append(("line", '{"command":"save_scene","project_path":"<PROJ>"}'))
+    out.append(("file_contains", 'ib_rename.tscn|name="TargetX" type="Node2D" parent="."'))
+    out.append(("file_contains", 'ib_rename.tscn|name="BaseCold" parent="." index="0"'))
+    return out
+
+
+def build_aj():
+    # Session AJ: delete-node against ib_delete.tscn. Every inherited target is
+    # rejected before the undo action: an inherited node with an override, an
+    # inherited descendant, the base scene's instanced sub-scene root, and a
+    # wrong project path (the project guard answers first). The refused delete
+    # followed by a refused set-parent of the same node shows that the
+    # delete-then-create-then-set-parent composition cannot start. Each
+    # rejection is bracketed by identical scene_tree snapshots and the file hash
+    # is equal before and after them. Then the one local node is deleted and
+    # saved.
+    out = [
+        ("line", '{"command":"status"}'),
+        ("file_sha256", "ib_delete.tscn"),
+        ("line", '{"command":"scene_tree"}'),
+    ]
+    rejections = [
+        dele("BaseCold"),
+        dele("BasePlain"),
+        dele("BaseCold/ChildCold"),
+        dele("SubCold"),
+        dele("BaseCold", project="/no/replay-mismatch"),
+        sp("BaseCold", "Target"),
+    ]
+    for request in rejections:
+        out.append(("line", '{"command":"scene_tree"}'))
+        out.append(request)
+        out.append(("line", '{"command":"scene_tree"}'))
+    out.append(("file_sha256", "ib_delete.tscn"))
+    out.append(("file_not_contains", 'ib_delete.tscn|name="Target" type="Node2D" parent="Holder"'))
+    out.append(dele("Target"))
+    out.append(("line", '{"command":"scene_tree"}'))
+    out.append(("file_sha256", "ib_delete.tscn"))
+    out.append(("line", '{"command":"save_scene","project_path":"<PROJ>"}'))
+    out.append(("file_not_contains", 'ib_delete.tscn|name="Target"'))
+    out.append(("file_contains", 'ib_delete.tscn|name="BaseCold" parent="." index="0"'))
+    return out
+
+
+def build_ak():
+    # Session AK: a fresh editor on the two scenes sessions AI and AJ saved. The
+    # renamed local node is present and the inherited nodes are each a single
+    # node (no copy was written); the deleted local node is gone and the
+    # inherited nodes are still a single node each.
+    return [
+        ("line", '{"command":"status"}'),
+        ("line", '{"command":"scene_tree"}'),
+        ins("TargetX"),
+        q(**{"name": "TargetX"}),
+        q(**{"name": "BaseCold"}),
+        q(**{"name": "ChildCold"}),
+        ("file_contains", 'ib_rename.tscn|name="TargetX" type="Node2D" parent="."'),
+        os_("res://ib_delete.tscn"),
+        ("line", '{"command":"scene_tree"}'),
+        ins("Target"),
+        q(**{"name": "Target"}),
+        q(**{"name": "BaseCold"}),
+        q(**{"name": "ChildCold"}),
+        q(**{"name": "NestedCold"}),
+        ("file_not_contains", 'ib_delete.tscn|name="Target"'),
+    ]
+
+
+def build_console():
+    # Session Z: the console command's validation. Runs right after Y, with no
+    # edited scene. Every row is rejected before the buffer is read, so no
+    # reply carries ambient engine log text: the project guard answers first
+    # even when other fields are invalid, then each mistyped or out-of-range
+    # argument is refused with its own message. The last row is a successful
+    # read with a cursor past every message: it returns no messages, only the
+    # cursor state. A successful read of real messages is not recorded: the
+    # editor's startup log text varies by run, so it cannot be
+    # byte-deterministic; the happy path is proved by isolated-editor probes
+    # instead.
+    return [
+        ("line", '{"command":"status"}'),
+        ("line", '{"command":"console","project_path":"/no/replay-mismatch","tail":"abc","level":"nope","since":-1,"clear":"yes"}'),
+        ("line", '{"command":"console"}'),
+        ("line", '{"command":"console","project_path":7}'),
+        ("line", '{"command":"console","project_path":"<PROJ>","tail":"abc"}'),
+        ("line", '{"command":"console","project_path":"<PROJ>","tail":0}'),
+        ("line", '{"command":"console","project_path":"<PROJ>","tail":1001}'),
+        ("line", '{"command":"console","project_path":"<PROJ>","tail":1.5}'),
+        ("line", '{"command":"console","project_path":"<PROJ>","level":"verbose"}'),
+        ("line", '{"command":"console","project_path":"<PROJ>","level":5}'),
+        ("line", '{"command":"console","project_path":"<PROJ>","since":"5"}'),
+        ("line", '{"command":"console","project_path":"<PROJ>","since":-1}'),
+        ("line", '{"command":"console","project_path":"<PROJ>","since":0.5}'),
+        ("line", '{"command":"console","project_path":"<PROJ>","clear":"yes"}'),
+        ("line", '{"command":"console","project_path":"<PROJ>","since":999999999}'),
+    ]
+
+
+# A preloaded @tool script that raises while it initializes: the submitted
+# script preloads it, so the error is reported during the reload, not during
+# the call.
+EVAL_BAD_PRELOAD_GD = """@tool
+extends Resource
+static var bad = _boom()
+static func _boom():
+\tvar n = null
+\treturn n.missing_member
+"""
+
+
+def normalize_eval_reply(reply):
+    # An eval reply carries two measured, run-dependent values that cannot be
+    # byte-deterministic: the elapsed milliseconds (a wall-clock duration) and
+    # the anonymous `gdscript://-<id>.gd` source path the engine reports for a
+    # compile or runtime error (a pointer that differs every run). Both are
+    # replaced by fixed placeholders so a stored row is reproducible.
+    reply = re.sub(r'"elapsed_msec":\d+', '"elapsed_msec":"<ELAPSED>"', reply)
+    reply = re.sub(r'gdscript://-\d+\.gd', '<ANON>', reply)
+    return reply
+
+
+def build_eval():
+    # Session Z: the eval command. Runs right after Y with no edited scene, so
+    # scene_changed is always false and no request mutates stored state. The
+    # snippets return each value type, print, fail to compile, fail at run time,
+    # and block past a small timeout; the rejected requests prove the project
+    # guard answers first and that a bad timeout or a bad code field is refused.
+    # Replies are normalised by normalize_eval_reply (elapsed and the anonymous
+    # source path), so the stored rows are byte-deterministic.
+    def ev(code, extra=None):
+        req = {"command": "eval", "project_path": "<PROJ>", "code": code}
+        if extra:
+            req.update(extra)
+        return ("line", json.dumps(req, separators=(",", ":")))
+    h = "extends RefCounted\nfunc run(editor, undo_redo) -> Variant:\n\t"
+    return [
+        ev(h + "return 42"),
+        ev(h + "return 3.5"),
+        ev(h + "return \"hi\""),
+        ev(h + "return Vector2(1, 2)"),
+        ev(h + "return [1, \"a\", 2.5]"),
+        ev(h + "return {\"k\": 1, \"v\": 2}"),
+        ev(h + "return null"),
+        ev(h + "print(\"line one\")\n\tprint(\"line two\")\n\treturn 1"),
+        ev(h + "return x oops"),
+        ev(h + "var n = null\n\treturn n.property"),
+        ev(h + "var t0 = Time.get_ticks_msec()\n\twhile Time.get_ticks_msec() - t0 < 300:\n\t\tpass\n\treturn 1", {"timeout": 100}),
+        ("line", '{"command":"eval","project_path":"/no/replay-mismatch","code":"extends RefCounted\\nfunc run(editor, undo_redo) -> Variant:\\n\\treturn 1"}'),
+        ("line", '{"command":"eval","project_path":"<PROJ>"}'),
+        ("line", '{"command":"eval","project_path":"<PROJ>","code":7}'),
+        ("line", '{"command":"eval","project_path":"<PROJ>","timeout":0,"code":"extends RefCounted\\nfunc run(editor, undo_redo) -> Variant:\\n\\treturn 1"}'),
+        ("line", '{"command":"eval","project_path":"/no/replay-mismatch","code":7}'),
+        # A value the engine refuses to encode is named in errors instead of a
+        # bare null, a container past the tagged depth says so, and an
+        # oversized value is refused by name.
+        ev(h + "var n = Node.new()\n\treturn n"),
+        ev(h + "var a = []\n\tvar c = a\n\tfor i in range(2000):\n\t\tvar b = []\n\t\tc.append(b)\n\t\tc = b\n\treturn a"),
+        ev(h + 'return "x".repeat(1200000)'),
+        # Repair rows: deep value at exactly the tagged limit still returns
+        # exactly; rich and spaced output keep valid JSON and spaces; an
+        # explicit null timeout is refused; a warning keeps its value while
+        # push_error fails; an _init error fails; an Object script instance is
+        # freed (held in editor meta so the requests stay deterministic); a
+        # scene switch stays clean and a switch plus edit reports the change.
+        ev(h + "var a = []\n\tvar c = a\n\tfor i in range(99):\n\t\tvar b = []\n\t\tc.append(b)\n\t\tc = b\n\treturn a"),
+        ev(h + 'print_rich("[b]bold[/b]")\n\treturn null'),
+        ev(h + 'print("  spaced  ")\n\treturn 1'),
+        ("line", '{"command":"eval","project_path":"<PROJ>","timeout":null,"code":"extends RefCounted\\nfunc run(editor, undo_redo) -> Variant:\\n\\treturn 1"}'),
+        ev(h + 'push_warning("replay warning")\n\treturn 42'),
+        ev(h + 'push_error("replay error")\n\treturn 42'),
+        ("line", json.dumps({"command": "eval", "project_path": "<PROJ>", "code": 'extends RefCounted\nfunc _init():\n\tvar n = null\n\tvar _v = n.property\nfunc run(editor, undo_redo):\n\treturn 42'}, separators=(",", ":"))),
+        ("line", json.dumps({"command": "eval", "project_path": "<PROJ>", "code": 'extends Object\nfunc run(editor, undo_redo):\n\teditor.get_base_control().set_meta("replay_leak", get_instance_id())\n\treturn null'}, separators=(",", ":"))),
+        ev(h + 'return is_instance_id_valid(editor.get_base_control().get_meta("replay_leak"))'),
+        # An error raised while the reload initializes the submitted @tool
+        # script fails the run: a failing static initializer, a _static_init
+        # that calls push_error, and a preloaded @tool script with an error.
+        # Each is followed by a clean call, which must show that the logger
+        # window closed and the next snippet is unaffected.
+        ("line", json.dumps({"command": "eval", "project_path": "<PROJ>", "code": '@tool\nextends RefCounted\nstatic var bad = _boom()\nstatic func _boom():\n\tvar n = null\n\treturn n.missing_member\nfunc run(editor, undo_redo):\n\treturn 42'}, separators=(",", ":"))),
+        ev(h + "return 9"),
+        ("line", json.dumps({"command": "eval", "project_path": "<PROJ>", "code": '@tool\nextends RefCounted\nstatic func _static_init() -> void:\n\tpush_error("replay static init error")\nfunc run(editor, undo_redo):\n\treturn 42'}, separators=(",", ":"))),
+        ev(h + "return 9"),
+        ("line", json.dumps({"command": "eval", "project_path": "<PROJ>", "code": '@tool\nextends RefCounted\nconst bad = preload("res://eval_bad_preload.gd")\nfunc run(editor, undo_redo):\n\treturn 42'}, separators=(",", ":"))),
+        ev(h + "return 9"),
+        # The tagged depth limit counts the container being examined, so
+        # exactly 100 levels comes back and one level more is refused. An
+        # Array costs one level and a Dictionary two, so the three shapes
+        # reach the same boundary at different wrapper counts.
+        ev(h + "var a = []\n\tvar c = a\n\tfor i in range(99):\n\t\tvar b = []\n\t\tc.append(b)\n\t\tc = b\n\treturn a"),
+        ev(h + "var a = []\n\tvar c = a\n\tfor i in range(100):\n\t\tvar b = []\n\t\tc.append(b)\n\t\tc = b\n\treturn a"),
+        ev(h + 'var d = {"k": 1}\n\tfor i in range(49):\n\t\td = {"k": d}\n\treturn d'),
+        ev(h + 'var d = {"k": 1}\n\tfor i in range(50):\n\t\td = {"k": d}\n\treturn d'),
+        ev(h + "var v = 1\n\tfor i in range(33):\n\t\tv = {\"k\": [v]}\n\treturn [v]"),
+        ev(h + "var v = 1\n\tfor i in range(34):\n\t\tv = {\"k\": [v]}\n\treturn [v]"),
+        # A Node that another Node parents stays alive even when neither is in
+        # the tree, so the retained parent keeps the child across two calls.
+        ("line", json.dumps({"command": "eval", "project_path": "<PROJ>", "code": 'extends Node\nfunc run(editor, undo_redo):\n\tvar parent = Node.new()\n\tparent.name = "ReplayParent"\n\tparent.add_child(self)\n\teditor.get_base_control().set_meta("replay_parent", parent)\n\treturn parent.get_child_count()'}, separators=(",", ":"))),
+        ev(h + 'var p = editor.get_base_control().get_meta("replay_parent", null)\n\treturn p.get_child_count() if p != null else -1'),
+        # Last, because they are the only rows of this session that open a
+        # scene: every row above runs with no edited scene.
+        ev(h + 'editor.open_scene_from_path("res://main.tscn")\n\treturn null'),
+        ev(h + 'editor.open_scene_from_path("res://main.tscn")\n\teditor.get_edited_scene_root().get_node("N2D").position = Vector2(7, 8)\n\treturn null'),
+    ]
+
+
 def send_one(port, text, newline, timeout):
     s = socket.create_connection(("127.0.0.1", port), timeout=10)
     try:
@@ -2302,6 +3065,9 @@ def run_session(port, proj, scene, requests, expected_scene, ready_filesystem=Fa
                 continue
             wire = text.replace("<PROJ>", proj)
             reply = send_one(port, wire, kind == "line", 25)
+            if '"command":"eval"' in wire:
+                reply = normalize_eval_reply(reply)
+                json.loads(reply)
             rows.append((wire.replace(proj, "<PROJECT>"),
                          reply.replace(proj, "<PROJECT>")))
         return rows
@@ -2413,20 +3179,47 @@ def main():
             patched = f.read().replace(PORT_LINE, "const PORT := %d" % a.port)
         if patched.count("const PORT := %d" % a.port) != 1:
             raise SystemExit("port substitution did not hit exactly once")
-        # inspect-resource is staged: session W's rows list the commands
-        # folder, so the copy must hold the pre-existing command set while
-        # rows 1-764 are recorded. The new command file and its COMMANDS entry
-        # are removed here and restored just before the new session, so the
-        # earlier rows stay byte-identical to the previous baseline.
-        new_cmd_rel = os.path.join("commands", "inspect_resource.gd")
-        new_cmd_abs = os.path.join(dst, new_cmd_rel)
-        new_cmd_line = '\t"inspect_resource": preload("commands/inspect_resource.gd"),'
-        staged_command = os.path.exists(new_cmd_abs)
-        if staged_command:
-            os.remove(new_cmd_abs)
-            if patched.count(new_cmd_line) != 1:
-                raise SystemExit("inspect_resource COMMANDS line not unique")
-            patched = patched.replace(new_cmd_line + "\n", "")
+        # The commands a later session adds are staged out of the copied
+        # plugin while sessions A..W record, because session W's listing rows
+        # name the commands folder; console, set_parent and eval are restored
+        # together before session Y, so the earlier rows stay byte-identical to
+        # the previous baseline and the interface rows carry all three new
+        # entries. The complete port-patched source is kept so they can be
+        # restored in one write.
+        unstaged_plugin = patched
+        staged = []
+        for rel, line, anchor in STAGED_COMMANDS:
+            abs_path = os.path.join(dst, rel)
+            if os.path.exists(abs_path):
+                os.remove(abs_path)
+                if patched.count(line) != 1:
+                    raise SystemExit("%s COMMANDS line not unique" % rel)
+                patched = patched.replace(line + "\n", "")
+                staged.append((rel, line, anchor))
+        # console also wires a Logger into editor_plugin.gd (a const preload
+        # plus one block in _enter_tree and one in _exit_tree), so all four
+        # snippets are removed together; otherwise the copied plugin fails to
+        # parse and no session records.
+        console_rel = os.path.join("commands", "console.gd")
+        console_abs = os.path.join(dst, console_rel)
+        console_cmd_line = '\t"console": preload("commands/console.gd"),'
+        console_const_line = 'const ConsoleCommand := preload("commands/console.gd")'
+        console_enter_block = ('\tif _console_logger == null:\n'
+                               '\t\t_console_logger = ConsoleCommand.Capture.new()\n'
+                               '\t\tOS.add_logger(_console_logger)\n')
+        console_exit_block = ('\tif _console_logger != null:\n'
+                              '\t\tOS.remove_logger(_console_logger)\n'
+                              '\t\t_console_logger = null\n')
+        console_staged = os.path.exists(console_abs)
+        if console_staged:
+            os.remove(console_abs)
+            for snippet, what in [(console_cmd_line + "\n", "console COMMANDS line"),
+                                  (console_const_line + "\n", "console const line"),
+                                  (console_enter_block, "console _enter_tree block"),
+                                  (console_exit_block, "console _exit_tree block")]:
+                if patched.count(snippet) != 1:
+                    raise SystemExit("%s not unique" % what)
+                patched = patched.replace(snippet, "", 1)
         with open(target, "w") as f:
             f.write(patched)
         r = subprocess.run([GODOT, "--headless", "--path", proj, "--import"],
@@ -2435,40 +3228,71 @@ def main():
         if r.returncode != 0:
             raise SystemExit("godot --import failed")
         rows = []
-        # Run order is A, E, G, J, T, W, X, Y, C, B, D, F, H, I, K, L, N, O, P, Q,
-        # R, S, U, V: a fresh editor restores the previous session's open
-        # scenes, so the no-scene sessions (A, E, G, J, T, W, X, Y, and C before
-        # it opens anything) must run before the scene sessions. Rows are stored
-        # A, B, C, E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, then the T, U
-        # and V rows, then the new W rows, then the new X rows, then the new Y
-        # rows, so the first 764 rows stay byte-identical to the previous
-        # baseline and the inspect-resource rows are appended before the Y rows.
+        # Run order is A, E, G, J, T, W, X, Y, CONSOLE, EVAL, C, B, D, F, H, I,
+        # K, L, N, O, P, Q, R, S, U, V, then the set-parent sessions Z, AA, AB,
+        # AC, AD-AG, AH, AI, AJ, AK: a fresh editor restores the previous
+        # session's open scenes, so the no-scene sessions (A, E, G, J, T, W, X,
+        # Y, the console session and the eval session, and C before it opens
+        # anything) must run before the scene sessions. Rows are stored A, B, C,
+        # E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, then the T, U and V rows,
+        # then the W rows, then the X rows, then the Y rows, then the console
+        # rows, then the set-parent rows, then the eval rows, so the first 825
+        # rows stay byte-identical to the previous baseline; rows 826 and 827
+        # (the interface) publish all three new commands, and the new rows are
+        # appended after them.
         rows_a = run_session(a.port, proj, None, REQ_A, None)
         rows_e = run_session(a.port, proj, None, build_e(), None)
         rows_g = run_session(a.port, proj, None, build_g(), None)
         rows_j = run_session(a.port, proj, None, build_j(), None)
         rows_t = run_session(a.port, proj, None, build_t(), None)
         rows_w = run_session(a.port, proj, None, build_w(), None, ready_filesystem=True)
-        # Restore the staged inspect-resource command into the copied plugin
-        # and write its fixtures only now, so no earlier session's rows see
-        # them (session W's listing rows keep the 17-command command set);
-        # then record the new session. The generated .res bytes are
+        # Restore the staged commands into the copied plugin one at a time and
+        # write each session's fixtures only when its command is present, so no
+        # earlier session's rows see them (session W's listing rows keep the
+        # pre-existing command set). The generated .res bytes of session X are
         # deterministic (measured byte-identical across project paths).
-        if staged_command:
-            shutil.copy2(os.path.join(a.plugin_dir, new_cmd_rel), new_cmd_abs)
+        def restore_staged(rel):
+            entry = next((item for item in staged if item[0] == rel), None)
+            if entry is None:
+                return
+            _, line, anchor = entry
+            shutil.copy2(os.path.join(a.plugin_dir, rel), os.path.join(dst, rel))
             with open(target) as f:
                 current_plugin = f.read()
-            if current_plugin.count(new_cmd_line) != 0:
-                raise SystemExit("inspect_resource COMMANDS line already present")
-            anchor = '\t"list_resources": preload("commands/list_resources.gd"),'
+            if current_plugin.count(line) != 0:
+                raise SystemExit("%s COMMANDS line already present" % rel)
             if current_plugin.count(anchor) != 1:
-                raise SystemExit("list_resources COMMANDS anchor not unique")
-            current_plugin = current_plugin.replace(anchor, anchor + "\n" + new_cmd_line, 1)
+                raise SystemExit("%s anchor not unique" % anchor)
+            current_plugin = current_plugin.replace(anchor, anchor + "\n" + line, 1)
             with open(target, "w") as f:
                 f.write(current_plugin)
+
+        restore_staged(os.path.join("commands", "inspect_resource.gd"))
         write_inspect_fixtures(proj)
         rows_x = run_session(a.port, proj, None, build_x(), None)
+        # console, set_parent and eval are restored together before session Y,
+        # so the published interface row carries all three as its last entries.
+        # The complete source already holds the inspect-resource line the
+        # incremental restore put back, so it is written directly; the three
+        # command files are copied back too. The set-parent fixtures are written
+        # now as well, so the earlier sessions never listed them.
+        for rel in ("console.gd", "set_parent.gd", "eval.gd"):
+            shutil.copy2(os.path.join(a.plugin_dir, "commands", rel),
+                         os.path.join(dst, "commands", rel))
+        with open(target, "w") as f:
+            f.write(unstaged_plugin)
         rows_y = run_session(a.port, proj, None, build_y(), None)
+        # The console session and the eval session run right after the
+        # interface with no edited scene (the eval session opens main.tscn in
+        # its last two rows), so they run before the first scene session. The
+        # eval fixture is written only now and the set-parent fixtures are
+        # written only before the set-parent sessions: session W lists the
+        # project files, so a file added earlier would change its rows, and no
+        # session after Y lists resources.
+        rows_console = run_session(a.port, proj, None, build_console(), None)
+        with open(os.path.join(proj, "eval_bad_preload.gd"), "w") as f:
+            f.write(EVAL_BAD_PRELOAD_GD)
+        rows_eval = run_session(a.port, proj, None, build_eval(), None)
         rows_c = run_session(a.port, proj, None, build_c(), None)
         rows_b = run_session(a.port, proj, "res://main.tscn", build_b(), "res://main.tscn")
         rows_d = run_session(a.port, proj, "res://connect.tscn", build_d(), "res://connect.tscn")
@@ -2485,10 +3309,30 @@ def main():
         rows_s = run_session(a.port, proj, "res://inherit_i1.tscn", build_s(), "res://inherit_i1.tscn")
         rows_u = run_session(a.port, proj, "res://inst_base.tscn", build_u(), "res://inst_base.tscn")
         rows_v = run_session(a.port, proj, "res://inst_base.tscn", build_v(), "res://inst_base.tscn")
+        write_set_parent_fixtures(proj)
+        rows_z = run_session(a.port, proj, "res://sp_base.tscn", build_z(), "res://sp_base.tscn")
+        rows_aa = run_session(a.port, proj, "res://sp_base.tscn", build_aa(), "res://sp_base.tscn")
+        rows_ab = run_session(a.port, proj, "res://sp_dderived.tscn", build_ab(), "res://sp_dderived.tscn")
+        rows_ac = run_session(a.port, proj, "res://sp_dderived.tscn", build_ac(), "res://sp_dderived.tscn")
+        write_sp2_fixtures(proj)
+        rows_ad = run_session(a.port, proj, "res://sp2_override.tscn", build_ad(), "res://sp2_override.tscn")
+        rows_ae = run_session(a.port, proj, "res://sp2_plain.tscn", build_ae(), "res://sp2_plain.tscn")
+        rows_af = run_session(a.port, proj, "res://sp2_twolevel.tscn", build_af(), "res://sp2_twolevel.tscn")
+        rows_ag = run_session(a.port, proj, "res://sp2_local.tscn", build_ag(), "res://sp2_local.tscn")
+        rows_ah = run_session(a.port, proj, "res://sp2_local.tscn", build_ah(), "res://sp2_local.tscn")
+        # The base-inherited rename and delete fixtures are written only now, so
+        # the earlier listings (session W) never name them.
+        write_ib_fixtures(proj)
+        rows_ai = run_session(a.port, proj, "res://ib_rename.tscn", build_ai(), "res://ib_rename.tscn")
+        rows_aj = run_session(a.port, proj, "res://ib_delete.tscn", build_aj(), "res://ib_delete.tscn")
+        rows_ak = run_session(a.port, proj, "res://ib_rename.tscn", build_ak(), "res://ib_rename.tscn")
         rows = (rows_a + rows_b + rows_c + rows_e + rows_d + rows_f + rows_g
                 + rows_h + rows_i + rows_j + rows_k + rows_l + rows_n + rows_o
                 + rows_p + rows_q + rows_r + rows_s + rows_t + rows_u + rows_v
-                + rows_w + rows_x + rows_y)
+                + rows_w + rows_x + rows_y + rows_console
+                + rows_z + rows_aa + rows_ab + rows_ac
+                + rows_ad + rows_ae + rows_af + rows_ag + rows_ah
+                + rows_ai + rows_aj + rows_ak + rows_eval)
         with open(a.out, "w") as f:
             for req, rep in rows:
                 f.write(json.dumps({"request": req, "reply": rep}, separators=(",", ":")) + "\n")

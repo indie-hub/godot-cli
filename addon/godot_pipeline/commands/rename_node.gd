@@ -48,6 +48,13 @@ static func interface() -> Dictionary:
 ## the rename in the open editor, but the name is not kept after a save and a
 ## fresh reload. Instance roots owned by the edited scene, local nodes under an
 ## editable instance, and plain nodes are not rejected by this check.
+##
+## A node inherited from the scene's base scene is rejected too, whether or not
+## the edited scene overrides it: its owner is the edited scene root, so the
+## ownership check above lets it through, and the rename would be saved as a
+## local copy beside the inherited node, so a save and a fresh reload show the
+## subtree twice. The scene root itself, which is the base instance, is not
+## rejected and keeps its new name after a reload.
 static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 	var node_path_value: Variant = request.get("node_path")
 	var new_name_value: Variant = request.get("new_name")
@@ -99,6 +106,16 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 			)
 		return CommandSupport.error(
 			"node is inherited from a sub-scene and its rename would not be saved: %s" % node_path
+		)
+
+	# A node that comes from the scene's base scene cannot be renamed, with or
+	# without a local override: its owner is the edited scene root, so the
+	# ownership check above lets it through, and the rename writes a local copy
+	# beside the inherited node, so a save and a fresh reload show the subtree
+	# twice. Reject it before the undo action.
+	if target != guarded["scene_root"] and CommandSupport.node_is_inherited_from_base(guarded["scene_root"], target):
+		return CommandSupport.error(
+			"node is inherited from the base scene and its rename would not be saved: %s" % node_path
 		)
 
 	var old_name := str(target.name)

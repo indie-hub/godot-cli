@@ -227,3 +227,38 @@ static func dependency_path(dependency: String) -> String:
 	if dependency.contains("::::"):
 		return dependency.substr(dependency.rfind("::::") + 4)
 	return dependency
+
+
+## Whether `node` comes from the edited scene's base scene rather than from the
+## edited scene itself. Packing the edited scene yields a SceneState whose base
+## chain lists every inherited node, whether or not the edited scene overrides
+## it: an inherited node that carries a local property, script, group or signal
+## override is listed in the edited state's own rows as well, so only the base
+## chain tells an inherited node from a local one. A node no base state lists is
+## local, including one added under an inherited parent. A scene with no base
+## yields an empty chain, so nothing is inherited. Every level is visited,
+## because an intermediate base can hold only the instance row and list the
+## node further down; a node a deeper base lists is inherited too. A pack reads
+## the tree and neither changes it nor marks it dirty.
+static func node_is_inherited_from_base(scene_root: Node, node: Node) -> bool:
+	var packed := PackedScene.new()
+	if packed.pack(scene_root) != OK:
+		return false
+	var packed_path := "./" + str(scene_root.get_path_to(node))
+	var base := packed.get_state().get_base_scene_state()
+	while base != null:
+		if packed_node_index(base, packed_path) >= 0:
+			return true
+		base = base.get_base_scene_state()
+	return false
+
+
+## Returns the index of the node with the given packed path (".", "./Child")
+## in `state`, or -1 when the path is not listed. Shared by `set_group`,
+## `set_unique_name` and `node_is_inherited_from_base`, which all read a row of
+## the same packed states.
+static func packed_node_index(state: SceneState, packed_path: String) -> int:
+	for i in state.get_node_count():
+		if str(state.get_node_path(i)) == packed_path:
+			return i
+	return -1

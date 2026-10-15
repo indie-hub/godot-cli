@@ -6,11 +6,12 @@ extends EditorPlugin
 ## per connection. Supported commands: `status`, `scene_tree`, `inspect_node`,
 ## `query_nodes`, `inspect_class`, `list_resources`, `inspect_resource`,
 ## `rename_node`, `create_node`, `set_property`,
-## `delete_node`, `connect_signal`, `set_group`, `set_unique_name`, `instantiate_scene`, `save_scene`, and `open_scene`. The read commands report the editor's
+## `delete_node`, `connect_signal`, `set_group`, `set_unique_name`, `instantiate_scene`, `save_scene`, `open_scene`, `console`, `set_parent`, and `eval`. The read commands report the editor's
 ## status, the active edited scene's node tree, a node's class/child
 ## count/property values, the nodes matching a class, group, and name search,
 ## an engine class's ClassDB reflection (ancestors, properties, methods,
-## signals), and the resource files the editor file system holds; the editing
+## signals), the resource files the editor file system holds, and the editor
+## log messages captured since the plugin loaded; the editing
 ## commands change the active scene through the editor's
 ## undo/redo stack (one Undo/Redo step each) and never save it. `save_scene`
 ## persists the currently edited scene to the file path it already has, so
@@ -20,7 +21,12 @@ extends EditorPlugin
 ## project, validates the whole request before it mutates anything, and
 ## rejects targets that would not persist when the scene is saved.
 ## `set_property` additionally rejects an int value that is not one of the
-## declared values of an enum-hinted int property. The port is fixed, so only
+## declared values of an enum-hinted int property. `eval` runs submitted
+## GDScript in the live editor: it is the one command that may break rule 3 (a
+## direct scene edit from the snippet creates no undo entry) and rule 6 (the
+## snippet can hold the main thread); its timeout is best effort and never
+## interrupts the call, and it marks the scene unsaved only when the edited
+## scene tree changed. The port is fixed, so only
 ## one Godot editor instance can host this plugin on a machine at a time.
 ## Requests and replies are single newline-terminated JSON objects. The plugin
 ## assembles a request across reads (up to an 8 MiB cap and a 5 second idle
@@ -65,14 +71,23 @@ const COMMANDS := {
 	"instantiate_scene": preload("commands/instantiate_scene.gd"),
 	"save_scene": preload("commands/save_scene.gd"),
 	"open_scene": preload("commands/open_scene.gd"),
+	"console": preload("commands/console.gd"),
+	"set_parent": preload("commands/set_parent.gd"),
+	"eval": preload("commands/eval.gd"),
 }
 
 ## Version of the command interface the plugin publishes. A client that does
 ## not know it must refuse the interface instead of guessing.
 const PROTOCOL_VERSION := 1
 
+## The editor log capture behind the `console` command. Created once when the
+## plugin loads and removed when it unloads, so only one logger is ever
+## registered no matter how often the plugin is disabled and enabled.
+const ConsoleCommand := preload("commands/console.gd")
+
 var _server: TCPServer
 var _connection: StreamPeerTCP
+var _console_logger: Logger
 
 var _request_buffer := PackedByteArray()
 var _request_scanned := 0
@@ -88,10 +103,16 @@ func _enter_tree() -> void:
 		return
 	set_process(true)
 	print("Godot Pipeline: listening on %s:%d" % [HOST, PORT])
+	if _console_logger == null:
+		_console_logger = ConsoleCommand.Capture.new()
+		OS.add_logger(_console_logger)
 
 
 func _exit_tree() -> void:
 	set_process(false)
+	if _console_logger != null:
+		OS.remove_logger(_console_logger)
+		_console_logger = null
 	_reset_connection()
 	if _server != null:
 		_server.stop()

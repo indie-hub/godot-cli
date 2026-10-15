@@ -166,7 +166,7 @@ static func _instance_levels(scene_root: Node, target: Node) -> int:
 ## SceneState.get_node_property_value takes the property's integer index, not
 ## its name, so the row's properties are scanned for the name first.
 static func _stored_unique(state: SceneState, packed_path: String) -> bool:
-	var index := _index_for_path(state, packed_path)
+	var index := CommandSupport.packed_node_index(state, packed_path)
 	if index < 0:
 		return false
 	for property_index in state.get_node_property_count(index):
@@ -174,15 +174,6 @@ static func _stored_unique(state: SceneState, packed_path: String) -> bool:
 			var value: Variant = state.get_node_property_value(index, property_index)
 			return value == true
 	return false
-
-
-## Returns the index of the node with the given packed path (".", "./Child")
-## in `state`, or -1 when the path is not listed.
-static func _index_for_path(state: SceneState, packed_path: String) -> int:
-	for i in state.get_node_count():
-		if str(state.get_node_path(i)) == packed_path:
-			return i
-	return -1
 
 
 ## Reads the state and inner path of the source scene a node inherits from.
@@ -200,7 +191,7 @@ static func _source_state(state: SceneState, target_path: String) -> Dictionary:
 	var prefix := ""
 	for part in target_path.substr(2).split("/"):
 		prefix = part if prefix.is_empty() else prefix + "/" + part
-		var index := _index_for_path(state, "./" + prefix)
+		var index := CommandSupport.packed_node_index(state, "./" + prefix)
 		if index >= 0 and state.get_node_instance(index) != null:
 			instance_indices.append(index)
 	if instance_indices.is_empty():

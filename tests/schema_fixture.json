@@ -610,6 +610,150 @@
      "help": "Absolute path of the target project; canonicalized before sending."
     }
    ]
+  },
+  {
+   "name": "console",
+   "description": "Show the editor log messages captured since the plugin loaded.",
+   "needs_project_path": true,
+   "edits_scene": false,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "tail",
+     "flag": "--tail",
+     "positional": null,
+     "type": "integer",
+     "required": false,
+     "default": 100,
+     "help": "Keep only the last N matching messages; the plugin checks the range."
+    },
+    {
+     "name": "level",
+     "flag": "--level",
+     "positional": null,
+     "type": "string",
+     "required": false,
+     "default": "all",
+     "help": "Keep messages of this level: all, info, warning, error, script or shader."
+    },
+    {
+     "name": "since",
+     "flag": "--since",
+     "positional": null,
+     "type": "integer",
+     "required": false,
+     "default": 0,
+     "help": "Keep messages with a sequence number greater than this cursor."
+    },
+    {
+     "name": "clear",
+     "flag": "--clear",
+     "positional": null,
+     "type": "boolean",
+     "required": false,
+     "default": false,
+     "help": "Empty the buffer after the reply is built."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "set_parent",
+   "description": "Move a node under a new parent as one Undo/Redo step.",
+   "needs_project_path": true,
+   "edits_scene": true,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "node_path",
+     "flag": null,
+     "positional": 0,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Scene-relative path of the node to move; the scene root is rejected."
+    },
+    {
+     "name": "new_parent_path",
+     "flag": null,
+     "positional": 1,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Scene-relative path of the new parent; '.' targets the scene root."
+    },
+    {
+     "name": "index",
+     "flag": "--index",
+     "positional": null,
+     "type": "integer",
+     "required": false,
+     "default": null,
+     "help": "Position among the new parent's children, an integer; default appends."
+    },
+    {
+     "name": "keep_global_transform",
+     "flag": "--keep-global-transform",
+     "positional": null,
+     "type": "boolean",
+     "required": false,
+     "default": true,
+     "help": "Keep the full global transform of a Node2D or Node3D and the global position only of a Control; other nodes ignore it."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "eval",
+   "description": "Run a GDScript snippet in the live editor and return its value. A snippet that switches scenes is outside the dirty-marking guarantee; check status for unsaved scenes.",
+   "needs_project_path": true,
+   "edits_scene": true,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "code",
+     "flag": null,
+     "positional": 0,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "A complete GDScript source defining func run(editor, undo_redo)."
+    },
+    {
+     "name": "timeout",
+     "flag": "--timeout",
+     "positional": null,
+     "type": "integer",
+     "required": false,
+     "default": 5000,
+     "help": "Best-effort timeout in milliseconds; the call is never interrupted."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
   }
  ]
 }
