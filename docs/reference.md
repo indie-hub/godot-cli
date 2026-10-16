@@ -425,9 +425,9 @@ transform of a `Node2D` and a `Node3D`, and the global position only of a
 own re-parent call: a `Node2D` and a `Node3D` restore the saved global
 transform, while a `Control` restores the saved global origin only, so a
 `Control` under a parent with a different scale takes that parent's scale. As
-with every boolean the interface declares, the CLI's flag can only request the
-value true, so a caller that wants false sends the raw request (the plugin
-accepts false).
+with every boolean the interface declares, the CLI's flag accepts a bare flag
+as true and an explicit value as either `true` or `false`, so
+`--keep-global-transform=false` reaches the plugin (the plugin accepts false).
 
 `new_parent_path` must resolve to the scene root or to a node owned by it,
 exactly as `create_node` requires; a new parent inside an instanced sub-scene's
@@ -910,8 +910,12 @@ for a flag-only argument), `type` (one of the five types below), `required`
 
 The five types are `string`, `boolean`, `json`, `res_path`, and `integer`.
 A `string` value is sent unchanged; every content check is done by the
-plugin. A `boolean` flag takes no value: presence sends true and absence
-sends the default. A `json` value is sent as parsed JSON when the text parses
+plugin. A `boolean` flag is written `--flag`, `--flag=true` or `--flag=false`:
+a bare flag sends true, absence sends the default, and any other value after the
+equals sign is refused by the CLI with
+`error: invalid --keep-global-transform value: expected true or false, got maybe`
+after the interface fetch and before the command request is sent. A `json` value
+is sent as parsed JSON when the text parses
 as JSON and as a plain string otherwise; the plugin coerces the result
 strictly to the declared property type. A `res_path` value is a string plus
 one CLI check: a symlink that resolves outside the project is refused before
@@ -1139,15 +1143,16 @@ project check; `--level` (default `all`) keeps one of `info`, `warning`,
 `error`, `script` or `shader`; `--since` (default 0) keeps messages newer
 than that cursor; `--clear` empties the buffer after the reply is built.
 
-`set-parent <scene-relative-path> <new-parent-scene-relative-path> --project-path <dir> [--index <n>] [--keep-global-transform]`
+`set-parent <scene-relative-path> <new-parent-scene-relative-path> --project-path <dir> [--index <n>] [--keep-global-transform[=true|false]]`
 moves that node under the new parent through the editor's undo/redo stack
 (see Protocol above), canonicalizing `--project-path` the same way as the
 other mutating commands. `--index` sets the node's position among the new
 parent's children (default appends); `--keep-global-transform` is the default
 and preserves the full global transform of a `Node2D` and a `Node3D`, and the
 global position only of a `Control`. The
-CLI's boolean flag can only request true, so a caller that wants a false value
-sends the raw request. Nothing is saved until `save-scene` runs.
+CLI's boolean flags accept the bare flag as true and an explicit `=true` or
+`=false`, so `--keep-global-transform=false` requests the false value.
+Nothing is saved until `save-scene` runs.
 
 ## Verification
 
