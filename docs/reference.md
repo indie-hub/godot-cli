@@ -452,6 +452,25 @@ an empty chain, so nothing is inherited and no extra node is rejected. A node
 the derived scene owns itself stays movable even when it sits under an inherited
 parent, and its move survives a save and a fresh reload.
 
+Editing the base scene itself has a different effect, and the plugin does not
+refuse it. A base scene that has no base scene of its own yields an empty chain,
+so the inherited-node check refuses no node in it. The other checks of the
+commands still apply: the scene root cannot be deleted, and a node inside an
+instanced sub-scene is refused when the edit would not be saved. A derived scene
+stores its overrides and its local children by the path of the base node.
+Measured independently by two rooms in real Godot 4.7.2 headless editors: a
+derived scene inherits a base scene, overrides a property of the base node `X`,
+and holds a local child `C` under `X`. After `X` is renamed or deleted in the
+base scene and the base scene is saved, a fresh load of the derived scene shows
+`X` gone (after a rename, the renamed node is present with its inherited
+descendants and without the override), the override lost, and `C` moved to the
+scene root and renamed `X#C`. The editor prints two warnings: `Node './X' was
+modified from inside an instance, but it has vanished.` and `Parent path './X'
+for node 'C' has vanished when instantiating: 'res://<derived scene>'.` The file
+of the derived scene does not change, so the loss shows only when it is loaded.
+After renaming or deleting a node in a base scene, open every scene that
+inherits it and check the nodes that override it.
+
 The base-scene check is one shared helper
 (`CommandSupport.inherited_edit_refusal`). Each structural command calls it
 after its own checks, at the point it would otherwise refuse, and passes its
@@ -907,7 +926,7 @@ argument list in command-line order). One argument entry has `name` (the
 wire field name), `flag` (the command-line flag such as `--limit`, or null
 for a positional-only argument), `positional` (the positional index, or null
 for a flag-only argument), `type` (one of the five types below), `required`
-(true means a missing value is refused before anything is sent), `default`
+(true means a missing value is refused before the command request is sent), `default`
 (the value sent when an absent optional argument is left out), and `help`
 (the one-line text shown in per-command help).
 
@@ -1127,7 +1146,7 @@ lists the scenes that still have unsaved changes in `data.unsaved`.
 lists the resource files the editor file system holds, as a bounded page,
 without loading them (see Protocol above), canonicalizing `--project-path`
 the same way as the other commands. `--limit` defaults to 100: the CLI
-refuses a value outside the integer grammar before anything is sent, and the
+refuses a value outside the integer grammar before the command request is sent, and the
 plugin validates the 1..1000 range after the project check.
 With `--refresh` the CLI starts a scan and waits until it finishes (up to
 60 seconds) before printing the listing.
@@ -1141,7 +1160,7 @@ instead of being sent, because the plugin cannot detect a symlink escape.
 shows the editor log messages captured since the plugin loaded (see Protocol
 above), canonicalizing `--project-path` the same way as the other commands.
 `--tail` defaults to 100: the CLI refuses a value outside the integer grammar
-before anything is sent, and the plugin validates the 1..1000 range after the
+before the command request is sent, and the plugin validates the 1..1000 range after the
 project check; `--level` (default `all`) keeps one of `info`, `warning`,
 `error`, `script` or `shader`; `--since` (default 0) keeps messages newer
 than that cursor; `--clear` empties the buffer after the reply is built.

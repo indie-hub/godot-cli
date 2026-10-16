@@ -9,8 +9,8 @@ Godot Pipeline is a Rust CLI plus a GDScript EditorPlugin for stock Godot. An ag
 - Phase 2, Godot scene edits, is complete. `connect-signal`, `set-group`, `set-unique-name` and `instantiate-scene` shipped in 0.6.0.
 - `list-resources`, `inspect-resource`, `console`, `set-parent` and `eval` are built on this working tree. `CHANGELOG.md` lists them under `[Unreleased]`, so none is in a release yet.
 - The version in `Cargo.toml` is 0.6.0.
-- The replay baseline in `tools/replay/baseline.jsonl` holds 1172 rows.
-- `cargo test --locked` passes: 25 passed, 0 failed, 0 ignored.
+- The replay baseline in `tools/replay/baseline.jsonl` holds 1182 rows.
+- `cargo test --locked` passes: 30 passed, 0 failed, 0 ignored.
 - `set-property` accepts 17 scalar types and ten `Packed*Array` types, plus a typed `Array[T]` of those types. It rejects untyped arrays, object and resource references, `Dictionary`, `Callable`, `Signal` and `RID`.
 - The plugin assembles each request across editor ticks. It caps a request at 8 MiB (`MAX_REQUEST_BYTES` in `addon/godot_pipeline/editor_plugin.gd`) and drops an idle connection after 5 seconds (`REQUEST_IDLE_TIMEOUT_MSEC`).
 - The add-on is a prototype and is not ready for distribution.
@@ -79,23 +79,22 @@ Decisions of 2026-10-14 and 2026-10-15:
 | Question | Decision |
 | --- | --- |
 | What does `set-parent` keep? | Every node of the moved subtree keeps its exact owner. A node the edited scene saved before the move is still saved after it, and Undo restores owners exactly. |
-| Is `keep_global_transform=false` reachable through the CLI? | It is not reachable through `godot-cli`. The CLI boolean flag sends true only. A later task lets the CLI take `--flag=false`. |
+| Is `keep_global_transform=false` reachable through the CLI? | Yes: `godot-cli call set-parent ... --keep-global-transform=false`. A boolean argument is written `--flag`, `--flag=true` or `--flag=false`. |
 | What does `keep_global_transform` preserve? (implemented behaviour, not a recorded decision of Bruno) | For a `Control` it preserves the global position only. A `Node2D` and a `Node3D` keep the full global transform. Every other node type ignores the flag. |
 | Which edits of a base-inherited node are refused? | `rename-node`, `delete-node` and `set-parent` refuse a structural edit of a node inherited from a base scene. The plugin packs the edited scene and walks every level of `SceneState.get_base_scene_state()`. Property, script, group, signal and new-child edits of an inherited node stay allowed as overrides. |
 | What does `eval` return as its value? | `eval` keeps the tagged `JSON.from_native` encoding as its only value. `completed` is false when the value cannot be encoded intact or is deeper than the limit. `errors` entries carry a type (`warning`, `error`, `script`, `shader`), and a warning leaves `completed` true with the value. |
-| What is the `eval` depth limit? | `eval` has an explicit depth limit of 100 JSON levels. An `Array` costs one level and a `Dictionary` costs two. The count reaches up to 102 when the deepest value is a tagged terminal value. The real command line reads about 125 levels. |
+| What is the `eval` depth limit? | `eval` has an explicit depth limit of 100 JSON levels, counted exactly: an untyped `Array` costs one level, a typed `Array` two, a `Dictionary` two, a tagged terminal value two, a `Callable`, an `RID` and a `Signal` one, and scalars none. Exactly 100 levels come back and 101 is refused. The real command line reads about 125 levels, so the margin is 25. |
 | Are `Callable`, `RID` and `Object` results usable values? | They are documented as not returned as values. A `Callable` round-trips to an empty invalid `Callable`. An `RID` round-trips to a fresh `RID(0)`. An `Object` gives value null. |
 | What does a scene-switching snippet guarantee? | A snippet that switches scenes is outside the dirty-marking guarantee. |
 | Was `set-parent` accepted? | Bruno accepted `set-parent` after repeated validation rounds. It was not independently validated as a final tree on its own. The combined tree that contains it passed an independent validation that re-ran a regression sample of its behaviour. |
-| Was `eval` accepted? | Bruno accepted `eval` after repeated validation rounds. Its depth count reaches 102 for tagged terminal values. The combined tree that contains it passed an independent validation that re-ran a regression sample of its behaviour. |
+| Was `eval` accepted? | Bruno accepted `eval` after repeated validation rounds. Its depth count is exact: at most 100 JSON levels come back and 101 is refused. The combined tree that contains it passed an independent validation that re-ran a regression sample of its behaviour. |
+| Should the inherited-node check move into the shared request guard? | No. Bruno kept the old refusal precedence: each structural command calls the shared helper after its own checks. A guard-level default that refuses first was rejected: a 94-request probe found 51 error-to-error precedence changes, and the check then ran for requests that used to fail cheaply. |
+| Should docs/reference.md describe what editing a base scene does to a derived scene? | Yes. Bruno asked for it. docs/reference.md describes that renaming or deleting a node in a base scene silently drops the override in a derived scene and detaches its local child; the plugin does not refuse the edit in the base scene. |
 
 Queued follow-up tasks:
 
-- `shared-inherited-guard`: move the inherited-node check into the shared request guard.
 - `harness-and-cost`: measure and trim the replay harness and the detector cost.
-- `cli-boolean-explicit-false`: let the CLI take `--flag=false`.
 - `eval-readable-value`: a readable field beside the tagged value.
-- `eval-depth-exact`: count the containers of tagged terminal values.
 
 ## Rules every new command must keep
 
