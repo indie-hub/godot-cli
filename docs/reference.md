@@ -752,15 +752,15 @@ entry saying the value was nested deeper than 100 levels and was not returned;
 failure uses the same shape (`value` null, `completed` false, `errors` entry).
 
 What the limit counts is the nesting of the encoded `value` itself, measured in
-JSON container levels: an `Array` costs one level and a `Dictionary` costs two
-(the outer object and its `args` array). Scalars cost nothing, and the
-container being examined is part of the total, so a value the walk counts as
-exactly 100 levels comes back exactly and one level more is refused. The count
-does not see the containers that the encoding itself adds. `JSON.from_native`
-writes a tagged terminal value (a `Vector2`, a packed array, a `Transform3D`,
-and similar) as an object plus an `args` array, so a value whose deepest element
-is such a value reaches up to 102 levels in the reply while the walk still
-counted 100.
+JSON container levels: an untyped `Array` costs one level and a typed `Array`
+costs two (the encoding writes it as an object plus an `args` array), a
+`Dictionary` costs two (the outer object and its `args` array), and a tagged terminal value (a
+`Vector2`, a packed array, a `Transform3D`, and the other value types the
+encoding writes as an object plus an `args` array) costs two as well. A
+`Callable`, an `RID`, and a `Signal` cost one (an object with no `args`
+array). Scalars cost nothing, and the container being examined is part of
+the total, so a value the walk counts as exactly 100 levels comes back
+exactly and one level more is refused, whatever the deepest element is.
 
 That limit was derived from the real command line, which cannot read a reply
 deeper than 125 JSON levels. Measured through `godot-cli` against the original
@@ -772,8 +772,8 @@ wrappers read, while 63 and 64 fail; and a shape alternating an `Array` with a
 `Array`-plus-`Dictionary` wrapper costs three levels, which is why the three
 shapes reach the same ceiling at different wrapper counts. Note that a loop
 appending N child `Array`s to an initial empty `Array` produces N+1 containers,
-not N. The margin is 25 levels for a value the walk counts exactly, and at
-least 23 levels in the worst case where the encoding adds two uncounted levels.
+not N. The walk counts exactly what the reply nests, so the margin to what the
+real command line reads is 25 levels.
 
 A returned value larger than 1 MiB (1048576 bytes) is replaced by a `status`
 error that names the size and says the code ran. That error reply carries no
