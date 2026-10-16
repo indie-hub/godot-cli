@@ -1,4 +1,4 @@
-Golden replay harness for the Godot Pipeline editor plugin (1182 rows:
+Golden replay harness for the Godot Pipeline editor plugin (1222 rows:
 1-148 unchanged, 149-200 cover inspect-class and open-scene, 201-262 cover
 connect-signal, 263-362 cover set-group, 363-413 cover set-unique-name,
 414-477 cover the rename unique-flag fix, 478-530 cover the rename option C
@@ -13,7 +13,7 @@ set-parent, 939-945 cover the fresh reload of the accepted set-parent moves,
 946-976 cover set-parent in a derived scene, 977-982 cover the fresh reload of
 the derived-scene moves, 983-1051 cover set-parent against the inherited-node
 matrix, 1052-1128 cover the base-inherited rename and delete rejections and
-their fresh reloads, and 1129-1182 cover eval).
+their fresh reloads, and 1129-1222 cover eval).
 
 HOW TO RUN
   GODOT=/path/to/Godot python3 replay.py --plugin-dir DIR --port PORT --out FILE
@@ -25,6 +25,66 @@ HOW TO RUN
   python3 compare.py BASELINE OTHER
   Prints the first differing request with both replies, or IDENTICAL.
   Exit 0 identical, 1 different.
+  python3 compare.py BASELINE OTHER --sessions NAMES
+  Compares only the rows of the named sessions. The expected rows come from
+  replay.py's request builders, so no extra file is read; the counts match
+  only when replay.py and the baseline belong to the same revision.
+  A replay.py with an altered layout can make a matching wrong output pass,
+  so the full run stays the final check. The comparison fails closed: it prints
+  IDENTICAL and exits 0 only when OTHER holds exactly the named sessions' rows,
+  equal to that slice of BASELINE, in the storage order. A wrong length, a
+  missing row, an extra row, a row of another session or rows in another order
+  all print a difference and exit 1. The session names are the same ones
+  replay.py accepts, so lower case works here too. Without --sessions compare.py
+  behaves exactly as above.
+
+  REPLAYING SOME SESSIONS
+  python3 replay.py --plugin-dir DIR --port PORT --out FILE --sessions NAMES
+  NAMES is a comma-separated list of the session labels above, for example
+  W,X or A,EVAL,B. Names are matched without regard to case and may be given in
+  any order. The sessions still run in the launch order above, and their rows are
+  still stored in the storage order above, so FILE holds only the named sessions'
+  rows. An unknown name is refused before any editor starts, and the message
+  lists the valid names. An empty value is refused. Without --sessions every
+  session runs and FILE is the full 1222-row baseline.
+  Every staging step and every fixture write still happens when sessions are
+  filtered, so a selected session meets the same project files it meets in a full
+  run. Only the editor launches of sessions that neither run nor were asked for
+  are skipped, which is what makes a filtered run quick.
+
+  PREREQUISITE SESSIONS
+  Twenty-six of the thirty-eight sessions reproduce on their own. The other
+  twelve read nodes, saved scene files or a message counter that an earlier
+  session left behind, so they do not. --sessions replays those prerequisites
+  automatically and prints their names. A prerequisite is replayed but stores no
+  rows, so FILE still holds only the sessions you named.
+    session  prerequisite    session  prerequisite
+    F        D               AA       Z
+    I        H               AC       AB
+    L        K               AH       AG
+    O        N               AK       AI and AJ
+    Q        P               CONSOLE  A and Y
+    S        R
+    V        U
+  Each pair was measured by replaying it and comparing against the baseline.
+  CONSOLE is the slowest case: it needs A and Y, so naming CONSOLE alone costs
+  three editor launches instead of one. Without --sessions the whole run happens
+  as before and this table is not consulted.
+
+  Check a filtered run with one command. Run both from the repository root, so
+  the script paths carry the tools/replay/ prefix:
+    python3 tools/replay/replay.py --plugin-dir addon/godot_pipeline \
+      --port 47920 --out /tmp/filtered.jsonl --sessions W,X
+    python3 tools/replay/compare.py tools/replay/baseline.jsonl \
+      /tmp/filtered.jsonl --sessions W,X
+  The second command prints IDENTICAL (96 pairs) when the filtered run is correct.
+  A filtered run writes only FILE; no other file is written beside it.
+
+  A FILTERED RUN PROVES LESS THAN A FULL RUN. A filtered run exercises the named
+  sessions and their measured prerequisites, and nothing else. It cannot see a
+  leak between two sessions you did not name: such a change passes a filtered
+  run and still fails the full run. Use --sessions to work on one command at a
+  time. The full run stays mandatory at integration and for validators.
 
   Each run takes several minutes: one --import plus thirty-eight editor launches
   (in launch order A with no scene, E with no scene, G with no scene, J with no
@@ -39,7 +99,7 @@ HOW TO RUN
   res://sp_dderived.tscn, AD with res://sp2_override.tscn, AE with
   res://sp2_plain.tscn, AF with res://sp2_twolevel.tscn, AG and AH with
   res://sp2_local.tscn, AI and AK with res://ib_rename.tscn, and AJ with
-  res://ib_delete.tscn), 1182 stored rows (1063 requests and 119 file checks).
+  res://ib_delete.tscn), 1222 stored rows (1103 requests and 119 file checks).
   The plugin has twenty commands, a different count. Rows are stored A, B, C,
   E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, T, U, V, W, X, Y, CONSOLE,
   Z, AA, AB, AC, AD, AE, AF, AG, AH, AI, AJ, AK, EVAL: a fresh editor restores
@@ -439,7 +499,7 @@ Session CONSOLE (requests 828-842, no edited scene, runs right after session Y):
   cannot be byte-deterministic; the happy path (levels, tail, since, clear,
   eviction, truncation, single logger after disable/enable) is proved by
   isolated-editor probes instead.
-Session EVAL (requests 1129-1182, starts with no edited scene, runs right after the console session):
+Session EVAL (requests 1129-1222, starts with no edited scene, runs right after the console session):
   the eval command. The eval.gd script and its COMMANDS line are restored into
   the copied plugin just before this session, so session Y's interface carries
   eval as entry 20 and rows 1-825 (whose sessions never saw the file) stay
@@ -448,7 +508,9 @@ Session EVAL (requests 1129-1182, starts with no edited scene, runs right after 
   before it would change rows 730-764. Rows 1129-1180 run with no edited scene,
   so scene_changed is false and no request mutates stored state except the two
   editor-meta markers (the Object leak marker and the retained parent); rows
-  1181-1182 open res://main.tscn and then edit it, so scene_changed is true.
+  1181-1182 open res://main.tscn and then edit it, so scene_changed is true, and
+  rows 1183-1222 run with that scene still open and do not edit it, so
+  scene_changed stays false there.
   The rows are: seven value
   returns (int, float, string, Vector2, Array, Dictionary, null, each shown as
   typed JSON through JSON.from_native), a print-output snippet, a compile error,
@@ -475,10 +537,21 @@ Session EVAL (requests 1129-1182, starts with no edited scene, runs right after 
   refused at 101), a Node that another Node parents kept
   alive across two calls, a scene switch that stays clean, and a switch with an
   edit that reports the
-  change). Each reply is normalised by
+  change), 21 display rows (each returning a value of a covered class, one run
+  that does not complete, and one PackedByteArray whose readable form is over
+  the cap while its encoding is inside it, which now stays ok with the value,
+  display null and one added warning), and 19 parse rows. Each parse request
+  returns str_to_var of the display text that the matching display row's reply
+  actually carried. Each reply is normalised by
   normalize_eval_reply, so the run-dependent elapsed milliseconds and the
   anonymous gdscript:// source path are placeholders. Every recorded eval reply
-  body parses as JSON, so an invalid reply fails the recording.
+  body parses as JSON, so an invalid reply fails the recording, and
+  check_eval_display proves that every status-ok eval reply carries display (a
+  string, or null when the run did not complete or the display was over the
+  cap), that each display row carries its rt:true marker, and that each parse
+  row's value equals the value the matching display row returned, with a null
+  value's display required to be the canonical null text, because invalid text
+  parses to null.
 
 NORMALISATION
   The throwaway project's absolute path is replaced with <PROJECT> in stored
@@ -493,7 +566,7 @@ NORMALISATION
   Every recorded eval reply body parses as JSON.
 
 DETERMINISM PROOF
-  The combined rows were recorded twice; the two full runs are byte-identical
+  For the previous 1182-row baseline, the combined rows were recorded twice; the two full runs are byte-identical
   (compare.py IDENTICAL, 1182 pairs, and cmp clean between the two runs). Rows
   1-825 are byte-identical to the baseline that preceded this change: their
   sha256 is
@@ -577,6 +650,21 @@ DETERMINISM PROOF
   9251fb936b3a736a5a7d9823d66b0f27910072575fad599e331756199c7a6d87, and rows
   1-148 still have their own sha256
   17b67de4a11a1285355a173326b7e72b68a72dd2754b89a12400c3309a3edc1d.
+  The display rows were recorded twice; the two full runs are byte-identical
+  (compare.py IDENTICAL, 1222 pairs, and cmp clean). Rows 1-1128 are
+  byte-identical to the 1182-row baseline that preceded this change: their
+  sha256 is
+  f1a712a5520f9bc63a2b20ce0cebf67b62ab43f3cb74db5feb822e95e0819ff1, which is
+  the sha256 of the first 1128 lines including their trailing newlines (the
+  method that also reproduces the pinned hash on the old baseline). Every old
+  eval row (1129-1182) equals its base row after the display key is removed, and
+  no other key changes (the 47 status-ok rows gain only display; the seven
+  status-error rows are unchanged); rows 1183-1202 are unchanged from the
+  pre-repair
+  baseline, row 1203 changes only to the policy A shape (status ok, value kept,
+  display null, one added warning), and the 19 parse rows are appended at
+  positions 1204-1222. The new whole-file sha256 is
+  e0e9879df1bab7e764de7af5bc2db1abe6043bb38227eacec627f7d8b16adf42.
   baseline.sha256 holds the sha256 of the whole baseline.jsonl: check with
   shasum -a 256 baseline.jsonl.
   A saved scene file is hashed only before a save. After save_scene the editor
@@ -783,8 +871,8 @@ COVERAGE (request numbers above)
   TargetX row #1120, open_scene of the saved ib_delete.tscn #1121, scene_tree
   #1122, Target not found #1123, no Target #1124, one each of BaseCold #1125,
   ChildCold #1126 and NestedCold #1127, and Target gone #1128).
-  eval #1129-1182: Z (rows 1129-1180 start with no edited scene; rows 1181-1182 open
-  res://main.tscn):
+  eval #1129-1222: EVAL (rows 1129-1180 start with no edited scene; rows 1181-1182 open
+  res://main.tscn; rows 1183-1222 run with it open and do not edit it):
   value returns int #1129, float #1130, string #1131, Vector2 #1132, Array #1133,
   Dictionary #1134 and null #1135 (typed JSON, the int kept as i:); print output
   #1136; compile error #1137 and runtime error #1138 (completed false, the error
@@ -817,7 +905,18 @@ COVERAGE (request numbers above)
   #1178 (chain of 50 typed Arrays refused at 101 levels), #1179 (a Node
   parented to a Node the snippet retains, parent child count 1) and #1180 (the
   next call still finds that one child), #1181 (scene switch clean) and #1182
-  (switch with edit reports the change).
+  (switch with edit reports the change); display rows #1183 int, #1184 float,
+  #1185 NaN, #1186 inf, #1187 bool, #1188 null, #1189 a String with a quote,
+  #1190 one with a newline, #1191 one with non-ASCII text, #1192 a StringName,
+  #1193 a NodePath, #1194 a Vector2, #1195 a Color, #1196 an untyped Array,
+  #1197 a typed Array[int], #1198 a Dictionary, #1199 a nested Dictionary at 100
+  levels, #1200 a PackedByteArray and #1201 a warning run, each returning its
+  value and printing rt:true from str_to_var of its readable form (is_nan for
+  the NaN row); #1202 a run that does not complete (display null); #1203 a
+  PackedByteArray whose readable form is over the cap while its encoding is
+  inside it, which keeps its value with display null and one added warning; and
+  #1204-1222 the parse rows, each returning str_to_var of the display text the
+  matching display row's reply carried.
   Not covered, with reason:
   - "request exceeds the maximum size" (>8 MiB without newline): reaching
     it needs an 8 MB write, and the reported byte count varies with TCP
@@ -868,7 +967,8 @@ NOTES
   isolated-editor probe that sends a real set-parent (and, for the earlier
   commands, connect-signal) request through the plugin and then triggers the
   editor's Undo/Redo through the safe route.
-  The baseline is only valid while the plugin's replies for these 1182 requests
+  The baseline is only valid while the plugin's replies for these 1222 rows
+  (1103 requests and 119 file checks)
   are supposed to stay the same. A change that adds or alters a command's
   behavior on purpose needs a new baseline, recorded from the last trusted
   commit, and a fresh determinism check (record three times, compare byte for
