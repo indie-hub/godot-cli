@@ -3207,17 +3207,132 @@ def run_session(port, proj, scene, requests, expected_scene, ready_filesystem=Fa
         stop(proc)
 
 
+# The order rows are stored in, which is not the order the sessions run in.
+# Each session writes its rows at its own place here, so a session that
+# --sessions left out leaves a gap instead of shifting the rows after it.
+SESSION_ORDER = ("A", "B", "C", "E", "D", "F", "G", "H", "I", "J", "K", "L",
+                 "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y",
+                 "CONSOLE", "Z", "AA", "AB", "AC", "AD", "AE", "AF", "AG",
+                 "AH", "AI", "AJ", "AK", "EVAL")
+
+# The request list of each session, in storage order. A session records exactly
+# one row per request, so the length of these lists is the stored row layout.
+# The builders build plain lists and touch no file, so this is safe to evaluate
+# once at import. compare.py reads the layout from here, so the row count of a
+# session is never written down twice.
+SESSION_REQUESTS = (
+    ("A", REQ_A), ("B", build_b()), ("C", build_c()), ("E", build_e()),
+    ("D", build_d()), ("F", build_f()), ("G", build_g()), ("H", build_h()),
+    ("I", build_i()), ("J", build_j()), ("K", build_k()), ("L", build_l()),
+    ("N", build_n()), ("O", build_o()), ("P", build_p()), ("Q", build_q()),
+    ("R", build_r()), ("S", build_s()), ("T", build_t()), ("U", build_u()),
+    ("V", build_v()), ("W", build_w()), ("X", build_x()), ("Y", build_y()),
+    ("CONSOLE", build_console()), ("Z", build_z()), ("AA", build_aa()),
+    ("AB", build_ab()), ("AC", build_ac()), ("AD", build_ad()),
+    ("AE", build_ae()), ("AF", build_af()), ("AG", build_ag()),
+    ("AH", build_ah()), ("AI", build_ai()), ("AJ", build_aj()),
+    ("AK", build_ak()), ("EVAL", build_eval()),
+)
+
+
+def stored_layout():
+    """(name, first baseline row, row count) in storage order, 1-based. A
+    filtered run writes these for the sessions it stored, so compare.py can find
+    those rows in the baseline without being told where they are."""
+    out = []
+    start = 1
+    for name, requests in SESSION_REQUESTS:
+        count = len(requests)
+        out.append((name, start, count))
+        start += count
+    return out
+
+
+# Measured by replaying each of these together with the session it reads state
+# from and comparing the result against the baseline: these twelve sessions do
+# not reproduce on their own, because their rows read nodes, saved files or a
+# message counter that an earlier session left behind. The sessions named here
+# are replayed first. A session that reproduces alone is not listed. None of
+# the listed prerequisites needs one of its own, so one level is enough.
+SESSION_PREREQUISITES = {
+    "AA": ("Z",),
+    "AC": ("AB",),
+    "AH": ("AG",),
+    "AK": ("AI", "AJ"),
+    "CONSOLE": ("A", "Y"),
+    "F": ("D",),
+    "I": ("H",),
+    "L": ("K",),
+    "O": ("N",),
+    "Q": ("P",),
+    "S": ("R",),
+    "V": ("U",),
+}
+
+
+def with_prerequisites(wanted):
+    """The wanted sessions plus every session their rows depend on, and those
+    prerequisites' own. A prerequisite is replayed but stores no rows, so the
+    output still holds only the sessions the caller asked for."""
+    running = set(wanted)
+    pending = list(wanted)
+    while pending:
+        for need in SESSION_PREREQUISITES.get(pending.pop(), ()):
+            if need not in running:
+                running.add(need)
+                pending.append(need)
+    return running
+
+
+def parse_sessions(value):
+    """Session names to replay, or None for all of them. Names are matched
+    without regard to case and may be given in any order; the run order stays
+    the order of the calls in main."""
+    if value is None:
+        return None
+    canonical = {name.lower(): name for name in SESSION_ORDER}
+    chosen = set()
+    unknown = []
+    for part in value.split(","):
+        name = canonical.get(part.strip().lower())
+        if name is None:
+            if part.strip():
+                unknown.append(part.strip())
+        else:
+            chosen.add(name)
+    if unknown:
+        raise SystemExit("unknown session name in --sessions: %s; valid names: %s"
+                         % (", ".join(unknown), ", ".join(SESSION_ORDER)))
+    if not chosen:
+        raise SystemExit("--sessions names no known session; valid names: %s"
+                         % ", ".join(SESSION_ORDER))
+    return chosen
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--plugin-dir", required=True)
     ap.add_argument("--port", type=int, default=47902)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--sessions", help="comma-separated session names to replay "
+                    "instead of all of them")
     a = ap.parse_args()
     if a.port == 47821:
         raise SystemExit("port 47821 is Bruno's live editor; refusing")
     gd = os.path.join(a.plugin_dir, "editor_plugin.gd")
     if not os.path.isfile(gd):
         raise SystemExit("no editor_plugin.gd in --plugin-dir")
+    # Refused here so that a bad name stops the run before an editor starts.
+    selected = parse_sessions(a.sessions)
+    if selected is None:
+        wanted, running = SESSION_ORDER, SESSION_ORDER
+    else:
+        wanted = selected
+        running = with_prerequisites(selected)
+        added = [n for n in SESSION_ORDER if n in running and n not in wanted]
+        if added:
+            print("prerequisite sessions added, their rows are not stored: %s"
+                  % " ".join(added))
     proj = os.path.realpath(tempfile.mkdtemp(prefix="gp015golden-"))
     try:
         with open(os.path.join(proj, "project.godot"), "w") as f:
@@ -3360,6 +3475,22 @@ def main():
         if r.returncode != 0:
             raise SystemExit("godot --import failed")
         rows = []
+        blocks = {}
+
+        def play(name, scene, requests, expected_scene, ready_filesystem=False):
+            """Run one session, or skip it when --sessions left it out. Every
+            staging step and fixture write still happens, so a selected
+            session meets the same files it meets in a full run; only the
+            editor launch and the requests of a session that neither runs nor
+            was asked for are skipped."""
+            if name not in running:
+                blocks[name] = []
+                return
+            got = run_session(a.port, proj, scene, requests,
+                              expected_scene, ready_filesystem)
+            # A prerequisite runs to rebuild the state its dependant reads, but
+            # only a session the caller named stores rows.
+            blocks[name] = got if name in wanted else []
         # Run order is A, E, G, J, T, W, X, Y, CONSOLE, EVAL, C, B, D, F, H, I,
         # K, L, N, O, P, Q, R, S, U, V, then the set-parent sessions Z, AA, AB,
         # AC, AD-AG, AH, AI, AJ, AK: a fresh editor restores the previous
@@ -3372,12 +3503,12 @@ def main():
         # rows stay byte-identical to the previous baseline; rows 826 and 827
         # (the interface) publish all three new commands, and the new rows are
         # appended after them.
-        rows_a = run_session(a.port, proj, None, REQ_A, None)
-        rows_e = run_session(a.port, proj, None, build_e(), None)
-        rows_g = run_session(a.port, proj, None, build_g(), None)
-        rows_j = run_session(a.port, proj, None, build_j(), None)
-        rows_t = run_session(a.port, proj, None, build_t(), None)
-        rows_w = run_session(a.port, proj, None, build_w(), None, ready_filesystem=True)
+        play("A", None, REQ_A, None)
+        play("E", None, build_e(), None)
+        play("G", None, build_g(), None)
+        play("J", None, build_j(), None)
+        play("T", None, build_t(), None)
+        play("W", None, build_w(), None, ready_filesystem=True)
         # Restore the staged commands into the copied plugin one at a time and
         # write each session's fixtures only when its command is present, so no
         # earlier session's rows see them (session W's listing rows keep the
@@ -3401,7 +3532,7 @@ def main():
 
         restore_staged(os.path.join("commands", "inspect_resource.gd"))
         write_inspect_fixtures(proj)
-        rows_x = run_session(a.port, proj, None, build_x(), None)
+        play("X", None, build_x(), None)
         # console, set_parent and eval are restored together before session Y,
         # so the published interface row carries all three as its last entries.
         # The complete source already holds the inspect-resource line the
@@ -3413,7 +3544,7 @@ def main():
                          os.path.join(dst, "commands", rel))
         with open(target, "w") as f:
             f.write(unstaged_plugin)
-        rows_y = run_session(a.port, proj, None, build_y(), None)
+        play("Y", None, build_y(), None)
         # The console session and the eval session run right after the
         # interface with no edited scene (the eval session opens main.tscn in
         # its last two rows), so they run before the first scene session. The
@@ -3421,55 +3552,52 @@ def main():
         # written only before the set-parent sessions: session W lists the
         # project files, so a file added earlier would change its rows, and no
         # session after Y lists resources.
-        rows_console = run_session(a.port, proj, None, build_console(), None)
+        play("CONSOLE", None, build_console(), None)
         with open(os.path.join(proj, "eval_bad_preload.gd"), "w") as f:
             f.write(EVAL_BAD_PRELOAD_GD)
-        rows_eval = run_session(a.port, proj, None, build_eval(), None)
-        check_eval_display(rows_eval)
-        rows_c = run_session(a.port, proj, None, build_c(), None)
-        rows_b = run_session(a.port, proj, "res://main.tscn", build_b(), "res://main.tscn")
-        rows_d = run_session(a.port, proj, "res://connect.tscn", build_d(), "res://connect.tscn")
-        rows_f = run_session(a.port, proj, "res://connect.tscn", build_f(), "res://connect.tscn")
-        rows_h = run_session(a.port, proj, "res://group.tscn", build_h(), "res://group.tscn")
-        rows_i = run_session(a.port, proj, "res://group.tscn", build_i(), "res://group.tscn")
-        rows_k = run_session(a.port, proj, "res://unique.tscn", build_k(), "res://unique.tscn")
-        rows_l = run_session(a.port, proj, "res://unique.tscn", build_l(), "res://unique.tscn")
-        rows_n = run_session(a.port, proj, "res://rename_r1.tscn", build_n(), "res://rename_r1.tscn")
-        rows_o = run_session(a.port, proj, "res://rename_r2.tscn", build_o(), "res://rename_r2.tscn")
-        rows_p = run_session(a.port, proj, "res://rename_case1_reject.tscn", build_p(), "res://rename_case1_reject.tscn")
-        rows_q = run_session(a.port, proj, "res://rename_case1_accept.tscn", build_q(), "res://rename_case1_accept.tscn")
-        rows_r = run_session(a.port, proj, "res://inherit_i3.tscn", build_r(), "res://inherit_i3.tscn")
-        rows_s = run_session(a.port, proj, "res://inherit_i1.tscn", build_s(), "res://inherit_i1.tscn")
-        rows_u = run_session(a.port, proj, "res://inst_base.tscn", build_u(), "res://inst_base.tscn")
-        rows_v = run_session(a.port, proj, "res://inst_base.tscn", build_v(), "res://inst_base.tscn")
+        play("EVAL", None, build_eval(), None)
+        if "EVAL" in wanted:
+            check_eval_display(blocks["EVAL"])
+        play("C", None, build_c(), None)
+        play("B", "res://main.tscn", build_b(), "res://main.tscn")
+        play("D", "res://connect.tscn", build_d(), "res://connect.tscn")
+        play("F", "res://connect.tscn", build_f(), "res://connect.tscn")
+        play("H", "res://group.tscn", build_h(), "res://group.tscn")
+        play("I", "res://group.tscn", build_i(), "res://group.tscn")
+        play("K", "res://unique.tscn", build_k(), "res://unique.tscn")
+        play("L", "res://unique.tscn", build_l(), "res://unique.tscn")
+        play("N", "res://rename_r1.tscn", build_n(), "res://rename_r1.tscn")
+        play("O", "res://rename_r2.tscn", build_o(), "res://rename_r2.tscn")
+        play("P", "res://rename_case1_reject.tscn", build_p(), "res://rename_case1_reject.tscn")
+        play("Q", "res://rename_case1_accept.tscn", build_q(), "res://rename_case1_accept.tscn")
+        play("R", "res://inherit_i3.tscn", build_r(), "res://inherit_i3.tscn")
+        play("S", "res://inherit_i1.tscn", build_s(), "res://inherit_i1.tscn")
+        play("U", "res://inst_base.tscn", build_u(), "res://inst_base.tscn")
+        play("V", "res://inst_base.tscn", build_v(), "res://inst_base.tscn")
         write_set_parent_fixtures(proj)
-        rows_z = run_session(a.port, proj, "res://sp_base.tscn", build_z(), "res://sp_base.tscn")
-        rows_aa = run_session(a.port, proj, "res://sp_base.tscn", build_aa(), "res://sp_base.tscn")
-        rows_ab = run_session(a.port, proj, "res://sp_dderived.tscn", build_ab(), "res://sp_dderived.tscn")
-        rows_ac = run_session(a.port, proj, "res://sp_dderived.tscn", build_ac(), "res://sp_dderived.tscn")
+        play("Z", "res://sp_base.tscn", build_z(), "res://sp_base.tscn")
+        play("AA", "res://sp_base.tscn", build_aa(), "res://sp_base.tscn")
+        play("AB", "res://sp_dderived.tscn", build_ab(), "res://sp_dderived.tscn")
+        play("AC", "res://sp_dderived.tscn", build_ac(), "res://sp_dderived.tscn")
         write_sp2_fixtures(proj)
-        rows_ad = run_session(a.port, proj, "res://sp2_override.tscn", build_ad(), "res://sp2_override.tscn")
-        rows_ae = run_session(a.port, proj, "res://sp2_plain.tscn", build_ae(), "res://sp2_plain.tscn")
-        rows_af = run_session(a.port, proj, "res://sp2_twolevel.tscn", build_af(), "res://sp2_twolevel.tscn")
-        rows_ag = run_session(a.port, proj, "res://sp2_local.tscn", build_ag(), "res://sp2_local.tscn")
-        rows_ah = run_session(a.port, proj, "res://sp2_local.tscn", build_ah(), "res://sp2_local.tscn")
+        play("AD", "res://sp2_override.tscn", build_ad(), "res://sp2_override.tscn")
+        play("AE", "res://sp2_plain.tscn", build_ae(), "res://sp2_plain.tscn")
+        play("AF", "res://sp2_twolevel.tscn", build_af(), "res://sp2_twolevel.tscn")
+        play("AG", "res://sp2_local.tscn", build_ag(), "res://sp2_local.tscn")
+        play("AH", "res://sp2_local.tscn", build_ah(), "res://sp2_local.tscn")
         # The base-inherited rename and delete fixtures are written only now, so
         # the earlier listings (session W) never name them.
         write_ib_fixtures(proj)
-        rows_ai = run_session(a.port, proj, "res://ib_rename.tscn", build_ai(), "res://ib_rename.tscn")
-        rows_aj = run_session(a.port, proj, "res://ib_delete.tscn", build_aj(), "res://ib_delete.tscn")
-        rows_ak = run_session(a.port, proj, "res://ib_rename.tscn", build_ak(), "res://ib_rename.tscn")
-        rows = (rows_a + rows_b + rows_c + rows_e + rows_d + rows_f + rows_g
-                + rows_h + rows_i + rows_j + rows_k + rows_l + rows_n + rows_o
-                + rows_p + rows_q + rows_r + rows_s + rows_t + rows_u + rows_v
-                + rows_w + rows_x + rows_y + rows_console
-                + rows_z + rows_aa + rows_ab + rows_ac
-                + rows_ad + rows_ae + rows_af + rows_ag + rows_ah
-                + rows_ai + rows_aj + rows_ak + rows_eval)
+        play("AI", "res://ib_rename.tscn", build_ai(), "res://ib_rename.tscn")
+        play("AJ", "res://ib_delete.tscn", build_aj(), "res://ib_delete.tscn")
+        play("AK", "res://ib_rename.tscn", build_ak(), "res://ib_rename.tscn")
+        rows = [row for name in SESSION_ORDER for row in blocks[name]]
         with open(a.out, "w") as f:
             for req, rep in rows:
                 f.write(json.dumps({"request": req, "reply": rep}, separators=(",", ":")) + "\n")
         print("wrote %d pairs to %s" % (len(rows), a.out))
+        if selected is not None:
+            print("sessions: %s" % " ".join(n for n in SESSION_ORDER if blocks[n]))
     finally:
         shutil.rmtree(proj, ignore_errors=True)
 

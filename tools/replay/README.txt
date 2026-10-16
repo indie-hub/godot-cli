@@ -25,6 +25,66 @@ HOW TO RUN
   python3 compare.py BASELINE OTHER
   Prints the first differing request with both replies, or IDENTICAL.
   Exit 0 identical, 1 different.
+  python3 compare.py BASELINE OTHER --sessions NAMES
+  Compares only the rows of the named sessions. The expected rows come from
+  replay.py's request builders, so no extra file is read; the counts match
+  only when replay.py and the baseline belong to the same revision.
+  A replay.py with an altered layout can make a matching wrong output pass,
+  so the full run stays the final check. The comparison fails closed: it prints
+  IDENTICAL and exits 0 only when OTHER holds exactly the named sessions' rows,
+  equal to that slice of BASELINE, in the storage order. A wrong length, a
+  missing row, an extra row, a row of another session or rows in another order
+  all print a difference and exit 1. The session names are the same ones
+  replay.py accepts, so lower case works here too. Without --sessions compare.py
+  behaves exactly as above.
+
+  REPLAYING SOME SESSIONS
+  python3 replay.py --plugin-dir DIR --port PORT --out FILE --sessions NAMES
+  NAMES is a comma-separated list of the session labels above, for example
+  W,X or A,EVAL,B. Names are matched without regard to case and may be given in
+  any order. The sessions still run in the launch order above, and their rows are
+  still stored in the storage order above, so FILE holds only the named sessions'
+  rows. An unknown name is refused before any editor starts, and the message
+  lists the valid names. An empty value is refused. Without --sessions every
+  session runs and FILE is the full 1222-row baseline.
+  Every staging step and every fixture write still happens when sessions are
+  filtered, so a selected session meets the same project files it meets in a full
+  run. Only the editor launches of sessions that neither run nor were asked for
+  are skipped, which is what makes a filtered run quick.
+
+  PREREQUISITE SESSIONS
+  Twenty-six of the thirty-eight sessions reproduce on their own. The other
+  twelve read nodes, saved scene files or a message counter that an earlier
+  session left behind, so they do not. --sessions replays those prerequisites
+  automatically and prints their names. A prerequisite is replayed but stores no
+  rows, so FILE still holds only the sessions you named.
+    session  prerequisite    session  prerequisite
+    F        D               AA       Z
+    I        H               AC       AB
+    L        K               AH       AG
+    O        N               AK       AI and AJ
+    Q        P               CONSOLE  A and Y
+    S        R
+    V        U
+  Each pair was measured by replaying it and comparing against the baseline.
+  CONSOLE is the slowest case: it needs A and Y, so naming CONSOLE alone costs
+  three editor launches instead of one. Without --sessions the whole run happens
+  as before and this table is not consulted.
+
+  Check a filtered run with one command. Run both from the repository root, so
+  the script paths carry the tools/replay/ prefix:
+    python3 tools/replay/replay.py --plugin-dir addon/godot_pipeline \
+      --port 47920 --out /tmp/filtered.jsonl --sessions W,X
+    python3 tools/replay/compare.py tools/replay/baseline.jsonl \
+      /tmp/filtered.jsonl --sessions W,X
+  The second command prints IDENTICAL (96 pairs) when the filtered run is correct.
+  A filtered run writes only FILE; no other file is written beside it.
+
+  A FILTERED RUN PROVES LESS THAN A FULL RUN. A filtered run exercises the named
+  sessions and their measured prerequisites, and nothing else. It cannot see a
+  leak between two sessions you did not name: such a change passes a filtered
+  run and still fails the full run. Use --sessions to work on one command at a
+  time. The full run stays mandatory at integration and for validators.
 
   Each run takes several minutes: one --import plus thirty-eight editor launches
   (in launch order A with no scene, E with no scene, G with no scene, J with no
@@ -506,7 +566,7 @@ NORMALISATION
   Every recorded eval reply body parses as JSON.
 
 DETERMINISM PROOF
-  The combined rows were recorded twice; the two full runs are byte-identical
+  For the previous 1182-row baseline, the combined rows were recorded twice; the two full runs are byte-identical
   (compare.py IDENTICAL, 1182 pairs, and cmp clean between the two runs). Rows
   1-825 are byte-identical to the baseline that preceded this change: their
   sha256 is
@@ -811,7 +871,7 @@ COVERAGE (request numbers above)
   TargetX row #1120, open_scene of the saved ib_delete.tscn #1121, scene_tree
   #1122, Target not found #1123, no Target #1124, one each of BaseCold #1125,
   ChildCold #1126 and NestedCold #1127, and Target gone #1128).
-  eval #1129-1222: Z (rows 1129-1180 start with no edited scene; rows 1181-1182 open
+  eval #1129-1222: EVAL (rows 1129-1180 start with no edited scene; rows 1181-1182 open
   res://main.tscn; rows 1183-1222 run with it open and do not edit it):
   value returns int #1129, float #1130, string #1131, Vector2 #1132, Array #1133,
   Dictionary #1134 and null #1135 (typed JSON, the int kept as i:); print output

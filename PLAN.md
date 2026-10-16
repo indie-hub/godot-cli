@@ -93,7 +93,8 @@ Decisions of 2026-10-14 and 2026-10-15:
 
 Queued follow-up tasks:
 
-- `harness-and-cost`: measure and trim the replay harness and the detector cost.
+- `eval-readable-value`: done. `eval` carries `display` beside `value`, and the baseline holds 1222 rows.
+- `harness-and-cost`: the `--sessions` filter is done. Measured: full replay 140.7 s, 298 bracket rows around 121 rejections, detector cost 52 ms at 5000 nodes with a base. Still open and unbuilt: bracket-row trim, table-driven matrix, skip-pack. Only the bracket-row trim changes baseline rows.
 
 ## Rules every new command must keep
 
