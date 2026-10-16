@@ -2948,6 +2948,24 @@ def build_eval():
         ev(h + 'var d = {"k": 1}\n\tfor i in range(50):\n\t\td = {"k": d}\n\treturn d'),
         ev(h + "var v = 1\n\tfor i in range(33):\n\t\tv = {\"k\": [v]}\n\treturn [v]"),
         ev(h + "var v = 1\n\tfor i in range(34):\n\t\tv = {\"k\": [v]}\n\treturn [v]"),
+        # A tagged terminal value (a Vector2, a packed array, a Transform3D)
+        # costs two levels, so the boundary sits one wrapper lower than for a
+        # scalar-ended Array: 98 nested Arrays plus the terminal come back as
+        # exactly 100 levels, and 99 plus the terminal are refused.
+        ev(h + "var a = []\n\tvar c = a\n\tfor i in range(97):\n\t\tvar b = []\n\t\tc.append(b)\n\t\tc = b\n\tc.append(Vector2(1, 2))\n\treturn a"),
+        ev(h + "var a = []\n\tvar c = a\n\tfor i in range(98):\n\t\tvar b = []\n\t\tc.append(b)\n\t\tc = b\n\tc.append(Vector2(1, 2))\n\treturn a"),
+        ev(h + "var a = []\n\tvar c = a\n\tfor i in range(97):\n\t\tvar b = []\n\t\tc.append(b)\n\t\tc = b\n\tc.append(PackedInt32Array([1, 2]))\n\treturn a"),
+        ev(h + "var a = []\n\tvar c = a\n\tfor i in range(98):\n\t\tvar b = []\n\t\tc.append(b)\n\t\tc = b\n\tc.append(PackedInt32Array([1, 2]))\n\treturn a"),
+        ev(h + "var a = []\n\tvar c = a\n\tfor i in range(97):\n\t\tvar b = []\n\t\tc.append(b)\n\t\tc = b\n\tc.append(Transform3D(Basis(), Vector3(0, 0, 0)))\n\treturn a"),
+        ev(h + "var a = []\n\tvar c = a\n\tfor i in range(98):\n\t\tvar b = []\n\t\tc.append(b)\n\t\tc = b\n\tc.append(Transform3D(Basis(), Vector3(0, 0, 0)))\n\treturn a"),
+        # A typed Array costs two levels while an untyped one costs one, so a
+        # typed Array[int] terminal sits one wrapper lower than a scalar, and a
+        # chain of typed Arrays steps two levels per wrapper (an exact 100 is
+        # unreachable there, so the pair below pins 99 against 101).
+        ev(h + "var a = []\n\tvar c = a\n\tfor i in range(97):\n\t\tvar b = []\n\t\tc.append(b)\n\t\tc = b\n\tvar t: Array[int] = [1]\n\tc.append(t)\n\treturn a"),
+        ev(h + "var a = []\n\tvar c = a\n\tfor i in range(98):\n\t\tvar b = []\n\t\tc.append(b)\n\t\tc = b\n\tvar t: Array[int] = [1]\n\tc.append(t)\n\treturn a"),
+        ev(h + "var v: Variant = []\n\tfor i in range(49):\n\t\tv = Array([v], TYPE_ARRAY, &\"\", null)\n\treturn v"),
+        ev(h + "var v: Variant = []\n\tfor i in range(50):\n\t\tv = Array([v], TYPE_ARRAY, &\"\", null)\n\treturn v"),
         # A Node that another Node parents stays alive even when neither is in
         # the tree, so the retained parent keeps the child across two calls.
         ("line", json.dumps({"command": "eval", "project_path": "<PROJ>", "code": 'extends Node\nfunc run(editor, undo_redo):\n\tvar parent = Node.new()\n\tparent.name = "ReplayParent"\n\tparent.add_child(self)\n\teditor.get_base_control().set_meta("replay_parent", parent)\n\treturn parent.get_child_count()'}, separators=(",", ":"))),

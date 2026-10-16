@@ -8,15 +8,18 @@ const CommandSupport := preload("command_support.gd")
 ## reply without bound (the code still ran; only its value is dropped).
 const MAX_VALUE_BYTES := 1048576
 
-## Deepest tagged nesting the reply carries, counted in JSON levels: an Array
-## counts one and a Dictionary counts two (the outer object and its args
-## array). The container under examination counts toward the total.
-## JSON.from_native encodes a tagged terminal value (a Vector2, a packed array,
-## a Transform3D) as an object plus an args array, and the walk does not count
-## those two levels, so such a value can reach two levels past the limit. The
-## real command line reads about 125 levels, so the reply stays readable. A
-## deeper value is replaced by a completed-false reply that names the limit;
-## the code still ran and the scene report is unchanged.
+## Deepest tagged nesting the reply carries, counted in JSON levels: an untyped
+## Array costs one level and a typed Array costs two (the encoding writes it
+## as an object plus an args array). A Dictionary costs two (the outer object
+## and its args array), and a tagged terminal value (a Vector2, a packed
+## array, a Transform3D, and the other value types the encoding writes as an
+## object plus an args array) costs two as well. A Callable, an RID, and a
+## Signal cost one (an object with no args array). Scalars cost nothing, and
+## the container under examination counts toward the total, so the walk counts
+## exactly the levels the encoded reply nests. The real command line reads
+## about 125 levels, so the reply stays readable. A deeper value is replaced
+## by a completed-false reply that names the limit; the code still ran and
+## the scene report is unchanged.
 const MAX_TAGGED_DEPTH := 100
 
 ## Milliseconds a request may omit `timeout` before this value applies.
@@ -259,8 +262,13 @@ static func _type_name(error_type: int) -> String:
 
 
 ## Whether `value` nests deeper than `limit`, counting the containers the way
-## MAX_TAGGED_DEPTH describes. The walk stops at the first excess, so a runaway
-## value costs only a bounded scan.
+## MAX_TAGGED_DEPTH describes: an untyped Array costs one level and a typed
+## Array costs two, a Dictionary costs two, a tagged terminal value (a
+## Vector2, a packed array, a Transform3D, and the rest of the value types the
+## encoding writes as an object plus an args array) costs two, and a Callable,
+## an RID, or a Signal costs one. The walk stops at the first excess, so a
+## runaway value costs only a bounded scan. The walk runs over the native
+## value before encoding.
 static func _exceeds_depth(value: Variant, limit: int) -> bool:
 	var stack: Array = [[value, 0]]
 	while not stack.is_empty():
@@ -268,16 +276,25 @@ static func _exceeds_depth(value: Variant, limit: int) -> bool:
 		var node: Variant = frame[0]
 		var depth: int = int(frame[1])
 		if node is Array:
-			if depth + 1 > limit:
+			var cost := 2 if (node as Array).is_typed() else 1
+			if depth + cost > limit:
 				return true
 			for child in (node as Array):
-				stack.append([child, depth + 1])
+				stack.append([child, depth + cost])
 		elif node is Dictionary:
 			if depth + 2 > limit:
 				return true
 			for key in (node as Dictionary).keys():
 				stack.append([key, depth + 2])
 				stack.append([(node as Dictionary)[key], depth + 2])
+		else:
+			var kind := typeof(node)
+			if (kind >= TYPE_VECTOR2 and kind <= TYPE_COLOR) or (kind >= TYPE_PACKED_BYTE_ARRAY and kind <= TYPE_PACKED_VECTOR4_ARRAY):
+				if depth + 2 > limit:
+					return true
+			elif kind == TYPE_RID or kind == TYPE_CALLABLE or kind == TYPE_SIGNAL:
+				if depth + 1 > limit:
+					return true
 	return false
 
 

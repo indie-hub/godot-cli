@@ -425,9 +425,9 @@ transform of a `Node2D` and a `Node3D`, and the global position only of a
 own re-parent call: a `Node2D` and a `Node3D` restore the saved global
 transform, while a `Control` restores the saved global origin only, so a
 `Control` under a parent with a different scale takes that parent's scale. As
-with every boolean the interface declares, the CLI's flag can only request the
-value true, so a caller that wants false sends the raw request (the plugin
-accepts false).
+with every boolean the interface declares, the CLI's flag accepts a bare flag
+as true and an explicit value as either `true` or `false`, so
+`--keep-global-transform=false` reaches the plugin (the plugin accepts false).
 
 `new_parent_path` must resolve to the scene root or to a node owned by it,
 exactly as `create_node` requires; a new parent inside an instanced sub-scene's
@@ -452,12 +452,34 @@ an empty chain, so nothing is inherited and no extra node is rejected. A node
 the derived scene owns itself stays movable even when it sits under an inherited
 parent, and its move survives a save and a fresh reload.
 
+Editing the base scene itself has a different effect, and the plugin does not
+refuse it. A base scene that has no base scene of its own yields an empty chain,
+so the inherited-node check refuses no node in it. The other checks of the
+commands still apply: the scene root cannot be deleted, and a node inside an
+instanced sub-scene is refused when the edit would not be saved. A derived scene
+stores its overrides and its local children by the path of the base node.
+Measured independently by two rooms in real Godot 4.7.2 headless editors: a
+derived scene inherits a base scene, overrides a property of the base node `X`,
+and holds a local child `C` under `X`. After `X` is renamed or deleted in the
+base scene and the base scene is saved, a fresh load of the derived scene shows
+`X` gone (after a rename, the renamed node is present with its inherited
+descendants and without the override), the override lost, and `C` moved to the
+scene root and renamed `X#C`. The editor prints two warnings: `Node './X' was
+modified from inside an instance, but it has vanished.` and `Parent path './X'
+for node 'C' has vanished when instantiating: 'res://<derived scene>'.` The file
+of the derived scene does not change, so the loss shows only when it is loaded.
+After renaming or deleting a node in a base scene, open every scene that
+inherits it and check the nodes that override it.
+
 The base-scene check is one shared helper
-(`CommandSupport.node_is_inherited_from_base`), and `rename_node` and
-`delete_node` call the same helper, so a node inherited from the base scene is
-refused as a structural edit by all three commands. Reading the base chain costs
-one `PackedScene.pack` of the edited scene followed by a walk over every level
-of the base-state chain. Measured in real Godot 4.7.2 headless editors with 300
+(`CommandSupport.inherited_edit_refusal`). Each structural command calls it
+after its own checks, at the point it would otherwise refuse, and passes its
+action verb (`rename`, `deletion` or `move`); the helper builds the refusal and
+is not applied by default, so a new structural command must call it the same
+way. `rename_node`, `delete_node` and `set_parent` all get the refusal this way.
+Reading the base chain costs one `PackedScene.pack` of the edited scene followed
+by a walk over every level of the base-state chain. Measured in real Godot 4.7.2
+headless editors with 300
 calls per case: a 201-node `Node2D` scene with no base scene costs about 1.7 ms
 (the detector 1.653 to 1.698 ms; the full rename and delete handlers 1.684 to
 1.712 ms); a 201-node scene whose nodes come from a base scene costs about
@@ -749,15 +771,15 @@ entry saying the value was nested deeper than 100 levels and was not returned;
 failure uses the same shape (`value` null, `completed` false, `errors` entry).
 
 What the limit counts is the nesting of the encoded `value` itself, measured in
-JSON container levels: an `Array` costs one level and a `Dictionary` costs two
-(the outer object and its `args` array). Scalars cost nothing, and the
-container being examined is part of the total, so a value the walk counts as
-exactly 100 levels comes back exactly and one level more is refused. The count
-does not see the containers that the encoding itself adds. `JSON.from_native`
-writes a tagged terminal value (a `Vector2`, a packed array, a `Transform3D`,
-and similar) as an object plus an `args` array, so a value whose deepest element
-is such a value reaches up to 102 levels in the reply while the walk still
-counted 100.
+JSON container levels: an untyped `Array` costs one level and a typed `Array`
+costs two (the encoding writes it as an object plus an `args` array), a
+`Dictionary` costs two (the outer object and its `args` array), and a tagged terminal value (a
+`Vector2`, a packed array, a `Transform3D`, and the other value types the
+encoding writes as an object plus an `args` array) costs two as well. A
+`Callable`, an `RID`, and a `Signal` cost one (an object with no `args`
+array). Scalars cost nothing, and the container being examined is part of
+the total, so a value the walk counts as exactly 100 levels comes back
+exactly and one level more is refused, whatever the deepest element is.
 
 That limit was derived from the real command line, which cannot read a reply
 deeper than 125 JSON levels. Measured through `godot-cli` against the original
@@ -769,8 +791,8 @@ wrappers read, while 63 and 64 fail; and a shape alternating an `Array` with a
 `Array`-plus-`Dictionary` wrapper costs three levels, which is why the three
 shapes reach the same ceiling at different wrapper counts. Note that a loop
 appending N child `Array`s to an initial empty `Array` produces N+1 containers,
-not N. The margin is 25 levels for a value the walk counts exactly, and at
-least 23 levels in the worst case where the encoding adds two uncounted levels.
+not N. The walk counts exactly what the reply nests, so the margin to what the
+real command line reads is 25 levels.
 
 A returned value larger than 1 MiB (1048576 bytes) is replaced by a `status`
 error that names the size and says the code ran. That error reply carries no
@@ -904,14 +926,18 @@ argument list in command-line order). One argument entry has `name` (the
 wire field name), `flag` (the command-line flag such as `--limit`, or null
 for a positional-only argument), `positional` (the positional index, or null
 for a flag-only argument), `type` (one of the five types below), `required`
-(true means a missing value is refused before anything is sent), `default`
+(true means a missing value is refused before the command request is sent), `default`
 (the value sent when an absent optional argument is left out), and `help`
 (the one-line text shown in per-command help).
 
 The five types are `string`, `boolean`, `json`, `res_path`, and `integer`.
 A `string` value is sent unchanged; every content check is done by the
-plugin. A `boolean` flag takes no value: presence sends true and absence
-sends the default. A `json` value is sent as parsed JSON when the text parses
+plugin. A `boolean` flag is written `--flag`, `--flag=true` or `--flag=false`:
+a bare flag sends true, absence sends the default, and any other value after the
+equals sign is refused by the CLI with
+`error: invalid --keep-global-transform value: expected true or false, got maybe`
+after the interface fetch and before the command request is sent. A `json` value
+is sent as parsed JSON when the text parses
 as JSON and as a plain string otherwise; the plugin coerces the result
 strictly to the declared property type. A `res_path` value is a string plus
 one CLI check: a symlink that resolves outside the project is refused before
@@ -1120,7 +1146,7 @@ lists the scenes that still have unsaved changes in `data.unsaved`.
 lists the resource files the editor file system holds, as a bounded page,
 without loading them (see Protocol above), canonicalizing `--project-path`
 the same way as the other commands. `--limit` defaults to 100: the CLI
-refuses a value outside the integer grammar before anything is sent, and the
+refuses a value outside the integer grammar before the command request is sent, and the
 plugin validates the 1..1000 range after the project check.
 With `--refresh` the CLI starts a scan and waits until it finishes (up to
 60 seconds) before printing the listing.
@@ -1134,20 +1160,21 @@ instead of being sent, because the plugin cannot detect a symlink escape.
 shows the editor log messages captured since the plugin loaded (see Protocol
 above), canonicalizing `--project-path` the same way as the other commands.
 `--tail` defaults to 100: the CLI refuses a value outside the integer grammar
-before anything is sent, and the plugin validates the 1..1000 range after the
+before the command request is sent, and the plugin validates the 1..1000 range after the
 project check; `--level` (default `all`) keeps one of `info`, `warning`,
 `error`, `script` or `shader`; `--since` (default 0) keeps messages newer
 than that cursor; `--clear` empties the buffer after the reply is built.
 
-`set-parent <scene-relative-path> <new-parent-scene-relative-path> --project-path <dir> [--index <n>] [--keep-global-transform]`
+`set-parent <scene-relative-path> <new-parent-scene-relative-path> --project-path <dir> [--index <n>] [--keep-global-transform[=true|false]]`
 moves that node under the new parent through the editor's undo/redo stack
 (see Protocol above), canonicalizing `--project-path` the same way as the
 other mutating commands. `--index` sets the node's position among the new
 parent's children (default appends); `--keep-global-transform` is the default
 and preserves the full global transform of a `Node2D` and a `Node3D`, and the
 global position only of a `Control`. The
-CLI's boolean flag can only request true, so a caller that wants a false value
-sends the raw request. Nothing is saved until `save-scene` runs.
+CLI's boolean flags accept the bare flag as true and an explicit `=true` or
+`=false`, so `--keep-global-transform=false` requests the false value.
+Nothing is saved until `save-scene` runs.
 
 ## Verification
 

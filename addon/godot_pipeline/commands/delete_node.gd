@@ -19,7 +19,8 @@ const SelfScript := preload("delete_node.gd")
 ## A node inherited from the scene's base scene is rejected, with or without a
 ## local override: its owner is the edited scene root, so the instance walk
 ## below lets it through, but the editor writes no removal for it, so the node
-## returns on a fresh reload.
+## returns on a fresh reload. The shared inherited-node helper builds the
+## refusal.
 static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 	var node_path_value: Variant = request.get("node_path")
 	var project_path_value: Variant = request.get("project_path")
@@ -50,12 +51,11 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 	# A node that comes from the scene's base scene cannot be deleted, with or
 	# without a local override: its owner is the edited scene root, so the
 	# instance walk above lets it through, but the editor writes no removal for
-	# it, so the node returns on a fresh reload. Reject it before the undo
-	# action.
-	if CommandSupport.node_is_inherited_from_base(scene_root, target):
-		return CommandSupport.error(
-			"node is inherited from the base scene and its deletion would not be saved: %s" % node_path
-		)
+	# it, so the node returns on a fresh reload. The shared helper builds the
+	# refusal; reject before the undo action.
+	var refusal := CommandSupport.inherited_edit_refusal(scene_root, target, node_path, "deletion")
+	if refusal != "":
+		return CommandSupport.error(refusal)
 
 	# Captured before the node leaves the tree, so the undo step can restore
 	# it to its exact prior position and every node to its exact prior owner

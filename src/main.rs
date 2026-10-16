@@ -326,10 +326,20 @@ fn bind_arguments(
     let mut arguments = args.iter();
     while let Some(argument) = arguments.next() {
         if argument.starts_with("--") {
-            let declared = command
-                .arguments
-                .iter()
-                .find(|candidate| candidate.flag.as_deref() == Some(argument.as_str()));
+            // A boolean flag may carry its value after `=`, so that an
+            // argument whose default is true can also be asked for false. Only
+            // a boolean matches in that form: for every other kind `--flag=value`
+            // stays the unknown argument it has always been.
+            let (flag, inline_value) = match argument.split_once('=') {
+                Some((flag, value)) => (flag, Some(value)),
+                None => (argument.as_str(), None),
+            };
+            let declared = command.arguments.iter().find(|candidate| {
+                candidate.flag.as_deref() == Some(argument.as_str())
+                    || (inline_value.is_some()
+                        && candidate.kind == "boolean"
+                        && candidate.flag.as_deref() == Some(flag))
+            });
             let Some(declared) = declared else {
                 return Err(format!(
                     "unknown argument for {}: {argument}",
@@ -337,8 +347,14 @@ fn bind_arguments(
                 ));
             };
             let value = if declared.kind == "boolean" {
-                // A boolean takes no value: the flag's presence means true.
-                "true".to_string()
+                // A bare boolean flag means true. The value is checked here,
+                // as this occurrence is bound, because a later occurrence of
+                // the same flag would otherwise overwrite it unchecked.
+                let value = inline_value.unwrap_or("true");
+                if value != "true" && value != "false" {
+                    return Err(invalid_boolean(declared, value));
+                }
+                value.to_string()
             } else {
                 arguments
                     .next()
@@ -369,6 +385,14 @@ fn bind_arguments(
     Ok(supplied)
 }
 
+/// The refusal for a boolean value that is neither `true` nor `false`.
+fn invalid_boolean(argument: &ArgumentInterface, raw: &str) -> String {
+    format!(
+        "invalid {} value: expected true or false, got {raw}",
+        argument.label()
+    )
+}
+
 /// Encodes one command-line value with the type the interface declares.
 fn encode_value(
     argument: &ArgumentInterface,
@@ -377,7 +401,11 @@ fn encode_value(
 ) -> Result<Value, String> {
     Ok(match argument.kind.as_str() {
         "string" => json!(raw),
-        "boolean" => json!(true),
+        "boolean" => match raw {
+            "true" => json!(true),
+            "false" => json!(false),
+            _ => return Err(invalid_boolean(argument, raw)),
+        },
         "json" => parse_value_argument(raw),
         "integer" => json!(parse_integer(raw).ok_or_else(|| {
             format!(
@@ -476,9 +504,11 @@ fn print_command_usage(command: &CommandInterface) {
     for argument in &command.arguments {
         let Some(flag) = &argument.flag else { continue };
         usage.push_str(&format!(" {flag}"));
-        if argument.kind != "boolean" {
-            usage.push_str(" <value>");
-        }
+        usage.push_str(if argument.kind == "boolean" {
+            "[=true|false]"
+        } else {
+            " <value>"
+        });
     }
     println!("{usage}");
     println!("  {}", command.description);
@@ -1694,5 +1724,152 @@ mod tests {
                 1
             );
         }
+    }
+
+    /// A boolean flag sends true when it is bare and the value it is given
+    /// after `=` otherwise, so an argument whose default is true can also be
+    /// asked for false.
+    #[test]
+    fn a_boolean_flag_sends_true_unless_it_names_a_value() {
+        let forms: Vec<(Vec<&str>, Value)> = vec![
+            (vec![], json!(true)),
+            (vec!["--keep-global-transform"], json!(true)),
+            (vec!["--keep-global-transform=true"], json!(true)),
+            (vec!["--keep-global-transform=false"], json!(false)),
+        ];
+        for (extra, keep) in forms {
+            let mut argv: Vec<&str> = vec!["call", "set-parent", "Player", "UI"];
+            argv.extend(extra.iter().copied());
+            argv.extend(["--project-path", "/tmp"]);
+            let (port, server) = fake_plugin(vec![
+                interface_reply(),
+                Response::Ok {
+                    data: json!({ "scanning": false }),
+                },
+            ]);
+            run(&with_port(port, &argv)).unwrap_or_else(|error| panic!("{argv:?}: {error}"));
+            let lines = server.join().expect("server thread does not panic");
+            let sent: Value = serde_json::from_str(&lines[1]).expect("parse request");
+            assert_eq!(sent["keep_global_transform"], keep, "for {argv:?}");
+        }
+    }
+
+    #[test]
+    fn a_boolean_value_that_is_not_true_or_false_is_refused_before_any_request_is_sent() {
+        for raw in ["maybe", "", "TRUE", "1"] {
+            let flag = format!("--keep-global-transform={raw}");
+            let argv: Vec<&str> = vec![
+                "call",
+                "set-parent",
+                "Player",
+                "UI",
+                &flag,
+                "--project-path",
+                "/tmp",
+            ];
+            let (error, lines) = refused(&argv);
+            assert_eq!(
+                error,
+                format!("invalid --keep-global-transform value: expected true or false, got {raw}")
+            );
+            fetch_only(&lines);
+        }
+    }
+
+    /// A later occurrence of a flag overwrites an earlier one, so an invalid
+    /// value must be refused as its own occurrence is bound. Otherwise
+    /// `--flag=maybe --flag` would overwrite the invalid value with a valid
+    /// one and send the command.
+    #[test]
+    fn an_invalid_boolean_value_is_refused_whatever_itself_repeats() {
+        let repeats: Vec<(Vec<&str>, &str)> = vec![
+            (
+                vec!["--keep-global-transform=maybe", "--keep-global-transform"],
+                "maybe",
+            ),
+            (
+                vec![
+                    "--keep-global-transform=maybe",
+                    "--keep-global-transform=false",
+                ],
+                "maybe",
+            ),
+            (
+                vec![
+                    "--keep-global-transform=TRUE",
+                    "--keep-global-transform=false",
+                ],
+                "TRUE",
+            ),
+            (
+                vec![
+                    "--keep-global-transform=false",
+                    "--keep-global-transform=maybe",
+                ],
+                "maybe",
+            ),
+        ];
+        for (extra, bad) in repeats {
+            let mut argv: Vec<&str> = vec!["call", "set-parent", "Player", "UI"];
+            argv.extend(extra.iter().copied());
+            argv.extend(["--project-path", "/tmp"]);
+            let (error, lines) = refused(&argv);
+            assert_eq!(
+                error,
+                format!("invalid --keep-global-transform value: expected true or false, got {bad}"),
+                "for {argv:?}"
+            );
+            fetch_only(&lines);
+        }
+    }
+
+    /// A repeated flag keeps the behaviour it has always had: the last valid
+    /// occurrence wins and the request is sent.
+    #[test]
+    fn a_repeated_boolean_flag_sends_the_last_valid_value() {
+        let repeats: Vec<(Vec<&str>, Value)> = vec![
+            (
+                vec![
+                    "--keep-global-transform=false",
+                    "--keep-global-transform=true",
+                ],
+                json!(true),
+            ),
+            (
+                vec!["--keep-global-transform", "--keep-global-transform=false"],
+                json!(false),
+            ),
+            (vec!["--keep-global-transform=false"], json!(false)),
+        ];
+        for (extra, keep) in repeats {
+            let mut argv: Vec<&str> = vec!["call", "set-parent", "Player", "UI"];
+            argv.extend(extra.iter().copied());
+            argv.extend(["--project-path", "/tmp"]);
+            let (port, server) = fake_plugin(vec![
+                interface_reply(),
+                Response::Ok {
+                    data: json!({ "scanning": false }),
+                },
+            ]);
+            run(&with_port(port, &argv)).unwrap_or_else(|error| panic!("{argv:?}: {error}"));
+            let lines = server.join().expect("server thread does not panic");
+            let sent: Value = serde_json::from_str(&lines[1]).expect("parse request");
+            assert_eq!(sent["keep_global_transform"], keep, "for {argv:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_boolean_flag_may_carry_its_value_after_an_equals_sign() {
+        // A non-boolean argument keeps the exact flag it declares and takes its
+        // value as the next argument, so `--flag=value` is an unknown argument.
+        let (error, lines) = refused(&[
+            "call",
+            "query-nodes",
+            "--limit=50",
+            "--project-path",
+            "/tmp",
+        ]);
+        assert_eq!(error, "unknown argument for query-nodes: --limit=50");
+        fetch_only(&lines);
     }
 }

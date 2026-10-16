@@ -1,4 +1,4 @@
-Golden replay harness for the Godot Pipeline editor plugin (1172 rows:
+Golden replay harness for the Godot Pipeline editor plugin (1182 rows:
 1-148 unchanged, 149-200 cover inspect-class and open-scene, 201-262 cover
 connect-signal, 263-362 cover set-group, 363-413 cover set-unique-name,
 414-477 cover the rename unique-flag fix, 478-530 cover the rename option C
@@ -13,7 +13,7 @@ set-parent, 939-945 cover the fresh reload of the accepted set-parent moves,
 946-976 cover set-parent in a derived scene, 977-982 cover the fresh reload of
 the derived-scene moves, 983-1051 cover set-parent against the inherited-node
 matrix, 1052-1128 cover the base-inherited rename and delete rejections and
-their fresh reloads, and 1129-1172 cover eval).
+their fresh reloads, and 1129-1182 cover eval).
 
 HOW TO RUN
   GODOT=/path/to/Godot python3 replay.py --plugin-dir DIR --port PORT --out FILE
@@ -39,7 +39,7 @@ HOW TO RUN
   res://sp_dderived.tscn, AD with res://sp2_override.tscn, AE with
   res://sp2_plain.tscn, AF with res://sp2_twolevel.tscn, AG and AH with
   res://sp2_local.tscn, AI and AK with res://ib_rename.tscn, and AJ with
-  res://ib_delete.tscn), 1172 stored rows (1053 requests and 119 file checks).
+  res://ib_delete.tscn), 1182 stored rows (1063 requests and 119 file checks).
   The plugin has twenty commands, a different count. Rows are stored A, B, C,
   E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, T, U, V, W, X, Y, CONSOLE,
   Z, AA, AB, AC, AD, AE, AF, AG, AH, AI, AJ, AK, EVAL: a fresh editor restores
@@ -439,16 +439,16 @@ Session CONSOLE (requests 828-842, no edited scene, runs right after session Y):
   cannot be byte-deterministic; the happy path (levels, tail, since, clear,
   eviction, truncation, single logger after disable/enable) is proved by
   isolated-editor probes instead.
-Session EVAL (requests 1129-1172, starts with no edited scene, runs right after the console session):
+Session EVAL (requests 1129-1182, starts with no edited scene, runs right after the console session):
   the eval command. The eval.gd script and its COMMANDS line are restored into
   the copied plugin just before this session, so session Y's interface carries
   eval as entry 20 and rows 1-825 (whose sessions never saw the file) stay
   byte-identical. The fixture res://eval_bad_preload.gd is written just before
   this session, not earlier: session W lists the project files, so a file added
-  before it would change rows 730-764. Rows 828-869 run with no edited scene,
+  before it would change rows 730-764. Rows 1129-1180 run with no edited scene,
   so scene_changed is false and no request mutates stored state except the two
   editor-meta markers (the Object leak marker and the retained parent); rows
-  870-871 open res://main.tscn and then edit it, so scene_changed is true.
+  1181-1182 open res://main.tscn and then edit it, so scene_changed is true.
   The rows are: seven value
   returns (int, float, string, Vector2, Array, Dictionary, null, each shown as
   typed JSON through JSON.from_native), a print-output snippet, a compile error,
@@ -467,8 +467,12 @@ Session EVAL (requests 1129-1172, starts with no edited scene, runs right after 
   _static_init that calls push_error, and a preloaded @tool script with an
   error) each answered with completed false and value null and each followed by
   a clean call, the tagged depth boundary for an Array (100 levels returned, 101
-  refused), a Dictionary (100 levels returned, 102 refused) and a mixed shape
-  (100 levels returned, 103 refused), a Node that another Node parents kept
+  refused), a Dictionary (100 levels returned, 102 refused), a mixed shape
+  (100 levels returned, 103 refused), and a Vector2-ended, a
+  packed-array-ended, and a Transform3D-ended shape (each 100 levels returned,
+  101 refused), a typed-Array[int]-ended shape (100 levels returned, 101
+  refused) and a chain of typed Arrays (49 wrappers returned at 99 levels, 50
+  refused at 101), a Node that another Node parents kept
   alive across two calls, a scene switch that stays clean, and a switch with an
   edit that reports the
   change). Each reply is normalised by
@@ -490,7 +494,7 @@ NORMALISATION
 
 DETERMINISM PROOF
   The combined rows were recorded twice; the two full runs are byte-identical
-  (compare.py IDENTICAL, 1172 pairs, and cmp clean between the two runs). Rows
+  (compare.py IDENTICAL, 1182 pairs, and cmp clean between the two runs). Rows
   1-825 are byte-identical to the baseline that preceded this change: their
   sha256 is
   99f6ebef9215d318e32ee516db497e9c3a12488b19de1321e135da93991056e7. Rows
@@ -779,7 +783,7 @@ COVERAGE (request numbers above)
   TargetX row #1120, open_scene of the saved ib_delete.tscn #1121, scene_tree
   #1122, Target not found #1123, no Target #1124, one each of BaseCold #1125,
   ChildCold #1126 and NestedCold #1127, and Target gone #1128).
-  eval #1129-1172: Z (rows 1129-1170 start with no edited scene; rows 1171-1172 open
+  eval #1129-1182: Z (rows 1129-1180 start with no edited scene; rows 1181-1182 open
   res://main.tscn):
   value returns int #1129, float #1130, string #1131, Vector2 #1132, Array #1133,
   Dictionary #1134 and null #1135 (typed JSON, the int kept as i:); print output
@@ -802,9 +806,18 @@ COVERAGE (request numbers above)
   (Array at 101 levels refused), #1165 (Dictionary at exactly 100 levels returned
   exact) and #1166 (Dictionary at 102 levels refused), #1167 (mixed shape at
   exactly 100 levels returned exact) and #1168 (mixed shape at 103 levels
-  refused), #1169 (a Node parented to a Node the snippet retains, parent child
-  count 1) and #1170 (the next call still finds that one child), #1171 (scene
-  switch clean) and #1172 (switch with edit reports the change).
+  refused), #1169 (Vector2-ended shape at exactly 100 levels returned exact)
+  and #1170 (Vector2-ended shape at 101 levels refused), #1171
+  (packed-array-ended shape at exactly 100 levels returned exact) and #1172
+  (packed-array-ended shape at 101 levels refused), #1173 (Transform3D-ended
+  shape at exactly 100 levels returned exact) and #1174 (Transform3D-ended
+  shape at 101 levels refused), #1175 (typed-Array[int]-ended shape at exactly
+  100 levels returned exact) and #1176 (typed-Array[int]-ended shape at 101
+  levels refused), #1177 (chain of 49 typed Arrays returned at 99 levels) and
+  #1178 (chain of 50 typed Arrays refused at 101 levels), #1179 (a Node
+  parented to a Node the snippet retains, parent child count 1) and #1180 (the
+  next call still finds that one child), #1181 (scene switch clean) and #1182
+  (switch with edit reports the change).
   Not covered, with reason:
   - "request exceeds the maximum size" (>8 MiB without newline): reaching
     it needs an 8 MB write, and the reported byte count varies with TCP
@@ -855,7 +868,7 @@ NOTES
   isolated-editor probe that sends a real set-parent (and, for the earlier
   commands, connect-signal) request through the plugin and then triggers the
   editor's Undo/Redo through the safe route.
-  The baseline is only valid while the plugin's replies for these 1172 requests
+  The baseline is only valid while the plugin's replies for these 1182 requests
   are supposed to stay the same. A change that adds or alters a command's
   behavior on purpose needs a new baseline, recorded from the last trusted
   commit, and a fresh determinism check (record three times, compare byte for

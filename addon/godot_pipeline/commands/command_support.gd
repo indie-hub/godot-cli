@@ -253,6 +253,20 @@ static func node_is_inherited_from_base(scene_root: Node, node: Node) -> bool:
 	return false
 
 
+## Returns the exact refusal message for a structural edit of a node the edited
+## scene inherits from its base scene, or an empty string when the edit is not
+## such an edit. A command that renames, deletes or moves a node calls this at
+## the point it would otherwise refuse, after its own cheaper checks: the
+## refusal does not apply by default, so a new structural command must call it
+## the same way. `action` names the edit and appears in the message ("rename",
+## "deletion" or "move"). The scene root is the base instance itself and is
+## never refused, so renaming it stays accepted.
+static func inherited_edit_refusal(scene_root: Node, target: Node, node_path: String, action: String) -> String:
+	if target == scene_root or not node_is_inherited_from_base(scene_root, target):
+		return ""
+	return "node is inherited from the base scene and its %s would not be saved: %s" % [action, node_path]
+
+
 ## Returns the index of the node with the given packed path (".", "./Child")
 ## in `state`, or -1 when the path is not listed. Shared by `set_group`,
 ## `set_unique_name` and `node_is_inherited_from_base`, which all read a row of
