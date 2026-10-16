@@ -9,7 +9,7 @@ Godot Pipeline is a Rust CLI plus a GDScript EditorPlugin for stock Godot. An ag
 - Phase 2, Godot scene edits, is complete. `connect-signal`, `set-group`, `set-unique-name` and `instantiate-scene` shipped in 0.6.0.
 - `list-resources`, `inspect-resource`, `console`, `set-parent` and `eval` are built on this working tree. `CHANGELOG.md` lists them under `[Unreleased]`, so none is in a release yet.
 - The version in `Cargo.toml` is 0.6.0.
-- The replay baseline in `tools/replay/baseline.jsonl` holds 1182 rows.
+- The replay baseline in `tools/replay/baseline.jsonl` holds 1222 rows.
 - `cargo test --locked` passes: 30 passed, 0 failed, 0 ignored.
 - `set-property` accepts 17 scalar types and ten `Packed*Array` types, plus a typed `Array[T]` of those types. It rejects untyped arrays, object and resource references, `Dictionary`, `Callable`, `Signal` and `RID`.
 - The plugin assembles each request across editor ticks. It caps a request at 8 MiB (`MAX_REQUEST_BYTES` in `addon/godot_pipeline/editor_plugin.gd`) and drops an idle connection after 5 seconds (`REQUEST_IDLE_TIMEOUT_MSEC`).
@@ -82,7 +82,7 @@ Decisions of 2026-10-14 and 2026-10-15:
 | Is `keep_global_transform=false` reachable through the CLI? | Yes: `godot-cli call set-parent ... --keep-global-transform=false`. A boolean argument is written `--flag`, `--flag=true` or `--flag=false`. |
 | What does `keep_global_transform` preserve? (implemented behaviour, not a recorded decision of Bruno) | For a `Control` it preserves the global position only. A `Node2D` and a `Node3D` keep the full global transform. Every other node type ignores the flag. |
 | Which edits of a base-inherited node are refused? | `rename-node`, `delete-node` and `set-parent` refuse a structural edit of a node inherited from a base scene. The plugin packs the edited scene and walks every level of `SceneState.get_base_scene_state()`. Property, script, group, signal and new-child edits of an inherited node stay allowed as overrides. |
-| What does `eval` return as its value? | `eval` keeps the tagged `JSON.from_native` encoding as its only value. `completed` is false when the value cannot be encoded intact or is deeper than the limit. `errors` entries carry a type (`warning`, `error`, `script`, `shader`), and a warning leaves `completed` true with the value. |
+| What does `eval` return as its value? | `eval` keeps the tagged `JSON.from_native` encoding as its only encoded value, and carries `display` beside it: the same value written as text with `var_to_str`, so a reader does not decode the tagged form by eye. `display` is null when the run did not complete, and also when the readable text is over the 1 MiB display cap; in the cap case the value and every other field are returned, `completed` stays true, and one added `errors` entry of type `warning` names the display size (a `PackedByteArray` of 225000 bytes encodes to 900035 bytes and displays 1125015 bytes). `completed` is false when the value cannot be encoded intact or is deeper than the limit. `errors` entries carry a type (`warning`, `error`, `script`, `shader`), and a warning leaves `completed` true with the value. |
 | What is the `eval` depth limit? | `eval` has an explicit depth limit of 100 JSON levels, counted exactly: an untyped `Array` costs one level, a typed `Array` two, a `Dictionary` two, a tagged terminal value two, a `Callable`, an `RID` and a `Signal` one, and scalars none. Exactly 100 levels come back and 101 is refused. The real command line reads about 125 levels, so the margin is 25. |
 | Are `Callable`, `RID` and `Object` results usable values? | They are documented as not returned as values. A `Callable` round-trips to an empty invalid `Callable`. An `RID` round-trips to a fresh `RID(0)`. An `Object` gives value null. |
 | What does a scene-switching snippet guarantee? | A snippet that switches scenes is outside the dirty-marking guarantee. |
@@ -94,7 +94,6 @@ Decisions of 2026-10-14 and 2026-10-15:
 Queued follow-up tasks:
 
 - `harness-and-cost`: measure and trim the replay harness and the detector cost.
-- `eval-readable-value`: a readable field beside the tagged value.
 
 ## Rules every new command must keep
 

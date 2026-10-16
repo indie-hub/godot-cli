@@ -3,9 +3,12 @@ extends RefCounted
 
 const CommandSupport := preload("command_support.gd")
 
-## Largest encoded return value the reply carries. A bigger value is replaced
-## by an error that names its size, so a runaway snippet cannot inflate the
-## reply without bound (the code still ran; only its value is dropped).
+## Largest encoded return value the reply carries, and the largest readable
+## `display` text. A bigger value is replaced by an error that names its size,
+## so a runaway snippet cannot inflate the reply without bound (the code still
+## ran; the reply then carries no data, as before). A bigger display is dropped
+## alone: the reply stays ok with `display` null and one `errors` entry that
+## names its size, and every other field is unchanged.
 const MAX_VALUE_BYTES := 1048576
 
 ## Deepest tagged nesting the reply carries, counted in JSON levels: an untyped
@@ -86,10 +89,14 @@ static func interface() -> Dictionary:
 
 ## Compiles `code` as GDScript, instantiates it, and calls its `run` entry on
 ## the main thread. `run` receives the editor interface and the editor undo
-## manager. The reply reports the returned value as typed JSON, the captured
-## errors and printed output, whether the run returned normally, the edited
-## scene's fingerprint before and after (as `scene_changed`), the elapsed
-## milliseconds, and whether that elapsed time exceeded `timeout`.
+## manager. The reply reports the returned value as typed JSON, its readable
+## `display` text, the captured errors and printed output, whether the run
+## returned normally, the edited scene's fingerprint before and after (as
+## `scene_changed`), the elapsed milliseconds, and whether that elapsed time
+## exceeded `timeout`. `display` is the value written with `var_to_str`; it is
+## null when `completed` is false and when the readable text is over the display
+## cap, and in the latter case one warning entry names the size while the value
+## and the other fields are unchanged.
 ##
 ## This is the one command allowed to break rule 3 (a direct scene edit from
 ## the snippet creates no undo entry) and rule 6 (the snippet can hold the main
@@ -174,6 +181,7 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 	if too_deep:
 		errors.append({"file": "", "line": 0, "function": "eval", "message": "eval produced a value nested deeper than %d levels and it was not returned (the code ran)" % MAX_TAGGED_DEPTH, "type": "error"})
 	var completed: bool = run_completed and not encoding_failed and not too_deep
+	var display: Variant = null
 	if completed:
 		var value_size := JSON.stringify(value).to_utf8_buffer().size()
 		if value_size > MAX_VALUE_BYTES:
@@ -182,8 +190,20 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 				"eval produced a value larger than %d bytes (the code ran); the value is %d bytes and was not returned%s"
 				% [MAX_VALUE_BYTES, value_size, marked_text]
 			)
+		# The readable form is not always shorter than the tagged encoding (for
+		# example a packed numeric array writes it with ", " between its
+		# elements), so a value that fits the cap can still produce a display
+		# past it. That display alone is dropped: the value and the other fields
+		# are returned, and one warning entry names the display size.
+		var display_text := var_to_str(run_value)
+		var display_size := display_text.to_utf8_buffer().size()
+		if display_size > MAX_VALUE_BYTES:
+			errors.append({"file": "", "line": 0, "function": "eval", "message": "eval produced a display larger than %d bytes (the code ran); the display is %d bytes and was not returned" % [MAX_VALUE_BYTES, display_size], "type": "warning"})
+		else:
+			display = display_text
 	return CommandSupport.ok({
 		"value": value if completed else null,
+		"display": display,
 		"completed": completed,
 		"errors": errors,
 		"output": logger.output,

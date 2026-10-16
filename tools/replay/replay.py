@@ -18,7 +18,12 @@ measured `elapsed_msec` with `"<ELAPSED>"` and the anonymous `gdscript://-<id>.g
 source path with `<ANON>`, so stored rows are reproducible. Nothing else is
 normalised, sorted or rounded; reply text is stored verbatim otherwise. Every
 recorded eval reply body must parse as JSON, so an invalid reply fails the
-recording instead of being blessed into the baseline.
+recording instead of being blessed into the baseline. `check_eval_display`
+also requires every status-ok eval reply to carry `display` (a string, or null
+when the run did not complete or the display is over the cap), and it pairs
+every display row with a parse request that returns `str_to_var` of the display
+the reply carried and requires the parsed value to equal the value that row
+returned.
 
 Stdlib only. Never connects to 47821.
 """
@@ -2875,6 +2880,56 @@ def normalize_eval_reply(reply):
     return reply
 
 
+def check_eval_display(rows_eval):
+    # Every status-ok eval reply carries `display`: the readable form of the
+    # returned value as a string, or null when the run did not complete or the
+    # display is over the cap. A display row prints `rt:` and returns its value;
+    # after all display rows the session sends one parse request each, and each
+    # parse request returns str_to_var of the display text the matching reply
+    # actually carried. This pairs every display row with its parse reply and
+    # requires the parsed value to equal the value that row returned, so the
+    # check consumes the emitted display text itself rather than a text computed
+    # beside it.
+    display_values = []
+    parse_rows = []
+    for request, reply in rows_eval:
+        if '"command":"eval"' not in request:
+            continue
+        parsed = json.loads(reply)
+        if parsed.get("status") != "ok":
+            continue
+        data = parsed["data"]
+        if "display" not in data:
+            raise RuntimeError("eval ok reply carries no display: %s" % reply)
+        if data["completed"]:
+            if data["display"] is not None and not isinstance(data["display"], str):
+                raise RuntimeError("completed eval reply with a non-string, non-null display: %s" % reply)
+        elif data["display"] is not None:
+            raise RuntimeError("not-completed eval reply with a non-null display: %s" % reply)
+        code = json.loads(request).get("code")
+        if isinstance(code, str):
+            if 'print("rt:"' in code:
+                # A display row: it must carry its `rt:true` marker. The parse
+                # request appended after it is the proof that consumes the
+                # returned display. Invalid text parses to null, so a null value
+                # also requires its readable form to be the canonical `null`
+                # text, which str_to_var reads back to null.
+                if data["output"] != ["rt:true"]:
+                    raise RuntimeError("eval display row without its rt:true marker: %s" % reply)
+                if data["value"] is None and data["display"] != "null":
+                    raise RuntimeError("eval null display row emitted %r instead of null: %s" % (data["display"], reply))
+                display_values.append(data["value"])
+            elif "str_to_var(" in code:
+                parse_rows.append((request, data["value"]))
+    if len(display_values) != 19:
+        raise RuntimeError("expected 19 display rows, saw %d" % len(display_values))
+    if len(parse_rows) != len(display_values):
+        raise RuntimeError("expected %d parse rows, saw %d" % (len(display_values), len(parse_rows)))
+    for index, (request, value) in enumerate(parse_rows):
+        if value != display_values[index]:
+            raise RuntimeError("the returned display does not read back to the returned value: %s" % request)
+
+
 def build_eval():
     # Session Z: the eval command. Runs right after Y with no edited scene, so
     # scene_changed is always false and no request mutates stored state. The
@@ -2889,7 +2944,19 @@ def build_eval():
             req.update(extra)
         return ("line", json.dumps(req, separators=(",", ":")))
     h = "extends RefCounted\nfunc run(editor, undo_redo) -> Variant:\n\t"
-    return [
+
+    display_rows = []
+
+    def drow(setup, nan=False):
+        # `setup` declares v, the value the row returns. The snippet prints `rt:`
+        # plus whether str_to_var of var_to_str of v equals v. A parse request
+        # appended after the row reads back the display text the reply carries.
+        check = "is_nan(str_to_var(var_to_str(v)))" if nan else "str_to_var(var_to_str(v)) == v"
+        request = ev(h + "%s\n\tprint(\"rt:\" + str(%s))\n\treturn v" % (setup, check))
+        display_rows.append(request)
+        return request
+
+    rows = [
         ev(h + "return 42"),
         ev(h + "return 3.5"),
         ev(h + "return \"hi\""),
@@ -2970,11 +3037,49 @@ def build_eval():
         # the tree, so the retained parent keeps the child across two calls.
         ("line", json.dumps({"command": "eval", "project_path": "<PROJ>", "code": 'extends Node\nfunc run(editor, undo_redo):\n\tvar parent = Node.new()\n\tparent.name = "ReplayParent"\n\tparent.add_child(self)\n\teditor.get_base_control().set_meta("replay_parent", parent)\n\treturn parent.get_child_count()'}, separators=(",", ":"))),
         ev(h + 'var p = editor.get_base_control().get_meta("replay_parent", null)\n\treturn p.get_child_count() if p != null else -1'),
-        # Last, because they are the only rows of this session that open a
-        # scene: every row above runs with no edited scene.
+        # The only rows of this session that open a scene, so every row above
+        # runs with no edited scene.
         ev(h + 'editor.open_scene_from_path("res://main.tscn")\n\treturn null'),
         ev(h + 'editor.open_scene_from_path("res://main.tscn")\n\teditor.get_edited_scene_root().get_node("N2D").position = Vector2(7, 8)\n\treturn null'),
+        # The display rows. Each returns one value of a covered class and prints
+        # `rt:` plus whether str_to_var of its readable form equals the value it
+        # returned; a parse request appended after them reads back the display
+        # text each reply carries. A NaN row uses is_nan, because NaN is never
+        # equal to itself. They run after the two scene rows, with that scene
+        # still open and unchanged, so scene_changed is false.
+        drow("var v = 42"),
+        drow("var v = 3.5"),
+        drow("var v = NAN", nan=True),
+        drow("var v = INF"),
+        drow("var v = true"),
+        drow("var v = null"),
+        drow("var v = " + json.dumps('a"b')),
+        drow("var v = " + json.dumps("line1\nline2")),
+        drow("var v = " + json.dumps("héllo → 世界")),
+        drow('var v = &"sn_hello"'),
+        drow('var v = NodePath("a/b")'),
+        drow("var v = Vector2(1, 2)"),
+        drow("var v = Color(1, 0.5, 0.25, 1)"),
+        drow('var v = [1, "a", 2.5]'),
+        drow("var v: Array[int] = [1, 2]"),
+        drow('var v = {"k": 1, "v": 2}'),
+        drow('var v = {"k": 1}\n\tfor i in range(49):\n\t\tv = {"k": v}'),
+        drow("var v = PackedByteArray([1, 2, 3])"),
+        drow('push_warning("replay display warning")\n\tvar v = 42'),
+        # A run that does not complete carries display null, exactly as value.
+        ev(h + "var n = null\n\treturn n.property"),
+        # A value that fits the encoded cap but whose readable form does not: a
+        # PackedByteArray of 225000 bytes encodes to 900035 bytes, inside the
+        # 1048576-byte cap, but var_to_str writes it with ", " between elements,
+        # 1125015 bytes, past the cap. The display alone is dropped and one
+        # warning entry names its size; the value and the other fields return.
+        ev(h + "var p = PackedByteArray()\n\tp.resize(225000)\n\tp.fill(255)\n\treturn p"),
     ]
+    # One parse request per display row, appended at the end: each returns
+    # str_to_var of the display text the reply at that row actually carried.
+    for request in display_rows:
+        rows.append(("eval_parse", str(rows.index(request))))
+    return rows
 
 
 def send_one(port, text, newline, timeout):
@@ -3081,8 +3186,17 @@ def run_session(port, proj, scene, requests, expected_scene, ready_filesystem=Fa
                     raise RuntimeError("did not expect %r in %s" % (needle, rel))
                 rows.append(("CHECK %s %s" % (kind, text), "ok"))
                 continue
-            wire = text.replace("<PROJ>", proj)
-            reply = send_one(port, wire, kind == "line", 25)
+            if kind == "eval_parse":
+                display = json.loads(rows[int(text)][1])["data"]["display"]
+                code = ("extends RefCounted\nfunc run(editor, undo_redo) -> Variant:\n\t"
+                        "return str_to_var(%s)" % json.dumps(display))
+                wire = json.dumps({"command": "eval", "project_path": proj, "code": code},
+                                  separators=(",", ":"))
+                newline = True
+            else:
+                wire = text.replace("<PROJ>", proj)
+                newline = kind == "line"
+            reply = send_one(port, wire, newline, 25)
             if '"command":"eval"' in wire:
                 reply = normalize_eval_reply(reply)
                 json.loads(reply)
@@ -3311,6 +3425,7 @@ def main():
         with open(os.path.join(proj, "eval_bad_preload.gd"), "w") as f:
             f.write(EVAL_BAD_PRELOAD_GD)
         rows_eval = run_session(a.port, proj, None, build_eval(), None)
+        check_eval_display(rows_eval)
         rows_c = run_session(a.port, proj, None, build_c(), None)
         rows_b = run_session(a.port, proj, "res://main.tscn", build_b(), "res://main.tscn")
         rows_d = run_session(a.port, proj, "res://connect.tscn", build_d(), "res://connect.tscn")

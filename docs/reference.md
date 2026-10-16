@@ -649,8 +649,8 @@ corrupt, an empty, or a text-scene-named-`.res` file) replies
 
 `eval` compiles a submitted GDScript source, instantiates it, and calls its
 `run` entry on the main thread of the live editor, then reports the returned
-value, the captured errors and printed output, and whether the edited scene
-changed. `code` is a complete GDScript source (with or without `@tool`) that
+value, its readable text, the captured errors and printed output, and whether
+the edited scene changed. `code` is a complete GDScript source (with or without `@tool`) that
 defines `func run(editor: EditorInterface, undo_redo: EditorUndoRedoManager) ->
 Variant`; the plugin builds a `GDScript`, sets `source_code`, reloads it,
 creates an instance, and calls `run`, passing the editor interface and the
@@ -674,7 +674,7 @@ A snippet that edits through `undo_redo` (`create_action`, `add_do_property`,
 undoes and redoes; a direct property set produces none. `eval` never saves the
 scene and never refuses a caller.
 
-The reply is `{"status":"ok","data":{"value":...,"completed":...,"errors":[...],"output":[...],"scene_changed":...,"elapsed_msec":...,"timeout_exceeded":...}}`.
+The reply is `{"status":"ok","data":{"value":...,"display":...,"completed":...,"errors":[...],"output":[...],"scene_changed":...,"elapsed_msec":...,"timeout_exceeded":...}}`.
 `elapsed_msec` is the measured wall-clock duration of the compile and the call.
 `timeout_exceeded` is true when `elapsed_msec` is greater than `timeout` (equal
 is not enough); the call is never interrupted, so a snippet that blocks past the
@@ -693,11 +693,31 @@ initializer that fails, a `_static_init` that calls `push_error`, and a
 preloaded `@tool` script that raises while loading each set `completed` false
 with `value` null.
 
+`display` is the returned value written as text with the engine's `var_to_str`,
+beside the unchanged tagged `value`, so a reader does not decode the tagged form
+by eye. It is the text `str_to_var` reads back, so a client can recover the value
+from `display` when its type round-trips. It is a string when the run completed,
+and `null` when the run did not complete or when the readable text was over the
+display cap. So `completed` true with `display` null means the value came back
+but its readable text was too large and was dropped; the key itself is present in
+every `status` ok reply. For example, a snippet returning `Vector2(1, 2)` replies
+with `"value":{"args":[1.0,2.0],"type":"Vector2"}` and
+`"display":"Vector2(1, 2)"`; a snippet returning `PackedByteArray([1, 2, 3])`
+replies with `"display":"PackedByteArray(1, 2, 3)"`; and a snippet returning
+`{"k": 1}` replies with `"display":"{\n\"k\": 1\n}"`, because `var_to_str` puts a
+newline before and after a `Dictionary`. The text is exactly what `var_to_str`
+writes, so a `StringName` shows as `&"name"` and a `NodePath` as
+`NodePath("a/b")`. A client that needs the typed value should keep decoding
+`value`; `display` is for a person or an agent that reads the result. Two
+`var_to_str` properties are worth knowing and are not properties of the encoding:
+a non-empty `Callable` or a `Signal` completes with `display` `Callable()` or
+`Signal()`, which loses its target identity, and an `RID` displays as `RID(id)`.
+
 ### What the logger can and cannot capture
 
 A `Logger` is installed with `OS.add_logger` just before the call and removed
 right after the returned value is encoded, on every path: success, a runtime
-error, a compile error, an early return and an oversized value. A second call
+error, a compile error, an early return and an oversized value or display. A second call
 therefore never sees the first call's messages. The same logger produces both
 `output` and `errors`, and that has consequences worth knowing:
 
@@ -799,6 +819,21 @@ error that names the size and says the code ran. That error reply carries no
 `data`. The message claims the scene is marked unsaved only when the plugin
 actually called `mark_scene_as_unsaved` in that request; a mere scene switch
 never marks.
+
+`display` has the same 1 MiB cap as `value`, because the readable text is not
+always shorter than the tagged encoding. For example, `var_to_str` writes a
+packed numeric array with `", "` between its elements while the encoding writes
+`,` between them; a `NodePath` is longer by a fixed few bytes; and an untyped
+`Array` of booleans also grows (measured: 180000 `true` elements encode to 900001
+bytes and display 1080000 bytes). When the encoded value fits the cap and only
+`display` is over it, the value and every other field are returned and only
+`display` is dropped: `display` is null, `completed` stays true, and exactly one
+`errors` entry is added with type `warning` and a message that names the display
+size. For example, a `PackedByteArray` of 225000 bytes encodes to 900035 bytes
+and displays 1125015 bytes, so that reply keeps the value, sets `display` null,
+and adds `eval produced a display larger than 1048576 bytes (the code ran); the
+display is 1125015 bytes and was not returned`. A value over the cap is still a
+`status` error with no `data`, exactly as before.
 
 `scene_changed` compares a fingerprint of the edited scene tree taken before and
 after the call, built from each node's path, class, owner, script, groups,
