@@ -234,7 +234,7 @@ Four of them are covered by a built command. `delete_gameobject` is covered by `
 
 ### The order of work
 
-The order of work is not decided. This plan states no sequence and no priority. Use `docs/unity-parity.md` to read one command at a time.
+A proposed sequence is in [Phase 4: complete a playable authoring workflow](docs/phase-4.md). It prioritises resources, script attachment, play/stop and observation, then scene creation and selected settings. It does not override this plan's command rules or deferred external-write boundary. Use `docs/unity-parity.md` to read one command at a time.
 
 ## Godot-only capabilities
 
