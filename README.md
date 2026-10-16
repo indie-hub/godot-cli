@@ -116,7 +116,7 @@ Every edit command except `save-scene` goes through the editor's undo and redo s
 
 ## Status
 
-Godot Pipeline is a prototype. The current version is 0.6.0. It is not ready for distribution. The read and navigate commands and the scene edit commands are complete.
+Godot Pipeline is a prototype. The current version is 0.7.0. It is not ready for distribution. The read and navigate commands and the scene edit commands are complete.
 
 ## More
 

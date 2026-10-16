@@ -7,8 +7,8 @@ Godot Pipeline is a Rust CLI plus a GDScript EditorPlugin for stock Godot. An ag
 - The command table in `README.md` holds 20 commands. The plugin publishes their names and arguments, and `godot-cli` dispatches them from that interface.
 - Phase 1, read and navigate, is complete. `inspect-node`, `query-nodes`, `open-scene` and `inspect-class` shipped in 0.5.0.
 - Phase 2, Godot scene edits, is complete. `connect-signal`, `set-group`, `set-unique-name` and `instantiate-scene` shipped in 0.6.0.
-- `list-resources`, `inspect-resource`, `console`, `set-parent` and `eval` are built on this working tree. `CHANGELOG.md` lists them under `[Unreleased]`, so none is in a release yet.
-- The version in `Cargo.toml` is 0.6.0.
+- `list-resources`, `inspect-resource`, `console`, `set-parent` and `eval` shipped in 0.7.0.
+- The version in `Cargo.toml` is 0.7.0.
 - The replay baseline in `tools/replay/baseline.jsonl` holds 1222 rows.
 - `cargo test --locked` passes: 30 passed, 0 failed, 0 ignored.
 - `set-property` accepts 17 scalar types and ten `Packed*Array` types, plus a typed `Array[T]` of those types. It rejects untyped arrays, object and resource references, `Dictionary`, `Callable`, `Signal` and `RID`.
