@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-16
+
 ### Added
 
 - `console` command to show the editor log messages a `Logger` registered with `OS.add_logger` captured since the plugin loaded, without changing the scene and without requiring an edited scene. `--tail` (default 100, max 1000) keeps only the last N matching messages, `--level` (default `all`) keeps one of `info`, `warning`, `error`, `script` or `shader`, `--since` (default 0) keeps messages with a sequence number greater than that cursor, and `--clear` empties the buffer after the reply is built. Each message carries `seq` (ascending from 1, never restarted), `level`, `text` and `truncated`; the reply carries `messages`, `count`, `dropped` (messages evicted from the full buffer) and `next_since` (the cursor for the next call). The buffer holds at most 1000 messages; each text is cut to at most 4096 bytes of valid UTF-8 with `truncated` true, and ASCII control characters are dropped so the reply stays valid JSON. `print` maps to `info`, `printerr` and `push_error` to `error`, `push_warning` to `warning`, a GDScript runtime error to `script`, and a shader compile error to `shader`. The logger callbacks can arrive from any thread, so the buffer is protected by a `Mutex`; the logger is registered when the plugin loads and removed with `OS.remove_logger` when it unloads. Not covered: messages logged before the plugin loaded, the editor Output panel history, and the output of the running game. The request is rejected before anything is read or cleared when the project path does not match, when an argument is missing or mistyped, or when the level is unknown.
