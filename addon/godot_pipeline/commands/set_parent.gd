@@ -121,10 +121,10 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 	# not the edited scene overrides it: its owner is the edited scene root, so
 	# the checks above let it through, and moving it writes a local copy beside
 	# the inherited node, so a save and a fresh reload show the subtree twice.
-	if CommandSupport.node_is_inherited_from_base(scene_root, target):
-		return CommandSupport.error(
-			"node is inherited from the base scene and its move would not be saved: %s" % node_path
-		)
+	# The shared helper builds the refusal.
+	var refusal := CommandSupport.inherited_edit_refusal(scene_root, target, node_path, "move")
+	if refusal != "":
+		return CommandSupport.error(refusal)
 
 	if new_parent == target or target.is_ancestor_of(new_parent):
 		return CommandSupport.error("the new parent is inside the moved node's own subtree: %s" % new_parent_path)

@@ -453,11 +453,14 @@ the derived scene owns itself stays movable even when it sits under an inherited
 parent, and its move survives a save and a fresh reload.
 
 The base-scene check is one shared helper
-(`CommandSupport.node_is_inherited_from_base`), and `rename_node` and
-`delete_node` call the same helper, so a node inherited from the base scene is
-refused as a structural edit by all three commands. Reading the base chain costs
-one `PackedScene.pack` of the edited scene followed by a walk over every level
-of the base-state chain. Measured in real Godot 4.7.2 headless editors with 300
+(`CommandSupport.inherited_edit_refusal`). Each structural command calls it
+after its own checks, at the point it would otherwise refuse, and passes its
+action verb (`rename`, `deletion` or `move`); the helper builds the refusal and
+is not applied by default, so a new structural command must call it the same
+way. `rename_node`, `delete_node` and `set_parent` all get the refusal this way.
+Reading the base chain costs one `PackedScene.pack` of the edited scene followed
+by a walk over every level of the base-state chain. Measured in real Godot 4.7.2
+headless editors with 300
 calls per case: a 201-node `Node2D` scene with no base scene costs about 1.7 ms
 (the detector 1.653 to 1.698 ms; the full rename and delete handlers 1.684 to
 1.712 ms); a 201-node scene whose nodes come from a base scene costs about
