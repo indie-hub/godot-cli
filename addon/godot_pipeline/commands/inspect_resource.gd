@@ -2,7 +2,6 @@
 extends RefCounted
 
 const CommandSupport := preload("command_support.gd")
-const ValueCodec := preload("../value_codec.gd")
 
 
 ## Reads one resource file as a typed view without changing the scene, the
@@ -81,7 +80,7 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 	return CommandSupport.ok({
 		"path": resource_path,
 		"type": loaded.get_class(),
-		"properties": _properties(loaded, 0, {}),
+		"properties": CommandSupport.encode_properties(loaded, 0, {}),
 	})
 
 
@@ -211,11 +210,8 @@ static func _tool_script_dependency(path: String) -> String:
 	return ""
 
 
-## Resolves an `extends` match to a script path. A quoted base is a path,
-## resolved through `_literal_path` (res://, relative, or uid://); a bare
-## class name is looked up in the project's global class list, whose entries
-## carry the `class` name and the script `path`. An empty result means a
-## built-in class or an unknown uid (no script to walk).
+## Returns the base a script `extends` resolves to, empty when it is a built-in
+## class or an unknown uid.
 static func _resolve_extended_path(match: RegExMatch, dir: String) -> String:
 	var base := match.get_string(1)
 	if base == "":
@@ -227,74 +223,3 @@ static func _resolve_extended_path(match: RegExMatch, dir: String) -> String:
 				return global_class.get("path")
 		return ""
 	return _literal_path(base, dir)
-
-
-## The property entries of `resource` exactly as `inspect_node` builds them
-## (inspector or storage usage only), with the object-valued encoding of this
-## command. `depth` is the current embedded sub-resource expansion depth; at
-## depth 3 an embedded sub-resource is shown as `{"path","type"}` without
-## expanding it. `seen` holds the `file::id` values already expanded in this
-## reply, so a sub-resource cycle cannot recurse forever.
-static func _properties(resource: Resource, depth: int, seen: Dictionary) -> Array:
-	var properties: Array = []
-	for info in resource.get_property_list():
-		var usage: int = info["usage"]
-		if usage & (PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_STORAGE) == 0:
-			continue
-		var entry := {
-			"name": info["name"],
-			"type": type_string(info["type"]),
-			"read_only": usage & PROPERTY_USAGE_READ_ONLY != 0,
-		}
-		var property_value: Variant = resource.get(info["name"])
-		var encoded: Variant = _encode_value(property_value, depth, seen)
-		# The shared codec returns null for types set-property cannot address
-		# (Object beyond Resource, Dictionary, untyped Array, Callable, Signal,
-		# ...) and for a genuinely null property; only the former is marked
-		# unsupported, because a null property value is a valid value.
-		if encoded == null and property_value != null:
-			entry["value"] = null
-			entry["supported"] = false
-		else:
-			entry["value"] = encoded
-		properties.append(entry)
-	return properties
-
-
-## Encodes one property value for the reply: arrays over 10,000 elements are
-## replaced by `{"type","size","truncated":true}`; an embedded sub-resource is
-## expanded inline (depth-capped and loop-guarded); an external resource
-## reference becomes `{"path","type"}`; everything else uses the shared value
-## codec, which returns null for the types `set-property` cannot address
-## (Object besides Resource, Dictionary, untyped Array, Callable, Signal, ...)
-## and for a null property value.
-static func _encode_value(value: Variant, depth: int, seen: Dictionary) -> Variant:
-	if value == null:
-		return null
-	if typeof(value) == TYPE_ARRAY or typeof(value) in [
-		TYPE_PACKED_BYTE_ARRAY, TYPE_PACKED_INT32_ARRAY, TYPE_PACKED_INT64_ARRAY,
-		TYPE_PACKED_FLOAT32_ARRAY, TYPE_PACKED_FLOAT64_ARRAY, TYPE_PACKED_STRING_ARRAY,
-		TYPE_PACKED_VECTOR2_ARRAY, TYPE_PACKED_VECTOR3_ARRAY, TYPE_PACKED_VECTOR4_ARRAY,
-		TYPE_PACKED_COLOR_ARRAY,
-	]:
-		if value.size() > 10000:
-			return {
-				"type": type_string(typeof(value)),
-				"size": value.size(),
-				"truncated": true,
-			}
-	if typeof(value) == TYPE_OBJECT and value is Resource:
-		var resource: Resource = value
-		var resource_path: String = resource.resource_path
-		if resource_path.contains("::"):
-			if depth >= 3 or seen.has(resource_path):
-				return {"path": resource_path, "type": resource.get_class()}
-			var next_seen := seen.duplicate()
-			next_seen[resource_path] = true
-			return {
-				"path": resource_path,
-				"type": resource.get_class(),
-				"properties": _properties(resource, depth + 1, next_seen),
-			}
-		return {"path": resource_path, "type": resource.get_class()}
-	return ValueCodec.value_to_json(value)

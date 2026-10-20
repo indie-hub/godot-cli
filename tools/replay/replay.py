@@ -35,10 +35,12 @@ import os
 import re
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
 import time
+import zlib
 
 GODOT = os.environ.get("GODOT", "godot")
 PORT_LINE = "const PORT := 47821"
@@ -3207,13 +3209,257 @@ def run_session(port, proj, scene, requests, expected_scene, ready_filesystem=Fa
         stop(proc)
 
 
+# A minimal valid 2x2 RGBA PNG (a solid red square), built so the bytes are
+# exact and need no external file.
+def _png_chunk(tag, data):
+    return (struct.pack(">I", len(data)) + tag + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+
+def _make_png(width=2, height=2):
+    raw = b""
+    for _ in range(height):
+        raw += b"\x00" + bytes([255, 0, 0, 255] * width)
+    sig = b"\x89PNG\r\n\x1a\n"
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    return sig + _png_chunk(b"IHDR", ihdr) + _png_chunk(b"IDAT", zlib.compress(raw, 9)) + _png_chunk(b"IEND", b"")
+
+
+RS_EXPORT_GD = """@tool
+extends Node2D
+@export var target_node: Node
+"""
+
+RS_SHAPE_TRES = """[gd_resource type="RectangleShape2D" format=3]
+
+[resource]
+size = Vector2(10, 20)
+"""
+
+RS_MAT_TRES = """[gd_resource type="CanvasItemMaterial" format=3]
+
+[resource]
+blend_mode = 1
+"""
+
+RS_MAIN_TSCN = """[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://rs_export.gd" id="1"]
+[ext_resource type="RectangleShape2D" path="res://rs_shape.tres" id="2"]
+
+[node name="Main" type="Node2D"]
+
+[node name="Spr" type="Sprite2D" parent="."]
+
+[node name="Col" type="CollisionShape2D" parent="."]
+
+[node name="Mesh" type="MeshInstance3D" parent="."]
+
+[node name="SprM" type="Sprite2D" parent="."]
+
+[node name="ShapeA" type="CollisionShape2D" parent="."]
+shape = ExtResource("2")
+
+[node name="ShapeB" type="CollisionShape2D" parent="."]
+shape = ExtResource("2")
+
+[node name="Hold" type="Node2D" parent="."]
+script = ExtResource("1")
+"""
+
+RS_BASE_TSCN = """[gd_scene format=3]
+
+[node name="RBase" type="Node2D"]
+
+[node name="BaseSpr" type="Sprite2D" parent="."]
+"""
+
+RS_DERIVED_TSCN = """[gd_scene load_steps=2 format=3]
+
+[ext_resource type="PackedScene" path="res://rs_base.tscn" id="1"]
+
+[node name="RBase" instance=ExtResource("1")]
+"""
+
+RS_SUB_TSCN = """[gd_scene format=3]
+
+[node name="RSub" type="Node2D"]
+
+[node name="SubSpr" type="Sprite2D" parent="."]
+"""
+
+RS_INST_TSCN = """[gd_scene load_steps=2 format=3]
+
+[ext_resource type="PackedScene" path="res://rs_sub.tscn" id="1"]
+
+[node name="RRoot" type="Node2D"]
+
+[node name="Inst" parent="." instance=ExtResource("1")]
+"""
+
+
+def write_rs_fixtures(proj):
+    # Written only after every existing session, so session W's resource listing
+    # never names these files and rows 1-1222 stay byte-identical. The PNG is a
+    # new imported asset: the first editor launch that scans it imports it, the
+    # same way a freshly added texture is imported.
+    with open(os.path.join(proj, "rs_tex.png"), "wb") as f:
+        f.write(_make_png())
+    # A plain-text file in the project so the non-resource-path rejection names
+    # an existing file, not a missing one. Written here (after every earlier
+    # session) so session W's listing never names it.
+    with open(os.path.join(proj, "ordinary.txt"), "w") as f:
+        f.write("gp-073 ordinary.txt: plain text, not a Resource.\n")
+    for name, text in [
+        ("rs_export.gd", RS_EXPORT_GD),
+        ("rs_shape.tres", RS_SHAPE_TRES),
+        ("rs_mat.tres", RS_MAT_TRES),
+        ("rs_main.tscn", RS_MAIN_TSCN),
+        ("rs_base.tscn", RS_BASE_TSCN),
+        ("rs_derived.tscn", RS_DERIVED_TSCN),
+        ("rs_sub.tscn", RS_SUB_TSCN),
+        ("rs_inst.tscn", RS_INST_TSCN),
+    ]:
+        with open(os.path.join(proj, name), "w") as f:
+            f.write(text)
+
+
+def rset(node, prop, value_json):
+    # A set_property whose value is written as a literal JSON fragment, so an
+    # embedded object and a plain res:// string are both sent exactly.
+    return ("line", '{"command":"set_property","node_path":"%s","property":"%s","value":%s,"project_path":"<PROJ>"}'
+            % (node, prop, value_json))
+
+
+def build_rs():
+    # Session RS: resource assignment on rs_main.tscn. Accepted external and
+    # embedded assignments run first, each followed by an inspect read; every
+    # rejection is bracketed by identical scene_tree snapshots, and the file hash
+    # is unchanged until the explicit save_scene at the end.
+    out = [
+        ("line", '{"command":"status"}'),
+        ("file_sha256", "rs_main.tscn"),
+        ("line", '{"command":"scene_tree"}'),
+    ]
+    # Accepted: an external texture, an external shape, an external material
+    # (both allow-list entries), and an embedded shape configured before assign.
+    out.append(rset("Spr", "texture", '"res://rs_tex.png"'))
+    out.append(ins("Spr"))
+    out.append(("line", '{"command":"inspect_resource","resource_path":"res://rs_tex.png","project_path":"<PROJ>"}'))
+    out.append(rset("Col", "shape", '"res://rs_shape.tres"'))
+    out.append(rset("SprM", "material", '"res://rs_mat.tres"'))
+    out.append(rset("ShapeA", "shape", '{"class":"RectangleShape2D","properties":{"size":[30,40]}}'))
+    out.append(ins("ShapeA"))
+    out.append(ins("ShapeB"))
+    # An `inspect-node` of `.` taken before the rejection block records the
+    # `script` entry on the scene root (still `value: null, supported: false`).
+    out.append(ins("."))
+    # The non-resource-path rejection names res://ordinary.txt; prove the
+    # fixture is on disk before the request runs (the file is written by
+    # write_rs_fixtures in this session's staging, so any earlier session's
+    # rows never see it).
+    out.append(("file_contains", 'ordinary.txt|gp-073 ordinary.txt: plain text, not a Resource.'))
+    rejections = [
+        rset("Spr", "texture", '"res://rs_missing.png"'),
+        rset("Spr", "texture", '"res://rs_shape.tres"'),
+        rset("Spr", "texture", '"notres://x"'),
+        rset("Spr", "texture", '"res://ordinary.txt"'),
+        rset("Col", "shape", '{"class":"NoSuchClass"}'),
+        rset("Col", "shape", '{"class":"Shape2D"}'),
+        rset("Col", "shape", '{"class":"Node2D"}'),
+        rset("SprM", "material", '{"class":"StandardMaterial3D"}'),
+        rset("Col", "shape", '{"class":"RectangleShape2D","bogus":1}'),
+        rset("Col", "shape", '{"properties":{}}'),
+        rset("Col", "shape", '{"class":5}'),
+        rset("Col", "shape", '{"class":"RectangleShape2D","properties":5}'),
+        rset("Col", "shape", '{"class":"RectangleShape2D","properties":{"nosuch":1}}'),
+        rset("Col", "shape", '{"class":"RectangleShape2D","properties":{"resource_local_to_scene":true}}'),
+        rset("Col", "shape", '{"class":"RectangleShape2D","properties":{"size":"nope"}}'),
+        rset("Mesh", "material_override", '{"class":"StandardMaterial3D","properties":{"albedo_texture":"res://rs_tex.png"}}'),
+        rset("Hold", "target_node", '"res://rs_tex.png"'),
+        rset("Spr", "texture", "null"),
+        rset("Spr", "texture", "42"),
+        # Script attachment bypasses (F1): the node's own `script` property is
+        # an Object property with PROPERTY_HINT_RESOURCE_TYPE, but script
+        # attachment belongs to the planned `attach-script` command. The three
+        # value shapes (a plain res:// path string, a syntax-error path, and an
+        # embedded GDScript) all keep today's exact Object refusal and leave
+        # `get_script()` unchanged.
+        rset(".", "script", '"res://rs_export.gd"'),
+        rset(".", "script", '"res://rs_missing.gd"'),
+        rset(".", "script", '{"class":"GDScript"}'),
+    ]
+    for request in rejections:
+        out.append(("line", '{"command":"scene_tree"}'))
+        out.append(request)
+        out.append(("line", '{"command":"scene_tree"}'))
+    # (No additional file check needed for ordinary.txt; the existence check
+    # above runs before the rejection loop.)
+    # The three script rejections must leave `get_script()` unchanged. The
+    # mirror `inspect-node` rows here (taken after the rejection block ran)
+    # must equal the `ins(".")` taken before: the `script` entry on `.`
+    # stays `value: null, supported: false`. Hold.script is also encoded as
+    # unsupported null; script identity is checked by the separate direct
+    # get_script() probe.
+    out.append(ins("."))
+    out.append(ins("Hold"))
+    # No implicit save yet: the file is unchanged and holds no texture/shape rows.
+    out.append(("file_sha256", "rs_main.tscn"))
+    out.append(("file_not_contains", 'rs_main.tscn|texture = '))
+    out.append(("file_not_contains", 'rs_main.tscn|SubResource('))
+    out.append(("line", '{"command":"save_scene","project_path":"<PROJ>"}'))
+    out.append(("file_contains", 'rs_main.tscn|texture = ExtResource('))
+    out.append(("file_contains", 'rs_main.tscn|shape = SubResource('))
+    out.append(("file_contains", 'rs_main.tscn|material = ExtResource('))
+    return out
+
+
+def build_ru():
+    # Session RU: a fresh editor on the rs_main.tscn that session RS saved. The
+    # assigned texture, the embedded shape and material, and the still-shared
+    # external shape must all survive the reload, and an untouched Object
+    # property stays null.
+    return [
+        ("line", '{"command":"status"}'),
+        ins("Spr"),
+        ins("ShapeA"),
+        ins("SprM"),
+        ins("ShapeB"),
+        ("file_contains", 'rs_main.tscn|texture = ExtResource('),
+    ]
+
+
+def build_rd():
+    # Session RD: assign a resource to a node inherited from a base scene. The
+    # assignment is accepted and the derived scene saves an override row.
+    return [
+        ("line", '{"command":"status"}'),
+        ("line", '{"command":"scene_tree"}'),
+        rset("BaseSpr", "texture", '"res://rs_tex.png"'),
+        ("line", '{"command":"save_scene","project_path":"<PROJ>"}'),
+        ("file_contains", 'rs_derived.tscn|name="BaseSpr" parent="." index="0"'),
+        ("file_contains", 'rs_derived.tscn|texture = ExtResource('),
+    ]
+
+
+def build_ri():
+    # Session RI: assign a resource to a node inside an instanced sub-scene
+    # without Editable Children. The existing instance guard answers before any
+    # resource is loaded; the instance root itself still accepts a change.
+    return [
+        ("line", '{"command":"status"}'),
+        rset("Inst/SubSpr", "texture", '"res://rs_tex.png"'),
+        rset("Inst", "position", "[1,2]"),
+    ]
+
+
 # The order rows are stored in, which is not the order the sessions run in.
 # Each session writes its rows at its own place here, so a session that
 # --sessions left out leaves a gap instead of shifting the rows after it.
 SESSION_ORDER = ("A", "B", "C", "E", "D", "F", "G", "H", "I", "J", "K", "L",
                  "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y",
                  "CONSOLE", "Z", "AA", "AB", "AC", "AD", "AE", "AF", "AG",
-                 "AH", "AI", "AJ", "AK", "EVAL")
+                 "AH", "AI", "AJ", "AK", "EVAL", "RS", "RU", "RD", "RI")
 
 # The request list of each session, in storage order. A session records exactly
 # one row per request, so the length of these lists is the stored row layout.
@@ -3231,7 +3477,8 @@ SESSION_REQUESTS = (
     ("AB", build_ab()), ("AC", build_ac()), ("AD", build_ad()),
     ("AE", build_ae()), ("AF", build_af()), ("AG", build_ag()),
     ("AH", build_ah()), ("AI", build_ai()), ("AJ", build_aj()),
-    ("AK", build_ak()), ("EVAL", build_eval()),
+    ("AK", build_ak()), ("EVAL", build_eval()), ("RS", build_rs()),
+    ("RU", build_ru()), ("RD", build_rd()), ("RI", build_ri()),
 )
 
 
@@ -3249,11 +3496,12 @@ def stored_layout():
 
 
 # Measured by replaying each of these together with the session it reads state
-# from and comparing the result against the baseline: these twelve sessions do
-# not reproduce on their own, because their rows read nodes, saved files or a
-# message counter that an earlier session left behind. The sessions named here
-# are replayed first. A session that reproduces alone is not listed. None of
-# the listed prerequisites needs one of its own, so one level is enough.
+# from and comparing the result against the baseline: these thirteen sessions
+# do not reproduce on their own, because their rows read nodes, saved files or
+# a message counter that an earlier session left behind. The sessions named
+# here are replayed first. A session that reproduces alone is not listed.
+# None of the listed prerequisites needs one of its own, so one level is
+# enough.
 SESSION_PREREQUISITES = {
     "AA": ("Z",),
     "AC": ("AB",),
@@ -3265,6 +3513,7 @@ SESSION_PREREQUISITES = {
     "L": ("K",),
     "O": ("N",),
     "Q": ("P",),
+    "RU": ("RS",),
     "S": ("R",),
     "V": ("U",),
 }
@@ -3591,6 +3840,16 @@ def main():
         play("AI", "res://ib_rename.tscn", build_ai(), "res://ib_rename.tscn")
         play("AJ", "res://ib_delete.tscn", build_aj(), "res://ib_delete.tscn")
         play("AK", "res://ib_rename.tscn", build_ak(), "res://ib_rename.tscn")
+        # The resource-assignment sessions run after every existing session, so
+        # their fixtures are written here and their rows are appended at the end
+        # of the baseline. RS saves rs_main.tscn; RU reloads it; RD and RI
+        # touch the derived and instanced scenes (independent of RS, but run
+        # after it so the editor's startup scan is known to have run).
+        write_rs_fixtures(proj)
+        play("RS", "res://rs_main.tscn", build_rs(), "res://rs_main.tscn")
+        play("RU", "res://rs_main.tscn", build_ru(), "res://rs_main.tscn")
+        play("RD", "res://rs_derived.tscn", build_rd(), "res://rs_derived.tscn")
+        play("RI", "res://rs_inst.tscn", build_ri(), "res://rs_inst.tscn")
         rows = [row for name in SESSION_ORDER for row in blocks[name]]
         with open(a.out, "w") as f:
             for req, rep in rows:

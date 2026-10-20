@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `set-property` now assigns a Resource to an Object property that declares a resource type (`PROPERTY_HINT_RESOURCE_TYPE`) in one Undo/Redo step. A plain `res://` path string loads the resource and checks it against the property's declared allow-list (the `hint_string` as a comma list; a subclass of an entry passes). An embedded object `{"class": "...", "properties": {...}}` builds a new instance, coerces each named property with the shared value codec and assigns the configured instance; configure first, then assign, so the whole change is still one Undo/Redo step. Loading a resource whose script carries `@tool` runs that script's `_init` in the editor, as any Godot load does. The full set of error messages is documented in `docs/reference.md` next to the new value forms; every refusal runs before the undo action, so a rejected request leaves the scene, the dirty flag and the undo history untouched. `resource_local_to_scene` is intentionally not exposed through `set-property` (the design only owns the values it can name): an embedded property entry with that name is refused with a specific message before any assignment.
+
+### Fixed
+
+- `set-property` no longer attaches a script through the resource branch. The node's own `script` property is an Object property with `PROPERTY_HINT_RESOURCE_TYPE`, so the new branch could be reached with a plain `res://` path string, a syntax-error path, or an embedded `{"class":"GDScript"}` object and the three replies returned `ok`. Script attachment belongs to the planned `attach-script` command (parse check, base-class check, `--replace` rule), so `set-property` now refuses those three value shapes on the `script` property with the existing `cannot set script (Object): property type Object is not supported by set_property` text, leaves `get_script()` unchanged, and the three refusals are bracketed by identical scene-tree snapshots in the replay baseline.
+- `inspect-node` now expands an embedded sub-resource even before the edited scene is saved. The shared encoder used by `inspect-node` and `inspect-resource` previously expanded only resources whose `resource_path` contained `::` (a saved `SubResource`); a freshly built unsaved embedded shape has an empty `resource_path`, so the reply was `{"path":"","type":"RectangleShape2D"}` without its properties. The encoder now also matches the empty path and reuses the depth limit and cycle safeguards (the cycle key falls back to `instance_id` when the path is empty so a chain of unsaved embedded resources still stops at the depth limit and a self-loop stops the first time it would recurse).
+
+### Changed
+
+- The replay baseline is extended to 1325 rows: rows 1-1222 stay byte-identical to the previous baseline at `af10539`, rows 1223-1325 carry the resource-assignment acceptance, the twenty-two rejections (the original seventeen plus five more for `{"class":"Node2D"}`, `{"class":"RectangleShape2D","bogus":1}`, `{"properties":{}}`, `{"class":5}`, `{"class":"RectangleShape2D","properties":5}`, each bracketed by identical scene_tree replies), the `ordinary.txt` fixture with a `file_contains` row that proves the non-resource-path rejection names an existing file, the resource reload, the base-inherited override and the non-editable-instance guard. The new whole-file sha256 is `a2d1f45ade08a1ab978848250b65eaebec0e7c0877e9ce16b92fcc6312b5664c`.
+- `docs/reference.md` now states that editing a shared external resource's own property (for example `shape.size` through `eval`) changes what every holder observes, and that the make-unique recipe duplicates the holder's current resource with `Resource.duplicate(true)` inside one `eval` call and assigns the duplicate through one `EditorUndoRedoManager` action (`add_do_property` for the duplicate, `add_undo_property` for the old reference). The old wording that told the reader to assign a duplicate through `set-property` is gone. The evidence-gap paragraph for unreachable error templates no longer claims unit-test coverage and no longer calls the non-Resource class check dead; the row for that check (`{"class":"Node2D"}` on `Col.shape`) is now in the baseline.
+
+### Changed
+
+- `inspect-node` now encodes an Object property that carries the resource hint and holds a Resource exactly as `inspect-resource` encodes the same reference: an external resource as `{"path","type"}`, an embedded sub-resource expanded inline (depth-capped at 3 with a loop guard on its `file::id`). The shared encoder lives in `commands/command_support.gd` so `inspect-node` and `inspect-resource` agree on the same reference. The node's own `script` property and every Object property without the resource hint keep the previous `value: null, supported: false` reply, so the existing replay baseline stays byte-identical.
+
 ## [0.7.0] - 2026-10-16
 
 ### Added

@@ -2,9 +2,12 @@
 extends RefCounted
 
 ## Shared helpers for the per-command scripts in this folder: the reply
-## constructors, the shared request guard, and the constants more than one
+## constructors, the shared request guard, the property-value encoder both
+## `inspect_node` and `inspect_resource` use, and the constants more than one
 ## command uses. A helper used by exactly one command lives in that command's
 ## own file instead.
+
+const ValueCodec := preload("../value_codec.gd")
 
 ## Characters Godot strips from node names (see
 ## `String::validate_node_name()` in the engine). Rejecting them up front
@@ -276,3 +279,85 @@ static func packed_node_index(state: SceneState, packed_path: String) -> int:
 		if str(state.get_node_path(i)) == packed_path:
 			return i
 	return -1
+
+
+## The property entries of `object` exactly as `inspect_node` builds them
+## (inspector or storage usage only), with the object-valued encoding of this
+## command. `depth` is the current embedded sub-resource expansion depth; at
+## depth 3 an embedded sub-resource is shown as `{"path","type"}` without
+## expanding it. `seen` holds the `file::id` values already expanded in this
+## reply, so a sub-resource cycle cannot recurse forever.
+static func encode_properties(object: Object, depth: int, seen: Dictionary) -> Array:
+	var properties: Array = []
+	for info in object.get_property_list():
+		var usage: int = info["usage"]
+		if usage & (PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_STORAGE) == 0:
+			continue
+		var entry := {
+			"name": info["name"],
+			"type": type_string(info["type"]),
+			"read_only": usage & PROPERTY_USAGE_READ_ONLY != 0,
+		}
+		var property_value: Variant = object.get(info["name"])
+		var encoded: Variant = encode_value(property_value, depth, seen)
+		# The shared codec returns null for types set-property cannot address
+		# (Object beyond Resource, Dictionary, untyped Array, Callable, Signal,
+		# ...) and for a genuinely null property; only the former is marked
+		# unsupported, because a null property value is a valid value.
+		if encoded == null and property_value != null:
+			entry["value"] = null
+			entry["supported"] = false
+		else:
+			entry["value"] = encoded
+		properties.append(entry)
+	return properties
+
+
+## Encodes one property value for a reply shared by `inspect_node` and
+## `inspect_resource`: arrays over 10,000 elements are replaced by
+## `{"type","size","truncated":true}`; an embedded sub-resource is expanded
+## inline (depth-capped and loop-guarded); an external resource reference
+## becomes `{"path","type"}`; everything else uses the shared value codec,
+## which returns null for the types `set-property` cannot address (Object besides
+## Resource, Dictionary, untyped Array, Callable, Signal, ...) and for a null
+## property value.
+static func encode_value(value: Variant, depth: int, seen: Dictionary) -> Variant:
+	if value == null:
+		return null
+	if typeof(value) == TYPE_ARRAY or typeof(value) in [
+		TYPE_PACKED_BYTE_ARRAY, TYPE_PACKED_INT32_ARRAY, TYPE_PACKED_INT64_ARRAY,
+		TYPE_PACKED_FLOAT32_ARRAY, TYPE_PACKED_FLOAT64_ARRAY, TYPE_PACKED_STRING_ARRAY,
+		TYPE_PACKED_VECTOR2_ARRAY, TYPE_PACKED_VECTOR3_ARRAY, TYPE_PACKED_VECTOR4_ARRAY,
+		TYPE_PACKED_COLOR_ARRAY,
+	]:
+		if value.size() > 10000:
+			return {
+				"type": type_string(typeof(value)),
+				"size": value.size(),
+				"truncated": true,
+			}
+	if typeof(value) == TYPE_OBJECT and value is Resource:
+		var resource: Resource = value
+		var resource_path: String = resource.resource_path
+		# An embedded sub-resource (a saved `SubResource`, with a `file::id`
+		# resource_path, or a freshly-built unsaved one with an empty
+		# resource_path) is expanded inline; an external resource is the
+		# `{"path","type"}` form. The saved case has a `::` path; the unsaved
+		# case has an empty path. The cycle guard uses `file::id` when the path
+		# carries one and `instance_id` otherwise, so a chain of unsaved
+		# embedded resources still stops at the depth limit and a self-loop
+		# stops the first time it would recurse.
+		var is_embedded: bool = resource_path.contains("::") or resource_path == ""
+		if is_embedded:
+			var seen_key: String = resource_path if resource_path != "" else "id:%d" % resource.get_instance_id()
+			if depth >= 3 or seen.has(seen_key):
+				return {"path": resource_path, "type": resource.get_class()}
+			var next_seen := seen.duplicate()
+			next_seen[seen_key] = true
+			return {
+				"path": resource_path,
+				"type": resource.get_class(),
+				"properties": encode_properties(resource, depth + 1, next_seen),
+			}
+		return {"path": resource_path, "type": resource.get_class()}
+	return ValueCodec.value_to_json(value)
