@@ -58,7 +58,22 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 			"type": type_string(info["type"]),
 			"read_only": usage & PROPERTY_USAGE_READ_ONLY != 0,
 		}
-		var json_value: Variant = ValueCodec.value_to_json(target.get(info["name"]))
+		var property_value: Variant = target.get(info["name"])
+		# A Resource-valued Object property with the resource hint is encoded
+		# exactly as `inspect_resource` encodes the same reference (external
+		# `{"path","type"}`, an embedded sub-resource expanded inline), through
+		# the shared encoder. A null value and every other Object property
+		# keep the old `value_to_json` path so their `value: null, supported:
+		# false` reply stays byte-identical with the existing baseline. The
+		# `script` property is the one Object property baseline encodes from a
+		# non-null Resource, and the design's intent is to show resources the
+		# caller assigns at runtime, not the node's own script, so it stays on
+		# the old path.
+		var json_value: Variant = property_value
+		if typeof(property_value) == TYPE_OBJECT and info["hint"] == PROPERTY_HINT_RESOURCE_TYPE and info["name"] != "script":
+			json_value = CommandSupport.encode_value(property_value, 0, {})
+		else:
+			json_value = ValueCodec.value_to_json(property_value)
 		if json_value == null:
 			entry["value"] = null
 			entry["supported"] = false

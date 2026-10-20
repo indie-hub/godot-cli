@@ -1,4 +1,4 @@
-Golden replay harness for the Godot Pipeline editor plugin (1222 rows:
+Golden replay harness for the Godot Pipeline editor plugin (1325 rows:
 1-148 unchanged, 149-200 cover inspect-class and open-scene, 201-262 cover
 connect-signal, 263-362 cover set-group, 363-413 cover set-unique-name,
 414-477 cover the rename unique-flag fix, 478-530 cover the rename option C
@@ -13,7 +13,21 @@ set-parent, 939-945 cover the fresh reload of the accepted set-parent moves,
 946-976 cover set-parent in a derived scene, 977-982 cover the fresh reload of
 the derived-scene moves, 983-1051 cover set-parent against the inherited-node
 matrix, 1052-1128 cover the base-inherited rename and delete rejections and
-their fresh reloads, and 1129-1222 cover eval).
+their fresh reloads, 1129-1222 cover eval, 1223-1310 cover the resource-assignment
+session (external texture, shape and material, embedded shape, twenty-two
+rejections, an `ordinary.txt` fixture with a file_contains check that proves
+the non-resource-path rejection names an existing file, scene and property
+state mirrored with two `inspect-node` rows bracketing the rejection block,
+file_contains and a save_scene), 1311-1316 cover the resource reloads
+(persistence of texture, embedded shape, embedded material, still shared
+external shape, and a file_contains), 1317-1322 cover the resource override
+on a base-inherited node and a file_contains on the derived scene, and
+1323-1325 cover the resource guard against a node inside a non-editable
+instance plus a position change on the instance root). The script identity
+is read directly with `get_script()` through `eval` (six readings bracketing
+the three script rejection rows in the build script) because the `script`
+property is encoded as an unsupported null in `inspect-node` and mirrors alone
+cannot show a script change.
 
 HOW TO RUN
   GODOT=/path/to/Godot python3 replay.py --plugin-dir DIR --port PORT --out FILE
@@ -46,15 +60,15 @@ HOW TO RUN
   still stored in the storage order above, so FILE holds only the named sessions'
   rows. An unknown name is refused before any editor starts, and the message
   lists the valid names. An empty value is refused. Without --sessions every
-  session runs and FILE is the full 1222-row baseline.
+  session runs and FILE is the full 1325-row baseline.
   Every staging step and every fixture write still happens when sessions are
   filtered, so a selected session meets the same project files it meets in a full
   run. Only the editor launches of sessions that neither run nor were asked for
   are skipped, which is what makes a filtered run quick.
 
   PREREQUISITE SESSIONS
-  Twenty-six of the thirty-eight sessions reproduce on their own. The other
-  twelve read nodes, saved scene files or a message counter that an earlier
+  Twenty-nine of the forty-two sessions reproduce on their own. The other
+  thirteen read nodes, saved scene files or a message counter that an earlier
   session left behind, so they do not. --sessions replays those prerequisites
   automatically and prints their names. A prerequisite is replayed but stores no
   rows, so FILE still holds only the sessions you named.
@@ -64,6 +78,7 @@ HOW TO RUN
     L        K               AH       AG
     O        N               AK       AI and AJ
     Q        P               CONSOLE  A and Y
+    RU       RS
     S        R
     V        U
   Each pair was measured by replaying it and comparing against the baseline.
@@ -86,7 +101,7 @@ HOW TO RUN
   run and still fails the full run. Use --sessions to work on one command at a
   time. The full run stays mandatory at integration and for validators.
 
-  Each run takes several minutes: one --import plus thirty-eight editor launches
+  Each run takes several minutes: one --import plus forty-two editor launches
   (in launch order A with no scene, E with no scene, G with no scene, J with no
   scene, T with no scene, W with no scene, X with no scene, Y with no scene, the
   console session with no scene, the eval session with no scene, C with no
@@ -98,18 +113,21 @@ HOW TO RUN
   res://inst_base.tscn, Z and AA with res://sp_base.tscn, AB and AC with
   res://sp_dderived.tscn, AD with res://sp2_override.tscn, AE with
   res://sp2_plain.tscn, AF with res://sp2_twolevel.tscn, AG and AH with
-  res://sp2_local.tscn, AI and AK with res://ib_rename.tscn, and AJ with
-  res://ib_delete.tscn), 1222 stored rows (1103 requests and 119 file checks).
+  res://sp2_local.tscn, AI and AK with res://ib_rename.tscn, AJ with
+  res://ib_delete.tscn, RS and RU with res://rs_main.tscn, RD with
+  res://rs_derived.tscn, and RI with res://rs_inst.tscn), 1325 stored rows
+  (1195 requests and 130 file checks).
   The plugin has twenty commands, a different count. Rows are stored A, B, C,
   E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, T, U, V, W, X, Y, CONSOLE,
-  Z, AA, AB, AC, AD, AE, AF, AG, AH, AI, AJ, AK, EVAL: a fresh editor restores
-  the previous session's open scenes, so the no-scene sessions (A, E, G, J, T,
-  W, X, Y, the console session and the eval session, and C before it opens
-  anything) must run before any scene session. The console session runs right
-  after the interface and the eval session right after it; both are no-scene, so
-  they run before the first scene session. Appending the new sessions keeps rows
-  1-825 byte-identical; rows 826-827 carry the published command interface with
-  console, set_parent and eval appended as entries 18, 19 and 20.
+  Z, AA, AB, AC, AD, AE, AF, AG, AH, AI, AJ, AK, EVAL, RS, RU, RD, RI: a
+  fresh editor restores the previous session's open scenes, so the no-scene
+  sessions (A, E, G, J, T, W, X, Y, the console session and the eval session,
+  and C before it opens anything) must run before any scene session. The console
+  session runs right after the interface and the eval session right after it;
+  both are no-scene, so they run before the first scene session. Appending
+  the new sessions keeps rows 1-1222 byte-identical; rows 1223-1325 carry
+  the resource-assignment acceptance and rejections, the resource reload, the
+  base-inherited override, and the non-editable-instance guard.
 
 WHAT IT DOES
   Session A (requests 1-23, no edited scene): status ok with scene_path null;
@@ -667,6 +685,13 @@ DETERMINISM PROOF
   e0e9879df1bab7e764de7af5bc2db1abe6043bb38227eacec627f7d8b16adf42.
   baseline.sha256 holds the sha256 of the whole baseline.jsonl: check with
   shasum -a 256 baseline.jsonl.
+  The 1325-row baseline was recorded twice; the two full runs are byte-identical
+  (compare.py IDENTICAL, 1325 pairs, and cmp clean between the two runs). Rows
+  1-1222 stay byte-identical to the previous 1222-row baseline at
+  af10539; the new 103 rows (RS, RU, RD, RI) are the resource-assignment
+  acceptance and rejections, the resource reload, the base-inherited override
+  and the non-editable-instance guard. The new whole-file sha256 is
+  a2d1f45ade08a1ab978848250b65eaebec0e7c0877e9ce16b92fcc6312b5664c.
   A saved scene file is hashed only before a save. After save_scene the editor
   may write generated unique_id values into saved node declarations, and an
   override-only declaration can omit it. So the post-save bytes are not
@@ -967,8 +992,8 @@ NOTES
   isolated-editor probe that sends a real set-parent (and, for the earlier
   commands, connect-signal) request through the plugin and then triggers the
   editor's Undo/Redo through the safe route.
-  The baseline is only valid while the plugin's replies for these 1222 rows
-  (1103 requests and 119 file checks)
+  The baseline is only valid while the plugin's replies for these 1291 rows
+  (1162 requests and 129 file checks)
   are supposed to stay the same. A change that adds or alters a command's
   behavior on purpose needs a new baseline, recorded from the last trusted
   commit, and a fresh determinism check (record three times, compare byte for

@@ -79,9 +79,17 @@ the Packed*Array types, and typed `Array[T]` of those types), `value` uses
 exactly the JSON shape `set-property` accepts as input, so an inspected
 value can be fed back to `set-property` unchanged (Color as `[r,g,b,a]`,
 Rect2/Rect2i as `[x,y,w,h]`, Transform2D as `[[xx,xy],[yx,yy],[ox,oy]]`,
-Transform3D as the three basis axis vectors then the origin). For any other type
-(Object/Resource references, Dictionary, untyped Array, Callable, Signal,
-RID, ...) the entry has `value: null` and `supported: false`; supported
+Transform3D as the three basis axis vectors then the origin). An Object
+property with the resource hint (`PROPERTY_HINT_RESOURCE_TYPE`) whose value
+is a Resource shows the same JSON `inspect-resource` would for that
+reference: an external resource as `{"path","type"}`, an embedded
+sub-resource expanded inline with a depth limit of 3 and a loop guard on
+its id. The node's own `script` property is the one exception, because it
+is the only Object property the previous baseline encoded from a non-null
+Resource and the design targets resources the caller assigns at runtime,
+not the node's own script. For any other unsupported type (Dictionary,
+untyped Array, Callable, Signal, RID, an Object without the resource
+hint, ...) the entry has `value: null` and `supported: false`; supported
 entries carry no `supported` key. A float holding `inf`, `-inf`, or `nan`
 is emitted as the string `"inf"`, `"-inf"`, or `"nan"`, so the reply is
 always valid JSON. Reads are allowed anywhere in the edited scene,
@@ -255,15 +263,89 @@ An empty array `[]` is valid and sets an empty array of the right type. For an i
 declared with `PROPERTY_HINT_ENUM`, the value must be one of the declared
 enum values: `"A,B,C"` implies `0,1,2`, and `"A:5,B:10"` gives explicit
 values (`5,10`); an out-of-enum int is rejected before any undo action.
+
+An Object property that declares a resource type (`PROPERTY_HINT_RESOURCE_TYPE`)
+accepts two extra `value` forms so the caller can assign an existing
+resource or build an embedded one without writing scene text by hand. Both
+forms are a single Undo/Redo step and mark the scene dirty.
+
+- A plain `res://` path string (`"res://tex.png"`): `set-property` loads the
+  resource, checks it against the property's declared allow-list (the
+  `hint_string` as a comma list; a subclass of an entry passes, a
+  `StandardMaterial3D` does not pass a property whose allow-list is
+  `CanvasItemMaterial,ShaderMaterial`), and assigns it. Loading a resource
+  whose script carries `@tool` runs that script's `_init` in the editor, as
+  any Godot load does; that is the measured behaviour and is not refused.
+- An embedded object `{"class": "...", "properties": {...}}`: the named
+  class must exist, be a `Resource` subclass, and pass the same allow-list.
+  The class is instantiated, each named property is coerced with the shared
+  value codec, and the configured instance is assigned. Configure first,
+  then assign: the whole change is one Undo/Redo step. A fresh embedded
+  resource is held in memory only; it becomes a `SubResource` in the saved
+  scene, and its `resource_path` becomes `res://<scene>::<SubResource>`.
+  Assigning an embedded resource through `set-property` gives the node its
+  own new instance, with no share across nodes. Reusing the same embedded
+  instance across two nodes gives one shared embedded resource; editing a
+  shared embedded resource changes every holder. Editing a shared external
+  resource's own property, for example `shape.size` through `eval`, changes
+  what every holder observes. Assigning a different resource to one node
+  changes only that node's reference. To make one holder unique without
+  changing the other holders, use `eval` to duplicate that holder's current
+  resource with `Resource.duplicate(true)`, then assign the duplicate to
+  that holder within the same `eval` call through one
+  `EditorUndoRedoManager` action. Use `add_do_property` for the duplicate
+  and `add_undo_property` for the old reference. Do not pass the duplicate
+  object to `set-property`.
+
+Every refusal runs before the undo action, so a rejected request leaves
+the scene, the dirty flag and the undo history untouched:
+
+| Reason | Reply message |
+| --- | --- |
+| `value` is not a string and not a JSON object on a resource-hint Object property | `cannot set <property> (Object): property type Object is not supported by set_property` |
+| path does not start with `res://` | `cannot set <property> (Object): resource path must start with res://: <path>` |
+| path is missing or names a file that is not a loadable Resource (for example a non-resource `.txt` next to the project files) | `cannot set <property> (Object): resource not found: <path>` |
+| path exists but does not load as a Resource | `cannot set <property> (Object): resource failed to load: <path>` |
+| loaded class is not one of the declared types | `cannot set <property> (Object): resource class <class> is not one of the declared types for this property (<hint_string>)` |
+| embedded value carries a key other than `class` and `properties` | `cannot set <property> (Object): embedded resource accepts only the keys class and properties, not: <key>` |
+| embedded value lacks a string `class` or a dictionary `properties` | `cannot set <property> (Object): embedded resource needs a string class` / `cannot set <property> (Object): embedded resource properties must be an object` |
+| embedded `class` does not exist | `cannot set <property> (Object): unknown embedded resource class: <class>` |
+| embedded `class` cannot be instantiated (abstract) | `cannot set <property> (Object): embedded resource class cannot be instantiated: <class>` |
+| embedded `class` is not a `Resource` | `cannot set <property> (Object): embedded resource class is not a Resource: <class>` |
+| embedded `class` is outside the allow-list | `cannot set <property> (Object): resource class <class> is not one of the declared types for this property (<hint_string>)` |
+| embedded property does not exist on the instance | `cannot set <property> (Object): unknown property on embedded <class>: <name>` |
+| embedded property is not editable or saved | `cannot set <property> (Object): embedded property is not editable or saved: <name> (<class>)` |
+| embedded property is read-only | `cannot set <property> (Object): embedded property is read-only: <name> (<class>)` |
+| embedded property is `resource_local_to_scene` (not exposed) | `cannot set <property> (Object): resource_local_to_scene is not exposed by set-property; it is set when the resource is created as part of an instance` |
+| embedded property is itself an Object (nesting is out of this slice) | `cannot set <property> (Object): embedded property <name> (<class>) is an Object; nested resources are not supported` |
+| embedded value cannot be coerced | `cannot set <property> (Object): cannot set embedded property <name> (<class>): <codec error>` |
+
+Three refusal templates are not represented by a replay row in this
+baseline. None of the harness's request forms reach them on the current
+fixtures, so each is left out: `resource failed to load` (no request names
+a `.res` next to the project files; the baseline's resource fixtures are
+all valid); `embedded property is not editable or saved` (no embedded
+inspector/storage property on `RectangleShape2D` clears the
+non-editor-or-storage usage gate); `embedded property is read-only`
+(`RectangleShape2D` carries no read-only embedded inspector property).
+
+The reply's `data.old_value` and `data.value` are `var_to_str` renderings
+of the property before and after the change; `data.value` is read back
+from the node, so it reflects any clamping a setter applied. The node's
+own `script` property is not assignable through `set-property`: a value
+that names a `res://` script path, a syntax-error path, or an embedded
+`{"class":"GDScript"}` object all keep the existing `cannot set script
+(Object): property type Object is not supported by set_property` refusal,
+because script attachment belongs to the planned `attach-script` command
+(parse check, base-class check, `--replace` rule) and `set-property`'s
+resource branch is intentionally narrower than that.
+
 A target inside an instanced sub-scene is only accepted when every instance
 between it and the edited scene root has Editable Children enabled;
 otherwise the change would not be saved with the scene, so it is rejected
 up front. All validation (project path, node, property, value) runs before
 the undo action is created, so a rejected request leaves the scene and undo
-history untouched. The reply's `data.old_value` and `data.value` are
-`var_to_str` renderings of the property before and after the change;
-`data.value` is read back from the node, so it reflects any clamping a
-setter applied.
+history untouched.
 
 `delete_node` removes a node and its entire subtree from the currently
 edited scene, also through the editor's `EditorUndoRedoManager` as a single

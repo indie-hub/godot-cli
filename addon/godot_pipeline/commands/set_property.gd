@@ -35,6 +35,16 @@ static func interface() -> Dictionary:
 ## anything else is resolved, and every other check runs before the undo
 ## action is created, so a rejected request never touches the scene or the
 ## undo history.
+##
+## An Object property that declares a resource type takes two extra value
+## forms. A plain `res://` path string assigns the loaded resource. An embedded
+## `{"class": ..., "properties": {...}}` object builds a new instance, sets the
+## named properties on it, and assigns it; because the instance is configured
+## before it is assigned, the whole change is still one Undo/Redo step. Loading
+## a resource whose script carries `@tool` runs that script's `_init` in the
+## editor, as any Godot load does. An Object property without the resource hint,
+## and any value that is neither a string nor an object, keep the ordinary
+## coercion path and its existing refusal.
 static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 	var node_path_value: Variant = request.get("node_path")
 	var property_value: Variant = request.get("property")
@@ -82,6 +92,23 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 	var property_type: int = property_info["type"]
 	var old_value: Variant = target.get(property)
 
+	# An Object property that declares a resource type accepts a resource the
+	# caller names two ways: a plain `res://` path string, or an embedded object
+	# `{"class": ..., "properties": {...}}` that becomes a new instance. Both are
+	# one undo action. A value of any other type, and an Object property without
+	# the resource hint, keep the existing coercion path below unchanged. The
+	# node's own `script` property is one of those Object-with-resource-hint
+	# properties, but script attachment belongs to the planned `attach-script`
+	# command (parse check, base-class check, --replace rule), so it falls
+	# through to today's exact Object refusal and `get_script()` is unchanged.
+	if property_type == TYPE_OBJECT and property_info["hint"] == PROPERTY_HINT_RESOURCE_TYPE and property != "script":
+		var value_kind: int = typeof(request["value"])
+		if value_kind == TYPE_STRING or value_kind == TYPE_DICTIONARY:
+			var assigned: Variant = _assign_resource(property, property_info, request["value"])
+			if assigned is Dictionary:
+				return assigned
+			return _commit_property(plugin, target, property, property_type, old_value, assigned, node_path)
+
 	# A plain `Array` has no declared element type, so a JSON value could not
 	# be coerced without guessing (Vector2 versus a 2-number array, int versus
 	# float); only typed `Array[T]` and the Packed*Array types are accepted.
@@ -115,6 +142,14 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 				"value %d is not one of the declared enum values for %s (%s)" % [new_value, property, property_info["hint_string"]]
 			)
 
+	return _commit_property(plugin, target, property, property_type, old_value, new_value, node_path)
+
+
+## Creates the single undo action that writes `new_value` to `property` and
+## answers with the same reply every accepted `set-property` produces. Every
+## caller has finished validating before it gets here, so a rejected request
+## never reaches an action.
+static func _commit_property(plugin: EditorPlugin, target: Node, property: String, property_type: int, old_value: Variant, new_value: Variant, node_path: String) -> Dictionary:
 	var undo_redo := plugin.get_undo_redo()
 	undo_redo.create_action("Set %s" % property)
 	undo_redo.add_do_property(target, property, new_value)
@@ -131,3 +166,132 @@ static func run(plugin: EditorPlugin, request: Dictionary) -> Dictionary:
 		"old_value": var_to_str(old_value),
 		"value": var_to_str(target.get(property)),
 	})
+
+
+## Resolves a resource-valued Object property's `value` into the Resource to
+## assign. `value` is a plain `res://` path string (assign the loaded resource)
+## or an embedded `{"class": ..., "properties": {...}}` object (build, configure,
+## then assign). Every check runs here, before any undo action, so a rejected
+## request changes nothing. Returns the Resource to assign, or an error
+## Dictionary (a reply) to send back unchanged.
+static func _assign_resource(property: String, property_info: Dictionary, value: Variant) -> Variant:
+	if typeof(value) == TYPE_STRING:
+		return _resource_from_path(property, property_info, value as String)
+	return _embedded_resource(property, property_info, value as Dictionary)
+
+
+## Loads the resource a caller named by `path` and checks it against the
+## property's declared allow-list. The allow-list is the property's `hint_string`
+## (a comma list), split and trimmed; the loaded class passes when it is one of
+## the entries or inherits one. This is stricter than the engine's setter, which
+## is deliberate: the inspector offers exactly these classes.
+static func _resource_from_path(property: String, property_info: Dictionary, path: String) -> Variant:
+	if not path.begins_with("res://"):
+		return CommandSupport.error("cannot set %s (Object): resource path must start with res://: %s" % [property, path])
+	if not ResourceLoader.exists(path):
+		return CommandSupport.error("cannot set %s (Object): resource not found: %s" % [property, path])
+	var loaded: Resource = ResourceLoader.load(path) as Resource
+	if loaded == null:
+		return CommandSupport.error("cannot set %s (Object): resource failed to load: %s" % [property, path])
+	var allowed_error := _class_allowed(property, property_info, loaded.get_class())
+	if allowed_error != "":
+		return CommandSupport.error(allowed_error)
+	return loaded
+
+
+## Builds a new resource of the class the caller named, sets its `properties`
+## with the shared value codec, and returns it for assignment. An embedded
+## property may not itself be an Object: nesting resources is out of this slice,
+## so an Object-valued embedded property is refused rather than silently
+## mis-typed.
+static func _embedded_resource(property: String, property_info: Dictionary, value: Dictionary) -> Variant:
+	for key in value.keys():
+		if key != "class" and key != "properties":
+			return CommandSupport.error(
+				"cannot set %s (Object): embedded resource accepts only the keys class and properties, not: %s" % [property, key]
+			)
+	if typeof(value.get("class")) != TYPE_STRING:
+		return CommandSupport.error("cannot set %s (Object): embedded resource needs a string class" % property)
+	var resource_class: String = value["class"]
+	if typeof(value.get("properties", {})) != TYPE_DICTIONARY:
+		return CommandSupport.error("cannot set %s (Object): embedded resource properties must be an object" % property)
+	if not ClassDB.class_exists(resource_class):
+		return CommandSupport.error("cannot set %s (Object): unknown embedded resource class: %s" % [property, resource_class])
+	if not ClassDB.can_instantiate(resource_class):
+		return CommandSupport.error("cannot set %s (Object): embedded resource class cannot be instantiated: %s" % [property, resource_class])
+	if not (ClassDB.is_parent_class(resource_class, "Resource") or resource_class == "Resource"):
+		return CommandSupport.error("cannot set %s (Object): embedded resource class is not a Resource: %s" % [property, resource_class])
+	var allowed_error := _class_allowed(property, property_info, resource_class)
+	if allowed_error != "":
+		return CommandSupport.error(allowed_error)
+	var instance: Resource = ClassDB.instantiate(resource_class) as Resource
+	for embedded_property in (value.get("properties", {}) as Dictionary).keys():
+		var set_error: Variant = _set_embedded_property(property, instance, embedded_property, value["properties"][embedded_property])
+		if set_error != null:
+			return set_error
+	return instance
+
+
+## Sets one embedded property on the fresh instance, or returns the error reply
+## that refuses it. A property that is missing, not settable, an Object (nesting
+## is out of this slice) or whose value the codec cannot coerce is refused; on
+## any refusal the caller discards the whole instance, so nothing is assigned.
+static func _set_embedded_property(property: String, instance: Resource, embedded_property: Variant, raw_value: Variant) -> Variant:
+	var name_text := str(embedded_property)
+	var info: Dictionary = {}
+	for candidate in instance.get_property_list():
+		if candidate["name"] == name_text:
+			info = candidate
+			break
+	if info.is_empty():
+		return CommandSupport.error(
+			"cannot set %s (Object): unknown property on embedded %s: %s"
+			% [property, instance.get_class(), name_text]
+		)
+	var usage: int = info["usage"]
+	if usage & (PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_STORAGE) == 0:
+		return CommandSupport.error(
+			"cannot set %s (Object): embedded property is not editable or saved: %s (%s)" % [property, name_text, instance.get_class()]
+		)
+	if usage & PROPERTY_USAGE_READ_ONLY:
+		return CommandSupport.error(
+			"cannot set %s (Object): embedded property is read-only: %s (%s)" % [property, name_text, instance.get_class()]
+		)
+	var embedded_type: int = info["type"]
+	if embedded_type == TYPE_OBJECT:
+		return CommandSupport.error(
+			"cannot set %s (Object): embedded property %s (%s) is an Object; nested resources are not supported" % [property, name_text, instance.get_class()]
+		)
+	# `resource_local_to_scene` is intentionally not exposed: editing it would
+	# silently change whether the embedded instance is local to the edited scene
+	# or shared across instances, and the design does not own that choice. Refuse
+	# it before the assignment so a rejected request changes nothing.
+	if name_text == "resource_local_to_scene":
+		return CommandSupport.error(
+			"cannot set %s (Object): resource_local_to_scene is not exposed by set-property; it is set when the resource is created as part of an instance" % property
+		)
+	var old_embedded: Variant = instance.get(name_text)
+	var coerced := ValueCodec.coerce_value(raw_value, embedded_type, TYPE_NIL, old_embedded)
+	if coerced.has("error"):
+		return CommandSupport.error(
+			"cannot set %s (Object): cannot set embedded property %s (%s): %s"
+			% [property, name_text, instance.get_class(), coerced["error"]]
+		)
+	instance.set(name_text, coerced["value"])
+	return null
+
+
+## Returns the exact refusal message when `candidate_class` is not one of the
+## property's declared resource types and inherits none of them, or an empty
+## string when it passes. `hint_string` is a comma list of accepted classes; a
+## subclass counts (a `RectangleShape2D` passes a `Shape2D` property).
+static func _class_allowed(property: String, property_info: Dictionary, candidate_class: String) -> String:
+	for entry in (property_info["hint_string"] as String).split(",", false):
+		var allowed := entry.strip_edges()
+		if allowed == "":
+			continue
+		if candidate_class == allowed or ClassDB.is_parent_class(candidate_class, allowed):
+			return ""
+	return "cannot set %s (Object): resource class %s is not one of the declared types for this property (%s)" % [
+		property, candidate_class, property_info["hint_string"],
+	]
