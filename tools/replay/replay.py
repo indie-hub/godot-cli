@@ -70,6 +70,11 @@ STAGED_COMMANDS = [
         '\t"eval": preload("commands/eval.gd"),',
         '\t"set_parent": preload("commands/set_parent.gd"),',
     ),
+    (
+        os.path.join("commands", "attach_script.gd"),
+        '\t"attach_script": preload("commands/attach_script.gd"),',
+        '\t"eval": preload("commands/eval.gd"),',
+    ),
 ]
 
 PROJECT_GODOT = """; Engine configuration file.
@@ -3453,13 +3458,295 @@ def build_ri():
     ]
 
 
+AS_MAIN_TSCN = """[gd_scene load_steps=2 format=3]
+
+[ext_resource type="PackedScene" path="res://as_sub.tscn" id="1"]
+
+[node name="ASMain" type="Node2D"]
+
+[node name="A" type="Node2D" parent="."]
+[node name="B" type="Node2D" parent="."]
+[node name="C" type="Node3D" parent="."]
+[node name="Plain" type="Node" parent="."]
+[node name="T1" type="Node2D" parent="."]
+[node name="T2" type="Node2D" parent="."]
+[node name="T3" type="Node2D" parent="."]
+[node name="R1" type="Node2D" parent="."]
+[node name="R2" type="Node2D" parent="."]
+[node name="R3" type="Node2D" parent="."]
+[node name="R4" type="Node2D" parent="."]
+[node name="R5" type="Node2D" parent="."]
+[node name="R6" type="Node2D" parent="."]
+[node name="R7" type="Node2D" parent="."]
+[node name="R8" type="Node2D" parent="."]
+[node name="R9" type="Node2D" parent="."]
+[node name="R10" type="Node2D" parent="."]
+[node name="R11" type="Node2D" parent="."]
+[node name="R12" type="Node2D" parent="."]
+[node name="R13" type="Node2D" parent="."]
+[node name="R14" type="Node2D" parent="."]
+[node name="R15" type="Node2D" parent="."]
+[node name="Inst" parent="." instance=ExtResource("1")]
+"""
+
+AS_SUB_TSCN = """[gd_scene format=3]
+
+[node name="SubRoot" type="Node2D"]
+
+[node name="Inner" type="Node2D" parent="."]
+
+[node name="InnerDeep" type="Node2D" parent="Inner"]
+"""
+
+AS_BASE_TSCN = """[gd_scene format=3]
+
+[node name="BaseRoot" type="Node2D"]
+
+[node name="BaseChild" type="Node2D" parent="."]
+"""
+
+AS_DERIVED_TSCN = """[gd_scene load_steps=2 format=3]
+
+[ext_resource type="PackedScene" path="res://as_base.tscn" id="1"]
+
+[node name="BaseRoot" instance=ExtResource("1")]
+"""
+
+AS_GOOD2D_GD = """extends Node2D
+"""
+
+AS_TOOL2D_GD = """@tool
+extends Node2D
+
+func _init() -> void:
+\tprint("AS_TOOL_INIT")
+"""
+
+AS_EXPORT2D_GD = """extends Node2D
+@export var label := "e2"
+"""
+
+AS_EXPORT2D_NEW_GD = """extends Node2D
+@export var label := "e2n"
+"""
+
+AS_EXPORT_GD = """extends Node2D
+@export var speed := 1.0
+@export var label := "base"
+"""
+
+AS_CUSTOM_BASE_GD = """class_name CustomBase2D
+extends Node2D
+"""
+
+AS_RELBASE_BASE_GD = """extends Node2D
+"""
+
+AS_RELBASE_GD = """extends "as_relbase_base.gd"
+"""
+
+AS_STALE_GD = """extends Node2D
+var s := 1
+"""
+
+AS_SYNTAX_BROKEN_GD = """extends Node2D
+func f(:
+"""
+
+AS_ANALYSIS_ERROR_GD = """extends Node2D
+func f() -> void:
+\tundefined_thing.call()
+"""
+
+AS_NOT_YET_SCANNED_GD = """extends SomeClassName
+"""
+
+AS_ABSTRACT_GD = """@abstract
+extends Node
+"""
+
+AS_NOTASCRIPT_TRES = """[gd_resource type="Resource" format=3]
+
+[resource]
+"""
+
+AS_DUMMY_CS = """using Godot;
+public partial class AsDummy : Node2D {
+}
+"""
+
+# One bracket row reads the per-node script map, the scene history size and
+# has_undo in a single eval, the same three facts probe.md bracketed every
+# refusal with. The scene's UndoRedo comes from the manager, which has no
+# history count of its own.
+AS_BRACKET_CODE = ("extends RefCounted\nfunc run(editor, undo_redo):\n"
+    "\tvar root = editor.get_edited_scene_root()\n"
+    "\tvar h = undo_redo.get_history_undo_redo(undo_redo.get_object_history_id(root))\n"
+    "\tvar scripts = {}\n"
+    "\tvar stack = [root]\n"
+    "\twhile not stack.is_empty():\n"
+    "\t\tvar n = stack.pop_back()\n"
+    "\t\tvar rp = root.get_path_to(n)\n"
+    "\t\tvar key = \".\" if str(rp) == \"\" else str(rp)\n"
+    "\t\tvar s = n.get_script()\n"
+    "\t\tscripts[key] = (str(s.resource_path) if s != null else null)\n"
+    "\t\tfor c in n.get_children():\n"
+    "\t\t\tstack.push_back(c)\n"
+    "\treturn {\"history\": h.get_history_count(), \"has_undo\": h.has_undo(), \"scripts\": scripts}\n")
+
+# Rewrites as_stale.gd to a syntax error mid-session, so the next attach
+# proves the cached copy is used (the no-re-read decision).
+AS_REWRITE_CODE = ("extends RefCounted\nfunc run(editor, undo_redo):\n"
+    "\tvar w = FileAccess.open(\"res://as_stale.gd\", FileAccess.WRITE)\n"
+    "\tw.store_string(\"extends Node2D\\nfunc f(:\\n\")\n"
+    "\tw.close()\n"
+    "\treturn \"rewrote\"\n")
+
+AS_GETSCRIPT_CODE = ("extends RefCounted\nfunc run(editor, undo_redo):\n"
+    "\tvar n = editor.get_edited_scene_root().get_node(\"BaseChild\")\n"
+    "\tvar s = n.get_script()\n"
+    "\treturn (str(s.resource_path) if s != null else null)\n")
+
+
+def as_eval(code):
+    return ("line", json.dumps({"command": "eval", "project_path": "<PROJ>",
+                                "code": code}, separators=(",", ":")))
+
+
+def as_attach(node, script=None, detach=False, replace=False,
+              project="<PROJ>"):
+    d = {"command": "attach_script", "node_path": node,
+         "project_path": project}
+    if script is not None:
+        d["script_path"] = script
+    if detach:
+        d["detach"] = True
+    if replace:
+        d["replace"] = True
+    return ("line", json.dumps(d, separators=(",", ":")))
+
+
+def as_bracket(out, request):
+    out.append(as_eval(AS_BRACKET_CODE))
+    out.append(request)
+    out.append(as_eval(AS_BRACKET_CODE))
+
+
+def write_as_fixtures(proj):
+    # Written only after every existing session, so session W's listings never
+    # name these files and rows 1-1325 stay byte-identical.
+    with open(os.path.join(proj, "as_pic.png"), "wb") as f:
+        f.write(_make_png())
+    for name, text in [
+        ("as_good2d.gd", AS_GOOD2D_GD),
+        ("as_tool2d.gd", AS_TOOL2D_GD),
+        ("as_export2d.gd", AS_EXPORT2D_GD),
+        ("as_export2d_new.gd", AS_EXPORT2D_NEW_GD),
+        ("as_export.gd", AS_EXPORT_GD),
+        ("as_custom_base.gd", AS_CUSTOM_BASE_GD),
+        ("as_relbase_base.gd", AS_RELBASE_BASE_GD),
+        ("as_relbase.gd", AS_RELBASE_GD),
+        ("as_stale.gd", AS_STALE_GD),
+        ("as_syntax_broken.gd", AS_SYNTAX_BROKEN_GD),
+        ("as_analysis_error.gd", AS_ANALYSIS_ERROR_GD),
+        ("as_not_yet_scanned.gd", AS_NOT_YET_SCANNED_GD),
+        ("as_abstract.gd", AS_ABSTRACT_GD),
+        ("as_notascript.tres", AS_NOTASCRIPT_TRES),
+        ("as_dummy.cs", AS_DUMMY_CS),
+        ("as_sub.tscn", AS_SUB_TSCN),
+        ("as_base.tscn", AS_BASE_TSCN),
+        ("as_derived.tscn", AS_DERIVED_TSCN),
+        ("as_main.tscn", AS_MAIN_TSCN),
+    ]:
+        with open(os.path.join(proj, name), "w") as f:
+            f.write(text)
+
+
+def build_as():
+    # Session AS: the attach-script matrix on as_main.tscn, then one attach on
+    # the base-inherited node of as_derived.tscn with a property set and a
+    # save. Every refusal and every accepted request is bracketed by the
+    # script-map, history-size and has-undo eval, so a refusal that changed
+    # anything would show and each accepted request shows exactly +1.
+    out = [
+        ("line", '{"command":"status"}'),
+    ]
+    as_bracket(out, as_attach("R1", "res://as_missing.gd"))
+    as_bracket(out, as_attach("R6", "user://as_good2d.gd"))
+    as_bracket(out, as_attach("R9", "res://as_main.tscn::GDScript_abc"))
+    as_bracket(out, as_attach("R8", "res://as_good2d.gd "))
+    as_bracket(out, as_attach("R3", "res://as_main.tscn"))
+    as_bracket(out, as_attach("R3", "res://as_pic.png"))
+    as_bracket(out, as_attach("R3", "res://as_dummy.cs"))
+    as_bracket(out, as_attach("R3", "res://as_notascript.tres"))
+    as_bracket(out, as_attach("R5", "res://as_abstract.gd"))
+    as_bracket(out, as_attach("T1", "res://as_syntax_broken.gd"))
+    as_bracket(out, as_attach("T2", "res://as_analysis_error.gd"))
+    as_bracket(out, as_attach("T3", "res://as_not_yet_scanned.gd"))
+    as_bracket(out, as_attach("C", "res://as_good2d.gd"))
+    as_bracket(out, as_attach("Plain", "res://as_good2d.gd"))
+    as_bracket(out, as_attach("Inst/Inner/InnerDeep", "res://as_good2d.gd"))
+    as_bracket(out, as_attach("R14", "res://as_good2d.gd",
+                              project="/private/tmp/other"))
+    as_bracket(out, ("line", '{"command":"attach_script","node_path":"R15","project_path":"<PROJ>","script_path":5}'))
+    as_bracket(out, as_attach("A", "res://as_good2d.gd"))
+    as_bracket(out, as_attach("A", "res://as_export2d.gd"))
+    as_bracket(out, as_attach("A", "res://as_good2d.gd", replace=True))
+    # Alias paths that resolve to the script the node already holds. The
+    # build under test does not resolve them yet, so these attach today;
+    # the accepted repair refuses them, and the rows are re-recorded then.
+    as_bracket(out, as_attach("A", "res://./as_good2d.gd", replace=True))
+    as_bracket(out, as_attach("A", "res://T1/../as_good2d.gd", replace=True))
+    # An alias without --replace never reaches the alias rule: the earlier
+    # current-script refusal answers first.
+    as_bracket(out, as_attach("A", "res://./as_good2d.gd"))
+    as_bracket(out, as_attach("A", "res://as_export2d.gd", detach=True))
+    as_bracket(out, as_attach("A", detach=True, replace=True))
+    as_bracket(out, as_attach("A"))
+    as_bracket(out, as_attach("R15", detach=True))
+    as_bracket(out, as_attach("B", "res://as_tool2d.gd"))
+    as_bracket(out, as_attach("B", "res://as_export2d.gd", replace=True))
+    as_bracket(out, as_attach("B", "res://as_export2d_new.gd", replace=True))
+    as_bracket(out, as_attach("R6", "res://as_good2d.gd"))
+    as_bracket(out, as_attach("R6", detach=True))
+    as_bracket(out, as_attach("A", "res://as_tool2d.gd", replace=True))
+    as_bracket(out, as_attach("B", "res://as_tool2d.gd", replace=True))
+    as_bracket(out, as_attach("R10", "res://as_custom_base.gd"))
+    as_bracket(out, as_attach("R11", "res://as_relbase.gd"))
+    as_bracket(out, as_attach("T1", "res://as_stale.gd"))
+    out.append(as_eval(AS_REWRITE_CODE))
+    as_bracket(out, as_attach(".", "res://as_stale.gd"))
+    as_bracket(out, as_attach("Inst", "res://as_good2d.gd"))
+    out.append(("line", '{"command":"open_scene","project_path":"<PROJ>","scene_path":"res://as_derived.tscn","save":false}'))
+    as_bracket(out, as_attach("BaseChild", "res://as_export.gd"))
+    out.append(rset("BaseChild", "speed", "42.0"))
+    out.append(("line", '{"command":"save_scene","project_path":"<PROJ>"}'))
+    out.append(("file_contains", 'as_derived.tscn|name="BaseChild"'))
+    out.append(("file_contains", 'as_derived.tscn|script = ExtResource('))
+    return out
+
+
+def build_asr():
+    # Session ASR: a fresh editor on the as_derived.tscn that session AS saved.
+    # The attached script and the changed exported value must have survived.
+    return [
+        ("line", '{"command":"status"}'),
+        as_eval(AS_BRACKET_CODE),
+        ins("BaseChild"),
+        as_eval(AS_GETSCRIPT_CODE),
+        ("file_contains", 'as_derived.tscn|name="BaseChild"'),
+        ("file_contains", 'as_derived.tscn|speed = 42'),
+    ]
+
+
 # The order rows are stored in, which is not the order the sessions run in.
 # Each session writes its rows at its own place here, so a session that
 # --sessions left out leaves a gap instead of shifting the rows after it.
 SESSION_ORDER = ("A", "B", "C", "E", "D", "F", "G", "H", "I", "J", "K", "L",
                  "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y",
                  "CONSOLE", "Z", "AA", "AB", "AC", "AD", "AE", "AF", "AG",
-                 "AH", "AI", "AJ", "AK", "EVAL", "RS", "RU", "RD", "RI")
+                 "AH", "AI", "AJ", "AK", "EVAL", "RS", "RU", "RD", "RI",
+                 "AS", "ASR")
 
 # The request list of each session, in storage order. A session records exactly
 # one row per request, so the length of these lists is the stored row layout.
@@ -3479,6 +3766,7 @@ SESSION_REQUESTS = (
     ("AH", build_ah()), ("AI", build_ai()), ("AJ", build_aj()),
     ("AK", build_ak()), ("EVAL", build_eval()), ("RS", build_rs()),
     ("RU", build_ru()), ("RD", build_rd()), ("RI", build_ri()),
+    ("AS", build_as()), ("ASR", build_asr()),
 )
 
 
@@ -3507,6 +3795,7 @@ SESSION_PREREQUISITES = {
     "AC": ("AB",),
     "AH": ("AG",),
     "AK": ("AI", "AJ"),
+    "ASR": ("AS",),
     "CONSOLE": ("A", "Y"),
     "F": ("D",),
     "I": ("H",),
@@ -3788,7 +4077,8 @@ def main():
         # incremental restore put back, so it is written directly; the three
         # command files are copied back too. The set-parent fixtures are written
         # now as well, so the earlier sessions never listed them.
-        for rel in ("console.gd", "set_parent.gd", "eval.gd"):
+        for rel in ("console.gd", "set_parent.gd", "eval.gd",
+                    "attach_script.gd"):
             shutil.copy2(os.path.join(a.plugin_dir, "commands", rel),
                          os.path.join(dst, "commands", rel))
         with open(target, "w") as f:
@@ -3850,6 +4140,16 @@ def main():
         play("RU", "res://rs_main.tscn", build_ru(), "res://rs_main.tscn")
         play("RD", "res://rs_derived.tscn", build_rd(), "res://rs_derived.tscn")
         play("RI", "res://rs_inst.tscn", build_ri(), "res://rs_inst.tscn")
+        # The attach-script sessions run last, so their fixtures are written
+        # here and their rows are appended at the end of the baseline. AS
+        # records the refusal and acceptance matrix on as_main.tscn, then one
+        # attach on the base-inherited node of as_derived.tscn with a property
+        # set and a save; ASR is a fresh editor on that saved scene.
+        write_as_fixtures(proj)
+        play("AS", "res://as_main.tscn", build_as(), "res://as_main.tscn",
+             ready_filesystem=True)
+        play("ASR", "res://as_derived.tscn", build_asr(),
+             "res://as_derived.tscn")
         rows = [row for name in SESSION_ORDER for row in blocks[name]]
         with open(a.out, "w") as f:
             for req, rep in rows:

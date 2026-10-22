@@ -74,6 +74,7 @@ const COMMANDS := {
 	"console": preload("commands/console.gd"),
 	"set_parent": preload("commands/set_parent.gd"),
 	"eval": preload("commands/eval.gd"),
+	"attach_script": preload("commands/attach_script.gd"),
 }
 
 ## Version of the command interface the plugin publishes. A client that does

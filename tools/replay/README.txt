@@ -1,4 +1,4 @@
-Golden replay harness for the Godot Pipeline editor plugin (1325 rows:
+Golden replay harness for the Godot Pipeline editor plugin (1458 rows:
 1-148 unchanged, 149-200 cover inspect-class and open-scene, 201-262 cover
 connect-signal, 263-362 cover set-group, 363-413 cover set-unique-name,
 414-477 cover the rename unique-flag fix, 478-530 cover the rename option C
@@ -7,8 +7,8 @@ reloads of the accepted inherited-rename cases, 631-636 cover the
 instantiate-scene no-scene guards, 637-719 cover instantiate-scene accepted and
 rejected cases, 720-729 cover the fresh reloads of the accepted instances,
 730-764 cover list-resources, 765-825 cover inspect-resource, 826-827
-cover the published command interface (now twenty entries, with console,
-set_parent and eval last), 828-842 cover console validation, 843-938 cover
+cover the published command interface (now twenty-one entries, with console,
+set_parent, eval and attach_script last), 828-842 cover console validation, 843-938 cover
 set-parent, 939-945 cover the fresh reload of the accepted set-parent moves,
 946-976 cover set-parent in a derived scene, 977-982 cover the fresh reload of
 the derived-scene moves, 983-1051 cover set-parent against the inherited-node
@@ -23,9 +23,15 @@ file_contains and a save_scene), 1311-1316 cover the resource reloads
 external shape, and a file_contains), 1317-1322 cover the resource override
 on a base-inherited node and a file_contains on the derived scene, and
 1323-1325 cover the resource guard against a node inside a non-editable
-instance plus a position change on the instance root). The script identity
-is read directly with `get_script()` through `eval` (six readings bracketing
-the three script rejection rows in the build script) because the `script`
+instance plus a position change on the instance root, 1326-1452 cover the
+attach-script matrix (twenty-six refusals and fourteen accepted attaches
+and detaches, every request bracketed by the script map, history size and
+has-undo, then one attach on a base-inherited node with a property set and
+a save), and 1453-1458 cover the fresh reload of that saved derived scene.
+The script identity is read directly with `get_script()` through `eval`
+(six readings bracketing the three script rejection rows in the build
+script, and a per-node script map in the same eval that reads the history
+size for the attach-script rows) because the `script`
 property is encoded as an unsupported null in `inspect-node` and mirrors alone
 cannot show a script change.
 
@@ -60,15 +66,15 @@ HOW TO RUN
   still stored in the storage order above, so FILE holds only the named sessions'
   rows. An unknown name is refused before any editor starts, and the message
   lists the valid names. An empty value is refused. Without --sessions every
-  session runs and FILE is the full 1325-row baseline.
+  session runs and FILE is the full 1458-row baseline.
   Every staging step and every fixture write still happens when sessions are
   filtered, so a selected session meets the same project files it meets in a full
   run. Only the editor launches of sessions that neither run nor were asked for
   are skipped, which is what makes a filtered run quick.
 
   PREREQUISITE SESSIONS
-  Twenty-nine of the forty-two sessions reproduce on their own. The other
-  thirteen read nodes, saved scene files or a message counter that an earlier
+  Twenty-nine of the forty-four sessions reproduce on their own. The other
+  fourteen read nodes, saved scene files or a message counter that an earlier
   session left behind, so they do not. --sessions replays those prerequisites
   automatically and prints their names. A prerequisite is replayed but stores no
   rows, so FILE still holds only the sessions you named.
@@ -77,8 +83,8 @@ HOW TO RUN
     I        H               AC       AB
     L        K               AH       AG
     O        N               AK       AI and AJ
-    Q        P               CONSOLE  A and Y
-    RU       RS
+    Q        P               ASR      AS
+    RU       RS              CONSOLE  A and Y
     S        R
     V        U
   Each pair was measured by replaying it and comparing against the baseline.
@@ -101,7 +107,7 @@ HOW TO RUN
   run and still fails the full run. Use --sessions to work on one command at a
   time. The full run stays mandatory at integration and for validators.
 
-  Each run takes several minutes: one --import plus forty-two editor launches
+  Each run takes several minutes: one --import plus forty-four editor launches
   (in launch order A with no scene, E with no scene, G with no scene, J with no
   scene, T with no scene, W with no scene, X with no scene, Y with no scene, the
   console session with no scene, the eval session with no scene, C with no
@@ -115,11 +121,13 @@ HOW TO RUN
   res://sp2_plain.tscn, AF with res://sp2_twolevel.tscn, AG and AH with
   res://sp2_local.tscn, AI and AK with res://ib_rename.tscn, AJ with
   res://ib_delete.tscn, RS and RU with res://rs_main.tscn, RD with
-  res://rs_derived.tscn, and RI with res://rs_inst.tscn), 1325 stored rows
-  (1195 requests and 130 file checks).
+  res://rs_derived.tscn, RI with res://rs_inst.tscn, AS with
+  res://as_main.tscn, and ASR with res://as_derived.tscn), 1458 stored rows
+  (1324 requests and 134 file checks).
   The plugin has twenty commands, a different count. Rows are stored A, B, C,
   E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, T, U, V, W, X, Y, CONSOLE,
-  Z, AA, AB, AC, AD, AE, AF, AG, AH, AI, AJ, AK, EVAL, RS, RU, RD, RI: a
+  Z, AA, AB, AC, AD, AE, AF, AG, AH, AI, AJ, AK, EVAL, RS, RU, RD, RI,
+  AS, ASR: a
   fresh editor restores the previous session's open scenes, so the no-scene
   sessions (A, E, G, J, T, W, X, Y, the console session and the eval session,
   and C before it opens anything) must run before any scene session. The console
@@ -127,7 +135,9 @@ HOW TO RUN
   both are no-scene, so they run before the first scene session. Appending
   the new sessions keeps rows 1-1222 byte-identical; rows 1223-1325 carry
   the resource-assignment acceptance and rejections, the resource reload, the
-  base-inherited override, and the non-editable-instance guard.
+  base-inherited override, and the non-editable-instance guard; rows 1326-1452
+  carry the attach-script matrix and the derived-scene save, and rows 1453-1458
+  carry the fresh reload of that saved scene.
 
 WHAT IT DOES
   Session A (requests 1-23, no edited scene): status ok with scene_path null;
@@ -570,6 +580,38 @@ Session EVAL (requests 1129-1222, starts with no edited scene, runs right after 
   row's value equals the value the matching display row returned, with a null
   value's display required to be the canonical null text, because invalid text
   parses to null.
+Session AS (requests 1326-1452, as_main.tscn open): the attach-script
+  matrix. A status row opens the session. Every one of the twenty-six
+  refusals and fourteen accepted attaches and detaches is bracketed by the
+  same eval before and after: the per-node script map from `get_script()`,
+  the scene history size, and has-undo. A refusal that changed anything
+  would show, and each accepted request shows exactly +1. The refusals are
+  a missing file, a user:// path, an embedded `::` path, a trailing space,
+  a scene, a png, a C# script and a .tres (none of them a GDScript), an
+  abstract script, a syntax error, an undefined identifier, an unregistered
+  base class, a Node2D script on a Node3D node and on a plain Node, a node
+  inside a non-editable instance, a project path mismatch, a mistyped
+  script_path, a scripted node without --replace, the same script with
+  --replace, a ./ alias path and a .. alias path with --replace (both
+  refused with the alias message, which names the resolved held script),
+  a ./ alias path without --replace (refused by the earlier current-script
+  rule), both and neither of script_path and --detach, --detach with
+  --replace, and a detach on a node with no script. The accepted requests
+  are an attach, a @tool attach, two replaces, an attach plus detach, a
+  @tool script attached to two nodes in turn (the second already has a live
+  instance), a class_name script after the scan, a relative-path-base
+  script, a script that is rewritten on disk to a syntax error between the
+  attach and a second attach of the same path (the cached copy attaches),
+  and an attach to the instance root. Then as_derived.tscn is opened
+  without saving (the reply names the dirty as_main.tscn), the export
+  script attaches to the base-inherited BaseChild, its speed is set to
+  42.0, save_scene runs, and two file_contains rows prove the override row
+  and the script row are on disk.
+Session ASR (requests 1453-1458, a fresh editor on the saved
+  as_derived.tscn): status, the bracket eval (history 0, no undo), an
+  inspect of BaseChild showing speed 42.0, a get_script() read showing
+  res://as_export.gd, and two file_contains rows proving the override and
+  speed rows persisted.
 
 NORMALISATION
   The throwaway project's absolute path is replaced with <PROJECT> in stored
@@ -692,6 +734,24 @@ DETERMINISM PROOF
   acceptance and rejections, the resource reload, the base-inherited override
   and the non-editable-instance guard. The new whole-file sha256 is
   a2d1f45ade08a1ab978848250b65eaebec0e7c0877e9ce16b92fcc6312b5664c.
+  The 1458-row baseline was recorded three times; the three full runs are
+  byte-identical (compare.py IDENTICAL, 1458 pairs, and cmp clean between
+  the runs). A row-by-row diff of the previous 1325-row file against the new
+  file's first 1325 rows finds differences only at rows 826 and 827, the
+  published interface, which gains exactly the attach_script entry as its
+  twenty-first command while the twenty pre-existing entries stay
+  byte-identical; rows 1-825 keep their sha256
+  99f6ebef9215d318e32ee516db497e9c3a12488b19de1321e135da93991056e7 and rows
+  828-1325 are unchanged, so the only early change is the additive interface
+  entry the new command requires. The new 133 rows (AS, ASR) are the
+  attach-script matrix: twenty-six refusals and fourteen accepted attaches
+  and detaches bracketed by the script map, history size and has-undo, the
+  base-inherited attach with a property set and save, and the fresh reload
+  of that saved scene. The repaired build refuses alias paths of the held
+  script; the two --replace alias rows carry the new alias message and the
+  no---replace alias row carries the earlier current-script refusal, all
+  bracketed equal. The new whole-file sha256 is
+  8185f8c86a29d2116b074e3e4eada7227e985f41d9987a34dd460d0b599723ec.
   A saved scene file is hashed only before a save. After save_scene the editor
   may write generated unique_id values into saved node declarations, and an
   override-only declaration can omit it. So the post-save bytes are not
@@ -942,6 +1002,31 @@ COVERAGE (request numbers above)
   inside it, which keeps its value with display null and one added warning; and
   #1204-1222 the parse rows, each returning str_to_var of the display text the
   matching display row's reply carried.
+  attach-script #1326-1452: AS #1326 status; twenty-six refusals, each an
+  eval bracket plus the request plus an equal eval bracket (missing #1328,
+  user:// #1331, embedded :: #1334, trailing space #1337, .tscn #1340, .png
+  #1343, .cs #1346, .tres #1349, @abstract #1352, syntax error #1355,
+  undefined identifier #1358, unregistered base #1361, Node2D script on a
+  Node3D node #1364 and on a plain Node #1367, node inside a non-editable
+  instance #1370, project mismatch #1373, mistyped script_path #1376,
+  scripted node without --replace #1382, same script with --replace #1385,
+  alias ./ path with --replace #1388, alias .. path with --replace #1391,
+  alias ./ path without --replace #1394, script_path with --detach #1397,
+  --detach with --replace #1400, neither field #1403, detach with no script
+  #1406); the two --replace alias rows are refused with the alias message
+  (the path resolves to the held script), and the no---replace alias row is
+  refused by the earlier current-script rule, all bracketed equal. The
+  fourteen accepted attaches and detaches, each bracketed with exactly +1
+  history, are attach #1379, @tool attach #1409, replaces #1412 and #1415,
+  attach #1418 and detach #1421, @tool replaces #1424 and #1427, class_name
+  #1430, relative-path base #1433, cached stale attach #1436, the file
+  rewrite #1438 (an eval row, not an attach), cached attach to the scene
+  root #1440, instance-root attach #1443; open_scene of the derived scene
+  #1445, base-inherited attach #1447 counted once,
+  property set #1449, save_scene #1450, override and script rows on disk
+  #1451-1452; ASR, a fresh editor on the saved scene: status #1453,
+  clean-history bracket #1454, inspect #1455 showing speed 42.0, get_script
+  #1456 showing res://as_export.gd, and the persisted rows #1457-1458.
   Not covered, with reason:
   - "request exceeds the maximum size" (>8 MiB without newline): reaching
     it needs an 8 MB write, and the reported byte count varies with TCP
@@ -992,8 +1077,8 @@ NOTES
   isolated-editor probe that sends a real set-parent (and, for the earlier
   commands, connect-signal) request through the plugin and then triggers the
   editor's Undo/Redo through the safe route.
-  The baseline is only valid while the plugin's replies for these 1291 rows
-  (1162 requests and 129 file checks)
+  The baseline is only valid while the plugin's replies for these 1458 rows
+  (1324 requests and 134 file checks
   are supposed to stay the same. A change that adds or alters a command's
   behavior on purpose needs a new baseline, recorded from the last trusted
   commit, and a fresh determinism check (record three times, compare byte for

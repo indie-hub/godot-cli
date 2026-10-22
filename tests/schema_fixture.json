@@ -754,6 +754,60 @@
      "help": "Absolute path of the target project; canonicalized before sending."
     }
    ]
+  },
+  {
+   "name": "attach_script",
+   "description": "Attach, replace or detach a node's GDScript.",
+   "needs_project_path": true,
+   "edits_scene": true,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "node_path",
+     "flag": null,
+     "positional": 0,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Scene-relative path of the node."
+    },
+    {
+     "name": "script_path",
+     "flag": null,
+     "positional": 1,
+     "type": "string",
+     "required": false,
+     "default": null,
+     "help": "res:// path of the GDScript to attach; omit it when passing --detach."
+    },
+    {
+     "name": "detach",
+     "flag": "--detach",
+     "positional": null,
+     "type": "boolean",
+     "required": false,
+     "default": false,
+     "help": "Remove the node's script instead of attaching one."
+    },
+    {
+     "name": "replace",
+     "flag": "--replace",
+     "positional": null,
+     "type": "boolean",
+     "required": false,
+     "default": false,
+     "help": "Allow attaching a different script to a node that already has one."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
   }
  ]
 }
