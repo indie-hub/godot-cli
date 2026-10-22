@@ -109,6 +109,7 @@ The new node is in the scene and in the file now. You can undo the edits in the 
 | edit | `set-unique-name` | Set or clear a node's `%` unique name. |
 | edit | `instantiate-scene` | Add an instance of a scene under a node. |
 | edit | `set-parent` | Move a node under a new parent. `--keep-global-transform` (the default) keeps a Node2D/Node3D global transform and a Control's global position. The flag is written `--keep-global-transform`, `--keep-global-transform=true` or `--keep-global-transform=false`. |
+| edit | `attach-script` | Attach, replace or detach a node's GDScript. Refuses a script that does not compile before the undo action. |
 | edit | `save-scene` | Save the open scene to its existing file. |
 | edit | `eval` | Run a GDScript snippet in the live editor and return its value; may break the one-undo-action and no-main-thread-blocking rules. |
 

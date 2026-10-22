@@ -59,6 +59,8 @@ One TCP connection per request, on `127.0.0.1:47821` by default:
    `{"command":"console","project_path":"...","tail":<int>,"level":<level or null>,"since":<int>,"clear":false}`,
    or
    `{"command":"eval","project_path":"...","code":"...","timeout":5000}`,
+   or
+   `{"command":"attach_script","node_path":"...","script_path":"res://...","detach":false,"replace":false,"project_path":"..."}`,
    then keeps the socket open for the reply.
 2. The plugin writes one line of JSON back:
    `{"status":"ok","data":...}` or `{"status":"error","message":"..."}`.
@@ -334,10 +336,10 @@ of the property before and after the change; `data.value` is read back
 from the node, so it reflects any clamping a setter applied. The node's
 own `script` property is not assignable through `set-property`: a value
 that names a `res://` script path, a syntax-error path, or an embedded
-`{"class":"GDScript"}` object all keep the existing `cannot set script
-(Object): property type Object is not supported by set_property` refusal,
-because script attachment belongs to the planned `attach-script` command
-(parse check, base-class check, `--replace` rule) and `set-property`'s
+`{"class":"GDScript"}` object all keep the existing
+`cannot set script (Object): property type Object is not supported by set_property`
+refusal, because script attachment belongs to the `attach-script` command
+(compile-state check, base-class check, `--replace` rule) and `set-property`'s
 resource branch is intentionally narrower than that.
 
 A target inside an instanced sub-scene is only accepted when every instance
@@ -346,6 +348,117 @@ otherwise the change would not be saved with the scene, so it is rejected
 up front. All validation (project path, node, property, value) runs before
 the undo action is created, so a rejected request leaves the scene and undo
 history untouched.
+
+`attach_script` attaches, replaces or detaches the GDScript of one node of the
+currently edited scene through the editor's `EditorUndoRedoManager`, as one
+Undo/Redo step named "Attach Script", "Replace Script" or "Detach Script". It
+marks the scene unsaved and saves nothing. `node_path` and `project_path`
+follow the same rules as `rename_node`'s. The request carries exactly one of a
+`script_path` (the `res://` path of a `.gd` file) and the boolean flag
+`detach`; the boolean flag `replace` allows attaching a different script to a
+node that already has one. The field-type checks run first; `script_path`
+together with `detach`, neither of the two, and `detach` together with `replace`
+are refused next, before the shared guard.
+
+Every check runs before the undo action, so a refused request leaves the scene,
+the undo history and the unsaved flag unchanged. The order is: the field-type
+checks; the argument-combination checks; the shared project, scene and node-path
+guard; the instanced-sub-scene walk; the node's current script; then the helper's
+path-shape and existence checks and the script load with its type, abstract,
+compiled-state and base-class checks. A request refused by the field-type or
+argument checks, the guard, the instance walk, the current-script rules, or the
+helper's path-shape and existence checks loads nothing and runs no script code.
+A script loaded for the first time and then refused by the base-class check may
+run a `@tool` script's static `var` initializers once; an instance `_init` does
+not run. A refusal whose Script is already cached, such as a cached alias of the
+script the node holds or a cached base-class refusal, runs no initializer again,
+because the loader returns the cached Script.
+
+The node's current script is read from the node, never from disk. `detach`
+refuses a node with no script. Attaching refuses a node that already holds a
+script unless `replace` is given, and refuses even with `replace` when the node
+already holds the script, whether the path is written canonically or as an
+alias that resolves to the same script. The canonical form is checked before
+anything is loaded; the alias form is checked after the load.
+
+The loaded script is validated through its compiled state and is never
+reloaded: `Script.reload()` recompiles the in-memory source, so it neither
+re-reads the file nor is safe on a script that already has an instance, and a
+pathless `GDScript` probe would falsely refuse a registered `class_name` script
+and a relative-path base. An empty instance base type is what a GDScript that
+did not compile reports, so a syntax error, an analysis error (an undefined
+name or function, a type mismatch, a missing preload) and an
+`extends SomeClassName` base that the file-system scan has not registered yet
+are all refused with the compile message below. This is stricter than the
+editor's own `set_script`, which keeps such a script. An `@abstract` script is
+refused before the base check, and the target must have the script's instance
+base type (`Node.is_class`, so a subclass passes). A runtime `_init` failure
+cannot be detected, because validation creates no instance.
+
+The command never re-reads a script file: it attaches the copy the resource
+loader holds. A file edited on disk after the script was loaded therefore
+attaches as the cached copy (a file edited to a syntax error still attaches),
+and a file fixed on disk after a failed load stays refused until the editor
+reloads it. This is a decision of the first slice.
+
+Replacing a script resets the node's exported values to the new script's
+defaults; the command does not capture and reapply them. Undo restores the old
+script with its own defaults, not the values that were set before. Node
+metadata is not touched and survives replace, undo and redo.
+
+The change survives a save when the edited scene serializes the node. Attaching
+to a base-inherited node saves an override row in the derived scene; attaching
+to an instance root persists; a node inside an instanced sub-scene without
+Editable Children enabled is refused with the instance message below.
+
+The reply is `{"status":"ok","data":{"node_path","action","script",
+"previous_script","tool_script"}}`. `action` is `"attach"`, `"replace"` or
+`"detach"`. `script` is the attached `res://` path, or null on detach.
+`previous_script` is the path the node held before, or null. `tool_script` is
+true when the attached script carries `@tool`, so its `_init` may have run when
+it was assigned to a node in the tree; it is false on detach.
+
+The command's own refusals are (the message column is copied from the source;
+the second column names what each `%s` is replaced with, in order):
+
+| Request | `%s` fields, in order | Message |
+| --- | --- | --- |
+| `node_path` or `project_path` is not a string | none | `attach_script requires string fields: node_path, project_path` |
+| `script_path` is present but not a string | none | `attach_script requires a string field: script_path` |
+| `detach` or `replace` is not a boolean | none | `attach_script requires boolean fields: detach, replace` |
+| `script_path` is given together with `detach` | none | `attach_script takes either script_path or --detach, not both` |
+| neither `script_path` nor `detach` is given | none | `attach_script requires one of: a script_path, or --detach` |
+| `detach` is given together with `replace` | none | `attach_script cannot combine --detach with --replace` |
+| the node is inside an instanced sub-scene without Editable Children enabled | node path | `node is not editable in this scene: %s is inside an instanced sub-scene without Editable Children enabled, so the script would not be saved` |
+| `detach` is requested on a node with no script | node path | `node has no script to detach: %s` |
+| the node already has a script and `replace` is not given | node path, current script path | `node already has a script: %s holds %s; pass --replace to attach a different one` |
+| the node already holds that exact script, even with `replace` | node path, script path | `node already has that script: %s holds %s` |
+| the node already holds that script, written as an alias of its path (checked after the load) | script path, node path, current script path | `attach_script refused %s for node %s: the node already holds this script (the path resolves to %s), so nothing was attached and the node is unchanged` |
+| the path is not a `res://` path (a `user://`, absolute or bare relative path), or it contains `::` | script path, node path | `attach_script refused %s for node %s: a script must be named by its own res:// path, and an embedded sub-resource path (one with ::) names a script inside another file rather than a script file of its own; pass the res:// path of the .gd file to attach` |
+| no resource exists at the path | script path, node path | `attach_script refused %s for node %s: no resource was found at that path, so the file is missing, it is a directory, or its type is not one the editor imports; check the path and that the file has been imported, then retry` |
+| the path loads as null | script path, node path | `attach_script refused %s for node %s: the path names a resource the editor cannot load; check the path and that the file has been imported, then retry` |
+| the loaded resource is not a GDScript | script path, node path, loaded class | `attach_script refused %s for node %s: only a GDScript can be attached, but that path is a %s; pass the res:// path of a .gd file to attach` |
+| the script is declared `@abstract` | script path, node path | `attach_script refused %s for node %s: the script is declared @abstract, so it has no instance a node could run; attach a concrete subclass of it instead` |
+| the target node does not have the script base class | script path, node path, base class, node path, node class, base class | `attach_script refused %s for node %s: the script extends %s and node %s is a %s, so the engine would refuse or silently misbehave on the assignment; attach it to a node of class %s or a subclass, or pass a script whose base class matches this node` |
+
+A script that did not compile is refused with this message:
+
+```
+attach_script refused %s for node %s: the script did not compile, so nothing was attached and node %s is unchanged. The usual causes are a syntax error, an analysis error (an undefined name or function, a type mismatch, a missing preload), or a base class that is not known yet, such as extends SomeClassName before the project file-system scan has registered it. Open the script in the editor or read the editor console, which shows the engine's own parse error, fix it, then retry; if the file was fixed on disk after the editor had already failed to load it, the cached broken copy stays until the editor reloads the file, because this command never re-reads it.
+```
+
+The shared guard's refusals, which run after the field-type and
+argument-combination checks and before the instance walk (see the order above):
+
+| Request | `%s` fields, in order | Message |
+| --- | --- | --- |
+| the project path does not match the running editor | current project path, requested project path | `project path mismatch: this editor has %s open, not %s` |
+| no scene is being edited | none | `no scene is currently being edited` |
+| `node_path` is empty | none | `node path must not be empty; use "." for the scene root` |
+| `node_path` is absolute | none | `node path must be relative to the scene root; absolute paths are rejected` |
+| `node_path` contains `:` | none | `node path must not contain ':'` |
+| `node_path` contains a `..` segment | none | `node path must not contain '..'` |
+| the node does not exist in the edited scene | node path | `node not found: %s` |
 
 `delete_node` removes a node and its entire subtree from the currently
 edited scene, also through the editor's `EditorUndoRedoManager` as a single
@@ -1192,6 +1305,9 @@ cargo run -- call console --tail 20 --level error --since 41 --project-path /pat
 cargo run -- call console --clear --project-path /path/to/project
 cargo run -- call set-parent Box Target --project-path /path/to/project
 cargo run -- call set-parent Box/Empty Target --index 0 --project-path /path/to/project
+cargo run -- call attach-script Player res://player.gd --project-path /path/to/project
+cargo run -- call attach-script Player res://enemy.gd --replace --project-path /path/to/project
+cargo run -- call attach-script Player --detach --project-path /path/to/project
 ```
 
 `status` reports the editor version, whether a scene is playing, and the
@@ -1292,6 +1408,14 @@ global position only of a `Control`. The
 CLI's boolean flags accept the bare flag as true and an explicit `=true` or
 `=false`, so `--keep-global-transform=false` requests the false value.
 Nothing is saved until `save-scene` runs.
+
+`attach-script <scene-relative-path> <res://-script-path> --project-path <dir> [--replace]`
+attaches that GDScript to the node through the editor's undo/redo stack (see
+Protocol above), canonicalizing `--project-path` the same way as the other
+mutating commands. `--replace` allows a node that already holds a different
+script to take this one. `attach-script <scene-relative-path> --detach
+--project-path <dir>` removes the node's script instead. Either form is one
+Undo/Redo step, and nothing is saved until `save-scene` runs.
 
 ## Verification
 
