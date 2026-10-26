@@ -26,7 +26,10 @@ extends EditorPlugin
 ## direct scene edit from the snippet creates no undo entry) and rule 6 (the
 ## snippet can hold the main thread); its timeout is best effort and never
 ## interrupts the call, and it marks the scene unsaved only when the edited
-## scene tree changed. The port is fixed, so only
+## scene tree changed. The plugin also registers the `GodotPipelineCapture`
+## game autoload on first start (guarded, see `_enter_tree`) and attaches the
+## editor side of the in-game log and capture channel (`debug_plugin.gd`,
+## added and removed with the plugin). The port is fixed, so only
 ## one Godot editor instance can host this plugin on a machine at a time.
 ## Requests and replies are single newline-terminated JSON objects. The plugin
 ## assembles a request across reads (up to an 8 MiB cap and a 5 second idle
@@ -86,9 +89,20 @@ const PROTOCOL_VERSION := 1
 ## registered no matter how often the plugin is disabled and enabled.
 const ConsoleCommand := preload("commands/console.gd")
 
+## The game autoload behind the in-game capture helper. The guarded add in
+## `_enter_tree` writes exactly this line; the engine may later normalize the
+## value to the `uid://` form of the same script on a toggle cycle.
+const AUTOLOAD_NAME := "GodotPipelineCapture"
+const AUTOLOAD_PATH := "res://addons/godot_pipeline/scripts/helper.gd"
+
+## The editor side of the in-game log and capture channel. Created once when
+## the plugin loads and removed when it unloads, like the console logger.
+const DebugPlugin := preload("debug_plugin.gd")
+
 var _server: TCPServer
 var _connection: StreamPeerTCP
 var _console_logger: Logger
+var _debug_plugin: EditorDebuggerPlugin
 
 var _request_buffer := PackedByteArray()
 var _request_scanned := 0
@@ -96,6 +110,7 @@ var _request_last_activity_msec := 0
 
 
 func _enter_tree() -> void:
+	_register_autoload_once()
 	_server = TCPServer.new()
 	var error := _server.listen(PORT, HOST)
 	if error != OK:
@@ -107,6 +122,9 @@ func _enter_tree() -> void:
 	if _console_logger == null:
 		_console_logger = ConsoleCommand.Capture.new()
 		OS.add_logger(_console_logger)
+	if _debug_plugin == null:
+		_debug_plugin = DebugPlugin.new()
+		add_debugger_plugin(_debug_plugin)
 
 
 func _exit_tree() -> void:
@@ -114,10 +132,48 @@ func _exit_tree() -> void:
 	if _console_logger != null:
 		OS.remove_logger(_console_logger)
 		_console_logger = null
+	if _debug_plugin != null:
+		remove_debugger_plugin(_debug_plugin)
+		_debug_plugin = null
 	_reset_connection()
 	if _server != null:
 		_server.stop()
 		_server = null
+
+
+## Registers the game autoload exactly once: only when no autoload holds the
+## name (a colliding entry is left untouched), and never when the helper
+## script file itself is missing (one editor error, no registration). The
+## entry takes effect live at once and reaches `project.godot` on disk with
+## the next project-settings save.
+func _register_autoload_once() -> void:
+	var key := "autoload/" + AUTOLOAD_NAME
+	if ProjectSettings.has_setting(key):
+		return
+	if not ResourceLoader.exists(AUTOLOAD_PATH):
+		push_error("Godot Pipeline: capture helper missing, autoload not registered: %s" % AUTOLOAD_PATH)
+		return
+	add_autoload_singleton(AUTOLOAD_NAME, AUTOLOAD_PATH)
+
+
+## Removes the game autoload, but only the entry this plugin wrote: the
+## `res://` value of the guarded add, or the `uid://` value the engine
+## normalizes it to on a toggle cycle. A colliding entry keeps its value.
+func _disable_plugin() -> void:
+	var key := "autoload/" + AUTOLOAD_NAME
+	if ProjectSettings.has_setting(key) and _is_own_autoload(str(ProjectSettings.get_setting(key))):
+		remove_autoload_singleton(AUTOLOAD_NAME)
+
+
+## Whether an autoload value is the one the guarded add wrote, in either of
+## its two on-disk forms.
+static func _is_own_autoload(value: String) -> bool:
+	if value == "*" + AUTOLOAD_PATH:
+		return true
+	var uid := ResourceLoader.get_resource_uid(AUTOLOAD_PATH)
+	if uid < 0:
+		return false
+	return value == "*" + ResourceUID.id_to_text(uid)
 
 
 func _process(_delta: float) -> void:
