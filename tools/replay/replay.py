@@ -75,6 +75,16 @@ STAGED_COMMANDS = [
         '\t"attach_script": preload("commands/attach_script.gd"),',
         '\t"eval": preload("commands/eval.gd"),',
     ),
+    (
+        os.path.join("commands", "play.gd"),
+        '\t"play": preload("commands/play.gd"),',
+        '\t"attach_script": preload("commands/attach_script.gd"),',
+    ),
+    (
+        os.path.join("commands", "stop.gd"),
+        '\t"stop": preload("commands/stop.gd"),',
+        '\t"play": preload("commands/play.gd"),',
+    ),
 ]
 
 PROJECT_GODOT = """; Engine configuration file.
@@ -84,6 +94,11 @@ config/name="gp015golden"
 ; No run/main_scene: the editor must start session A with no edited scene.
 [editor_plugins]
 enabled=PackedStringArray("res://addons/godot_pipeline/plugin.cfg")
+[display]
+; The play sessions start a game; the editor passes no --headless to it, so
+; the project setting is the only way to keep the replay windowless.
+display_server/driver="headless"
+display_server/driver.macos="headless"
 """
 
 PROPS_GD = """extends Node
@@ -3145,7 +3160,7 @@ def launch(proj, scene):
     return subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def stop(proc):
+def stop(proc, proj=None):
     if proc.poll() is None:
         proc.terminate()
         try:
@@ -3155,9 +3170,38 @@ def stop(proc):
             proc.wait(timeout=15)
     if proc.poll() is None:
         raise RuntimeError("editor process would not die")
+    # The game a play command starts is a separate process; the editor does not
+    # kill it when the editor is terminated, and a leftover game would make the
+    # next session non-deterministic.
+    if proj is not None:
+        found = subprocess.run(["pgrep", "-fl", proj], capture_output=True, text=True)
+        for line in found.stdout.splitlines():
+            pid = int(line.split(None, 1)[0])
+            if pid == proc.pid:
+                continue
+            try:
+                os.kill(pid, 15)
+            except OSError:
+                pass
 
 
 def run_session(port, proj, scene, requests, expected_scene, ready_filesystem=False):
+    if not scene:
+        # A session that opens a scene leaves it in the editor layout once the
+        # layout-save timer fires, and the next editor with no scene argument
+        # reopens it. The layout is saved 0.5 s after a scene opens, so whether a
+        # previous session's scene survives depends on how long that session ran;
+        # under load the no-scene check below then sees a stale scene. Drop the
+        # saved layout before a no-scene launch only when it names scenes, so the
+        # isolation does not depend on timing. Every editor writes a layout with
+        # an empty scene list, and removing that one would change the startup log
+        # that the `console` rows count.
+        layout = os.path.join(proj, ".godot", "editor", "editor_layout.cfg")
+        if os.path.exists(layout):
+            for line in open(layout):
+                if line.startswith("open_scenes=") and line.strip() != "open_scenes=PackedStringArray()":
+                    os.remove(layout)
+                    break
     proc = launch(proj, scene)
     try:
         wait_listener(port)
@@ -3181,6 +3225,11 @@ def run_session(port, proj, scene, requests, expected_scene, ready_filesystem=Fa
                 with open(os.path.join(proj, text), "rb") as f:
                     digest = hashlib.sha256(f.read()).hexdigest()
                 rows.append(("CHECK file_sha256 %s" % text, digest))
+                continue
+            if kind == "chmod":
+                rel, _, mode = text.partition("|")
+                os.chmod(os.path.join(proj, rel), int(mode, 8))
+                rows.append(("CHECK chmod %s" % text, "ok"))
                 continue
             if kind in ("file_contains", "file_not_contains"):
                 rel, _, needle = text.partition("|")
@@ -3211,7 +3260,7 @@ def run_session(port, proj, scene, requests, expected_scene, ready_filesystem=Fa
                          reply.replace(proj, "<PROJECT>")))
         return rows
     finally:
-        stop(proc)
+        stop(proc, proj)
 
 
 # A minimal valid 2x2 RGBA PNG (a solid red square), built so the bytes are
@@ -3739,6 +3788,157 @@ def build_asr():
     ]
 
 
+# Play and stop fixtures (sessions PL and PS). Written only after every
+# existing session, so session W's listings never name them and rows before
+# PL stay byte-identical.
+PL_CLEAN_TSCN = """[gd_scene format=3]
+
+[node name="PlClean" type="Node2D"]
+"""
+
+PL_OTHER_TSCN = """[gd_scene format=3]
+
+[node name="PlOther" type="Node2D"]
+"""
+
+PL_RO_TSCN = """[gd_scene format=3]
+
+[node name="PlRo" type="Node2D"]
+"""
+
+PL_SCRIPT_GD = """extends Node2D
+"""
+
+def write_pl_fixtures(proj):
+    for name, text in [
+        ("pl_clean.tscn", PL_CLEAN_TSCN),
+        ("pl_other.tscn", PL_OTHER_TSCN),
+        ("pl_script.gd", PL_SCRIPT_GD),
+    ]:
+        with open(os.path.join(proj, name), "w") as f:
+            f.write(text)
+    os.makedirs(os.path.join(proj, "pl_ro"))
+    with open(os.path.join(proj, "pl_ro", "pl_ro.tscn"), "w") as f:
+        f.write(PL_RO_TSCN)
+
+
+# Every play and stop row that can change editor state is bracketed by the
+# same read: playing state, playing scene, unsaved scenes, open scenes and the
+# edited scene path. A refused request leaves all five equal.
+PL_BRACKET_CODE = ("extends RefCounted\nfunc run(editor, undo_redo):\n"
+    "\tvar root = editor.get_edited_scene_root()\n"
+    "\tvar history = null\n"
+    "\tif root != null:\n"
+    "\t\tvar h = undo_redo.get_history_undo_redo(undo_redo.get_object_history_id(root))\n"
+    "\t\thistory = h.get_history_count()\n"
+    "\treturn {\"playing\": editor.is_playing_scene(),\n"
+    "\t\t\"playing_scene\": editor.get_playing_scene(),\n"
+    "\t\t\"unsaved\": Array(editor.get_unsaved_scenes()),\n"
+    "\t\t\"edited\": (root.scene_file_path if root != null else null),\n"
+    "\t\t\"history\": history}\n")
+
+
+def pl_play(scene=None, main=False, project="<PROJ>"):
+    request = {"command": "play", "project_path": project}
+    if scene is not None:
+        request["scene_path"] = scene
+    if main:
+        request["main"] = True
+    return ("line", json.dumps(request, separators=(",", ":")))
+
+
+def pl_stop(project="<PROJ>"):
+    return ("line", json.dumps({"command": "stop", "project_path": project},
+                               separators=(",", ":")))
+
+
+def pl_bracket(out, request):
+    out.append(as_eval(PL_BRACKET_CODE))
+    out.append(request)
+    out.append(as_eval(PL_BRACKET_CODE))
+
+
+def build_pl0():
+    # Session PL0 runs first in the run order, while a fresh editor has no
+    # edited scene, so the default target can be refused. Its rows are stored
+    # with the other play rows at the end.
+    out = [("line", '{"command":"status"}'), as_eval(PL_BRACKET_CODE)]
+    pl_bracket(out, pl_play())
+    return out
+
+
+def build_pl():
+    # Session PL: a clean play, a dirty-scene play that saves, a restart, the
+    # refusals, a dirty background scene, and a save that cannot complete.
+    out = [
+        ("line", '{"command":"open_scene","project_path":"<PROJ>","scene_path":"res://pl_clean.tscn","save":false}'),
+        ("line", '{"command":"status"}'),
+        as_eval(PL_BRACKET_CODE),
+        ("file_sha256", "pl_clean.tscn"),
+        pl_play(),
+        pl_stop(),
+        pl_stop(),
+        ("file_sha256", "pl_clean.tscn"),
+        rset(".", "position", "[11, 22]"),
+        as_eval(PL_BRACKET_CODE),
+        ("file_not_contains", "pl_clean.tscn|position = Vector2(11, 22)"),
+        pl_play(),
+        ("file_contains", "pl_clean.tscn|position = Vector2(11, 22)"),
+        as_eval(PL_BRACKET_CODE),
+        pl_play(),
+        pl_stop(),
+    ]
+    for request in [
+        pl_play("res://pl_missing.tscn"),
+        pl_play("res://pl_script.gd"),
+        pl_play("./pl_clean.tscn"),
+        pl_play(main=True),
+        ("line", '{"command":"play","project_path":"<PROJ>","scene_path":"res://pl_clean.tscn","main":true}'),
+        pl_play(project=WRONG_PROJECT),
+    ]:
+        pl_bracket(out, request)
+    # A dirty scene left open in another tab is refused before any save.
+    out.append(rset(".", "position", "[5, 6]"))
+    out.append(("line", '{"command":"open_scene","project_path":"<PROJ>","scene_path":"res://pl_other.tscn","save":false}'))
+    pl_bracket(out, pl_play())
+    out.append(("line", '{"command":"open_scene","project_path":"<PROJ>","scene_path":"res://pl_clean.tscn","save":false}'))
+    out.append(("line", '{"command":"save_scene","project_path":"<PROJ>"}'))
+    # A save that the editor cannot complete: the directory is read-only, so
+    # the scene stays unsaved and the command refuses without starting a game.
+    out.append(("line", '{"command":"open_scene","project_path":"<PROJ>","scene_path":"res://pl_ro/pl_ro.tscn","save":false}'))
+    out.append(rset(".", "position", "[3, 4]"))
+    out.append(as_eval(PL_BRACKET_CODE))
+    out.append(("file_sha256", "pl_ro/pl_ro.tscn"))
+    out.append(("chmod", "pl_ro|555"))
+    pl_bracket(out, pl_play())
+    out.append(("line", '{"command":"status"}'))
+    out.append(as_eval(PL_BRACKET_CODE))
+    out.append(("file_sha256", "pl_ro/pl_ro.tscn"))
+    out.append(("chmod", "pl_ro|755"))
+    return out
+
+
+def build_ps():
+    # Session PS: stop with nothing playing, stop a running game, stop again,
+    # and the three refusals.
+    return [
+        ("line", '{"command":"status"}'),
+        as_eval(PL_BRACKET_CODE),
+        pl_stop(),
+        as_eval(PL_BRACKET_CODE),
+        pl_play(),
+        as_eval(PL_BRACKET_CODE),
+        pl_stop(),
+        as_eval(PL_BRACKET_CODE),
+        pl_stop(),
+        as_eval(PL_BRACKET_CODE),
+        ("line", '{"command":"stop","project_path":"/no/replay-mismatch"}'),
+        ("line", '{"command":"stop"}'),
+        ("line", '{"command":"stop","project_path":5}'),
+        as_eval(PL_BRACKET_CODE),
+    ]
+
+
 # The order rows are stored in, which is not the order the sessions run in.
 # Each session writes its rows at its own place here, so a session that
 # --sessions left out leaves a gap instead of shifting the rows after it.
@@ -3746,7 +3946,7 @@ SESSION_ORDER = ("A", "B", "C", "E", "D", "F", "G", "H", "I", "J", "K", "L",
                  "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y",
                  "CONSOLE", "Z", "AA", "AB", "AC", "AD", "AE", "AF", "AG",
                  "AH", "AI", "AJ", "AK", "EVAL", "RS", "RU", "RD", "RI",
-                 "AS", "ASR")
+                 "AS", "ASR", "PL0", "PS", "PL")
 
 # The request list of each session, in storage order. A session records exactly
 # one row per request, so the length of these lists is the stored row layout.
@@ -3766,7 +3966,8 @@ SESSION_REQUESTS = (
     ("AH", build_ah()), ("AI", build_ai()), ("AJ", build_aj()),
     ("AK", build_ak()), ("EVAL", build_eval()), ("RS", build_rs()),
     ("RU", build_ru()), ("RD", build_rd()), ("RI", build_ri()),
-    ("AS", build_as()), ("ASR", build_asr()),
+    ("AS", build_as()), ("ASR", build_asr()), ("PL0", build_pl0()),
+    ("PS", build_ps()), ("PL", build_pl()),
 )
 
 
@@ -4078,7 +4279,7 @@ def main():
         # command files are copied back too. The set-parent fixtures are written
         # now as well, so the earlier sessions never listed them.
         for rel in ("console.gd", "set_parent.gd", "eval.gd",
-                    "attach_script.gd"):
+                    "attach_script.gd", "play.gd", "stop.gd"):
             shutil.copy2(os.path.join(a.plugin_dir, "commands", rel),
                          os.path.join(dst, "commands", rel))
         with open(target, "w") as f:
@@ -4092,6 +4293,10 @@ def main():
         # project files, so a file added earlier would change its rows, and no
         # session after Y lists resources.
         play("CONSOLE", None, build_console(), None)
+        # The play and stop commands are in the copied plugin from session Y
+        # on. PL0 records the no-scene refusal here, while a fresh editor has
+        # no edited scene, and stores its rows with the other play rows.
+        play("PL0", None, build_pl0(), None)
         with open(os.path.join(proj, "eval_bad_preload.gd"), "w") as f:
             f.write(EVAL_BAD_PRELOAD_GD)
         play("EVAL", None, build_eval(), None)
@@ -4150,6 +4355,13 @@ def main():
              ready_filesystem=True)
         play("ASR", "res://as_derived.tscn", build_asr(),
              "res://as_derived.tscn")
+        # The play and stop sessions run last, so their fixtures are written
+        # here and their rows are appended at the end of the baseline. PL
+        # starts with no edited scene (the no-scene refusal), then opens the
+        # scenes it needs; PS runs on the scene PL saved.
+        write_pl_fixtures(proj)
+        play("PS", "res://pl_clean.tscn", build_ps(), "res://pl_clean.tscn")
+        play("PL", "res://pl_clean.tscn", build_pl(), "res://pl_clean.tscn")
         rows = [row for name in SESSION_ORDER for row in blocks[name]]
         with open(a.out, "w") as f:
             for req, rep in rows:

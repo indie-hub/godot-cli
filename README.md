@@ -8,7 +8,7 @@ The agent sends commands over a local socket. Every edit goes through the editor
 
 - It talks only to a plugin that you install in your own project. The connection is local, over 127.0.0.1.
 - Scene edits go through the editor's undo and redo stack, so you can undo them in the editor. Saving (`save-scene`) and opening a scene (`open-scene`) are not undo steps.
-- It writes nothing to disk unless you run `save-scene`, except one line the plugin itself manages: on the first start with the plugin enabled it registers the `GodotPipelineCapture` game autoload, and the `[autoload]` entry reaches `project.godot` with the next project-settings save. Disabling the plugin removes it again. See `docs/reference.md` ("Game helper") for the exact lines.
+- It writes a scene file when you run `save-scene`, when `play` saves an unsaved scene before it launches, and when the editor rewrites the open scene's file as a play starts (Godot writes its own form of that file even when nothing was unsaved). `play`'s `saved` list names only the scenes the command itself saved. It also writes one line the plugin manages: on the first start with the plugin enabled it registers the `GodotPipelineCapture` game autoload, and the `[autoload]` entry reaches `project.godot` with the next project-settings save. Disabling the plugin removes it again. See `docs/reference.md` for `play` and the "Game helper" section.
 - It does not modify the Godot engine.
 
 ## Requirements
@@ -113,9 +113,11 @@ The new node is in the scene and in the file now. You can undo the edits in the 
 | edit | `set-parent` | Move a node under a new parent. `--keep-global-transform` (the default) keeps a Node2D/Node3D global transform and a Control's global position. The flag is written `--keep-global-transform`, `--keep-global-transform=true` or `--keep-global-transform=false`. |
 | edit | `attach-script` | Attach, replace or detach a node's GDScript. Refuses a script that does not compile before the undo action. |
 | edit | `save-scene` | Save the open scene to its existing file. |
+| run | `play` | Play the edited scene, a scene named by a `res://` path, or the main scene. Saves an unsaved edited scene first; opens a game window unless the project sets a headless display driver. |
+| run | `stop` | Stop the running game. Does nothing when no game runs. |
 | edit | `eval` | Run a GDScript snippet in the live editor and return its value; may break the one-undo-action and no-main-thread-blocking rules. |
 
-Every edit command except `save-scene` goes through the editor's undo and redo stack and saves nothing. Run `save-scene` to write the scene to disk. `open-scene` changes which scene is open and writes no file unless you pass `--save`.
+Every edit command except `save-scene` goes through the editor's undo and redo stack and saves nothing. Run `save-scene` to write the scene to disk; `play` saves an unsaved edited scene before it launches the game. `open-scene` changes which scene is open and writes no file unless you pass `--save`.
 
 ## Status
 

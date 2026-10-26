@@ -1,4 +1,4 @@
-Golden replay harness for the Godot Pipeline editor plugin (1458 rows:
+Golden replay harness for the Godot Pipeline editor plugin (1530 rows:
 1-148 unchanged, 149-200 cover inspect-class and open-scene, 201-262 cover
 connect-signal, 263-362 cover set-group, 363-413 cover set-unique-name,
 414-477 cover the rename unique-flag fix, 478-530 cover the rename option C
@@ -7,8 +7,8 @@ reloads of the accepted inherited-rename cases, 631-636 cover the
 instantiate-scene no-scene guards, 637-719 cover instantiate-scene accepted and
 rejected cases, 720-729 cover the fresh reloads of the accepted instances,
 730-764 cover list-resources, 765-825 cover inspect-resource, 826-827
-cover the published command interface (now twenty-one entries, with console,
-set_parent, eval and attach_script last), 828-842 cover console validation, 843-938 cover
+cover the published command interface (now twenty-three entries, with console,
+set_parent, eval, attach_script, play and stop last), 828-842 cover console validation, 843-938 cover
 set-parent, 939-945 cover the fresh reload of the accepted set-parent moves,
 946-976 cover set-parent in a derived scene, 977-982 cover the fresh reload of
 the derived-scene moves, 983-1051 cover set-parent against the inherited-node
@@ -27,7 +27,8 @@ instance plus a position change on the instance root, 1326-1452 cover the
 attach-script matrix (twenty-six refusals and fourteen accepted attaches
 and detaches, every request bracketed by the script map, history size and
 has-undo, then one attach on a base-inherited node with a property set and
-a save), and 1453-1458 cover the fresh reload of that saved derived scene.
+a save), 1453-1458 cover the fresh reload of that saved derived scene, and
+1459-1530 cover play and stop.
 The script identity is read directly with `get_script()` through `eval`
 (six readings bracketing the three script rejection rows in the build
 script, and a per-node script map in the same eval that reads the history
@@ -66,15 +67,15 @@ HOW TO RUN
   still stored in the storage order above, so FILE holds only the named sessions'
   rows. An unknown name is refused before any editor starts, and the message
   lists the valid names. An empty value is refused. Without --sessions every
-  session runs and FILE is the full 1458-row baseline.
+  session runs and FILE is the full 1530-row baseline.
   Every staging step and every fixture write still happens when sessions are
   filtered, so a selected session meets the same project files it meets in a full
   run. Only the editor launches of sessions that neither run nor were asked for
   are skipped, which is what makes a filtered run quick.
 
   PREREQUISITE SESSIONS
-  Twenty-nine of the forty-four sessions reproduce on their own. The other
-  fourteen read nodes, saved scene files or a message counter that an earlier
+  Thirty-two of the forty-seven sessions reproduce on their own. The other
+  fifteen read nodes, saved scene files or a message counter that an earlier
   session left behind, so they do not. --sessions replays those prerequisites
   automatically and prints their names. A prerequisite is replayed but stores no
   rows, so FILE still holds only the sessions you named.
@@ -107,10 +108,11 @@ HOW TO RUN
   run and still fails the full run. Use --sessions to work on one command at a
   time. The full run stays mandatory at integration and for validators.
 
-  Each run takes several minutes: one --import plus forty-four editor launches
+  Each run takes several minutes: one --import plus forty-seven editor launches
   (in launch order A with no scene, E with no scene, G with no scene, J with no
   scene, T with no scene, W with no scene, X with no scene, Y with no scene, the
-  console session with no scene, the eval session with no scene, C with no
+  console session with no scene, the play no-scene session with no scene, the
+  eval session with no scene, C with no
   scene,
   B with res://main.tscn,
   D and F with res://connect.tscn, H and I with res://group.tscn, K and L with
@@ -122,12 +124,13 @@ HOW TO RUN
   res://sp2_local.tscn, AI and AK with res://ib_rename.tscn, AJ with
   res://ib_delete.tscn, RS and RU with res://rs_main.tscn, RD with
   res://rs_derived.tscn, RI with res://rs_inst.tscn, AS with
-  res://as_main.tscn, and ASR with res://as_derived.tscn), 1458 stored rows
-  (1324 requests and 134 file checks).
-  The plugin has twenty commands, a different count. Rows are stored A, B, C,
+  res://as_main.tscn, ASR with res://as_derived.tscn, and PS and PL with
+  res://pl_clean.tscn), 1530 stored rows
+  (1388 requests and 142 file checks).
+  The plugin has twenty-three commands, a different count. Rows are stored A, B, C,
   E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, T, U, V, W, X, Y, CONSOLE,
   Z, AA, AB, AC, AD, AE, AF, AG, AH, AI, AJ, AK, EVAL, RS, RU, RD, RI,
-  AS, ASR: a
+  AS, ASR, PL0, PS, PL: a
   fresh editor restores the previous session's open scenes, so the no-scene
   sessions (A, E, G, J, T, W, X, Y, the console session and the eval session,
   and C before it opens anything) must run before any scene session. The console
@@ -136,8 +139,9 @@ HOW TO RUN
   the new sessions keeps rows 1-1222 byte-identical; rows 1223-1325 carry
   the resource-assignment acceptance and rejections, the resource reload, the
   base-inherited override, and the non-editable-instance guard; rows 1326-1452
-  carry the attach-script matrix and the derived-scene save, and rows 1453-1458
-  carry the fresh reload of that saved scene.
+  carry the attach-script matrix and the derived-scene save, rows 1453-1458
+  carry the fresh reload of that saved scene, and rows 1459-1530 carry the
+  play and stop sessions.
 
 WHAT IT DOES
   Session A (requests 1-23, no edited scene): status ok with scene_path null;
@@ -395,7 +399,7 @@ WHAT IT DOES
 
 Session Y (requests 826-827, no edited scene, runs right after session X):
   the published command interface. Request 826 asks for the interface with no
-  other field and gets protocol_version 1 with the twenty command entries,
+  other field and gets protocol_version 1 with the twenty-three command entries,
   each handler's own name, description, flags and arguments, in the order of the
   plugin's COMMANDS table. Request 827 repeats it with a project_path that is
   not the project's: the interface request checks no project path, so the reply
@@ -612,6 +616,31 @@ Session ASR (requests 1453-1458, a fresh editor on the saved
   inspect of BaseChild showing speed 42.0, a get_script() read showing
   res://as_export.gd, and two file_contains rows proving the override and
   speed rows persisted.
+Session PL0 (requests 1459-1463, no edited scene, runs right after the console
+  session and before the eval session, and stores its rows at the end): status,
+  then a default-target play with no scene open, bracketed by the play-state
+  eval. It runs while no scene is open, so the refusal is reachable without
+  closing a scene.
+Session PS (requests 1464-1477, a fresh editor on res://pl_clean.tscn):
+  status, stop with nothing playing, play, stop a running game, stop again
+  while idle, and three stop refusals (a wrong project path, a request with no
+  project_path field, and a non-string project_path), each bracketed by the
+  play-state eval.
+Session PL (requests 1478-1530, a fresh editor on res://pl_clean.tscn): the
+  play matrix. status and the bracket; a play of the clean edited scene
+  (saved [], restarted false, playing true); stop; stop again; a file hash of
+  the clean scene; a set_property that dirties it; a bracket naming the
+  unsaved scene; file_not_contains before the play and file_contains after
+  it, with the play's reply naming the saved scene and the bracket after it
+  showing an empty unsaved list; a second play reporting restarted true; stop;
+  seven refusals each bracketed by the play-state eval: a missing path, a .gd
+  path, a relative path, --main with no main scene configured, a request
+  carrying both a scene path and main, a wrong project path, and a play while
+  another open scene is dirty (the refusal names that scene). Then the save
+  that cannot complete: open res://pl_ro/pl_ro.tscn, dirty it, hash it, chmod
+  the directory to 555, the refused play, status, a bracket that still lists
+  the scene as unsaved, and the equal hash after the refusal; finally chmod
+  back to 755.
 
 NORMALISATION
   The throwaway project's absolute path is replaced with <PROJECT> in stored
@@ -630,7 +659,7 @@ DETERMINISM PROOF
   (compare.py IDENTICAL, 1182 pairs, and cmp clean between the two runs). Rows
   1-825 are byte-identical to the baseline that preceded this change: their
   sha256 is
-  99f6ebef9215d318e32ee516db497e9c3a12488b19de1321e135da93991056e7. Rows
+  b3de103e1ba4de56c5664407a446a1c8c06b76545f44f103ca4cd2efed26e288. Rows
   826-827 change only because the interface now carries console, set_parent and
   eval as entries 18, 19 and 20. The three new command scripts and the console
   Logger wiring are staged out of the copied plugin while sessions A..W record
@@ -645,7 +674,7 @@ DETERMINISM PROOF
   sha256 is
   52754cd8c00d56a58762cd20403a26e8c9bd3913e4c12bf41fb66121205458d0; rows
   1-825 keep their sha256
-  99f6ebef9215d318e32ee516db497e9c3a12488b19de1321e135da93991056e7. The new
+  b3de103e1ba4de56c5664407a446a1c8c06b76545f44f103ca4cd2efed26e288. The new
   fixtures ib_rename.tscn and ib_delete.tscn are written only after session AH
   records, so the earlier listings (session W) never name them. Every rejection
   is bracketed by identical scene_tree replies, each session's file hash is
@@ -654,7 +683,7 @@ DETERMINISM PROOF
   The set-parent rows were recorded twice; the two full runs are byte-identical
   (compare.py IDENTICAL, cmp clean, 967 pairs). Rows 1-825 are byte-identical
   to the 825-row baseline that preceded this change; their sha256 is
-  99f6ebef9215d318e32ee516db497e9c3a12488b19de1321e135da93991056e7, which is
+  b3de103e1ba4de56c5664407a446a1c8c06b76545f44f103ca4cd2efed26e288, which is
   the sha256 of that whole file. Rows 826-827 (the published command interface)
   change only by the set_parent entry appended as the last entry of the COMMANDS
   table. The new command script is staged out of the copied plugin while
@@ -668,7 +697,7 @@ DETERMINISM PROOF
   The command-interface rows were recorded twice; the two full runs are
   byte-identical (compare.py IDENTICAL, cmp clean, 827 pairs). Rows 1-825 are
   byte-identical to the 825-row baseline that preceded this change: their
-  sha256 is 99f6ebef9215d318e32ee516db497e9c3a12488b19de1321e135da93991056e7,
+  sha256 is b3de103e1ba4de56c5664407a446a1c8c06b76545f44f103ca4cd2efed26e288,
   which is the sha256 of that whole file. The commands request adds a branch to
   the plugin's dispatch and a static interface() to each handler, reads no
   project path and no scene, and no earlier row names it.
@@ -741,7 +770,7 @@ DETERMINISM PROOF
   published interface, which gains exactly the attach_script entry as its
   twenty-first command while the twenty pre-existing entries stay
   byte-identical; rows 1-825 keep their sha256
-  99f6ebef9215d318e32ee516db497e9c3a12488b19de1321e135da93991056e7 and rows
+  b3de103e1ba4de56c5664407a446a1c8c06b76545f44f103ca4cd2efed26e288 and rows
   828-1325 are unchanged, so the only early change is the additive interface
   entry the new command requires. The new 133 rows (AS, ASR) are the
   attach-script matrix: twenty-six refusals and fourteen accepted attaches
@@ -750,12 +779,35 @@ DETERMINISM PROOF
   of that saved scene. The repaired build refuses alias paths of the held
   script; the two --replace alias rows carry the new alias message and the
   no---replace alias row carries the earlier current-script refusal, all
-  bracketed equal. The new whole-file sha256 is
-  8185f8c86a29d2116b074e3e4eada7227e985f41d9987a34dd460d0b599723ec.
+  bracketed equal. The new whole-file sha256 at that recording is
+  8185f8c86a29d2116b074e3e4eada7227e985f41d9987a34dd460d0b599723ec; the
+  capture helper later changed rows 731-764, so the merged 1458-row file on
+  main hashes to eab2b317f0b3811101cda921cee54b512edde20cd23258a41b380b27c2b02956.
   A saved scene file is hashed only before a save. After save_scene the editor
   may write generated unique_id values into saved node declarations, and an
   override-only declaration can omit it. So the post-save bytes are not
   deterministic; the write is proven by the file_contains checks instead.
+  The 1530-row baseline was recorded twice on the merged main (9476115, which
+  carries the capture helper): the two full runs are byte-identical
+  (compare.py IDENTICAL, 1530 pairs, and cmp clean between the runs). A
+  row-by-row diff of main's 1458-row file against the new file's first 1458
+  rows finds differences only at rows 826 and 827, the published interface,
+  which gains play and stop as its twenty-second and twenty-third entries while
+  the twenty-one pre-existing entries stay byte-identical; rows 828-1458 are
+  unchanged, so the only early change is the additive interface entry the two
+  new commands require. Rows 1-825 are byte-identical to main's first 825 rows,
+  the list-resources rows included: the copied plugin keeps the capture
+  helper's debug_plugin.gd and scripts/helper.gd, so those rows name the same
+  two paths main names, while play.gd and stop.gd are staged out of it until
+  session Y. Their sha256 is
+  b3de103e1ba4de56c5664407a446a1c8c06b76545f44f103ca4cd2efed26e288; the pin is
+  the sha256 of the first 825 lines including their trailing newlines, and it
+  now covers the capture helper's rows 731-764, so it differs from the value
+  pinned before that merge; every earlier paragraph above quotes this same pin,
+  which is the prefix hash of the current file rather than of the file each of
+  those recordings produced. The 72 new rows (PL0, PS, PL) are the play and stop
+  matrix described above. The new whole-file sha256 is
+  fb4ee3fe7e1213ba9f61076e856cda71f86c9d00d8b873e91224f166dd26472c.
 
 NEGATIVE CONTROL
   Two scratch copies of the plugin, each with one error string changed by one
@@ -1027,6 +1079,24 @@ COVERAGE (request numbers above)
   #1451-1452; ASR, a fresh editor on the saved scene: status #1453,
   clean-history bracket #1454, inspect #1455 showing speed 42.0, get_script
   #1456 showing res://as_export.gd, and the persisted rows #1457-1458.
+  play and stop #1459-1530: PL0 #1459-1463 (status, the play-state bracket,
+  the no-scene play refusal #1462, and a second bracket); PS #1464-1477
+  (status, idle stop #1466, play #1468, stop #1470, idle stop #1472, then the
+  wrong-project stop #1474, the missing project_path #1475 and the non-string
+  project_path #1476, each bracketed); PL #1478-1530 (open_scene of the
+  already-open clean scene #1478, status #1479, the bracket #1480, file hashes
+  of the clean scene before and after the clean play #1481 and #1485 (equal),
+  clean play #1482, stop #1483, idle stop #1484, the dirtying set_property
+  #1486, the bracket #1487, file_not_contains #1488, the saving play #1489,
+  file_contains #1490, the bracket #1491, the restarting play #1492, stop
+  #1493, six bracketed refusals #1494-1511 (missing path #1495, .gd path
+  #1498, relative path #1501, --main with no main scene #1504, both targets
+  #1507, wrong project #1510), the background-dirty case #1512-1518 (dirty the
+  edited scene, open another scene, the refused play #1515 that names the
+  dirty scene, then open it back #1517 and save it #1518), and the failed save
+  #1519-1530 (open pl_ro #1519, dirty it #1520, hash #1522, chmod 555 #1523,
+  the refused play #1525, status #1527, the still-unsaved bracket #1528, the
+  equal hash #1529, chmod 755 #1530).
   Not covered, with reason:
   - "request exceeds the maximum size" (>8 MiB without newline): reaching
     it needs an 8 MB write, and the reported byte count varies with TCP
@@ -1063,6 +1133,16 @@ COVERAGE (request numbers above)
   - live `%` name resolution (`get_node("%Name")`): it is engine lookup
     behavior inside a running scene, and this harness records the saved flag
     state instead.
+  - a game that opens a window: the fixture project sets the headless display
+    driver, so no replayed session opens one. The windowed main case was
+    recorded by a separate probe (DisplayServer.get_name() == "macOS", one
+    window, closed by stop) and cannot be a byte-stable golden row.
+  - a play of a scene that loads but references a missing script: the tested
+    forms fail to load as a PackedScene, so the command refuses them as "no
+    such scene"; only that refusal is recorded.
+  - a save that fails for a reason other than an unwritable directory (a full
+    disk, a directory that disappears between checks): the directory case is
+    recorded.
 
 NOTES
   The fixture project deliberately has no run/main_scene: otherwise the
@@ -1077,8 +1157,8 @@ NOTES
   isolated-editor probe that sends a real set-parent (and, for the earlier
   commands, connect-signal) request through the plugin and then triggers the
   editor's Undo/Redo through the safe route.
-  The baseline is only valid while the plugin's replies for these 1458 rows
-  (1324 requests and 134 file checks
+  The baseline is only valid while the plugin's replies for these 1530 rows
+  (1388 requests and 142 file checks)
   are supposed to stay the same. A change that adds or alters a command's
   behavior on purpose needs a new baseline, recorded from the last trusted
   commit, and a fresh determinism check (record three times, compare byte for

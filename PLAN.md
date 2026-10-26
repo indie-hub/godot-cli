@@ -122,7 +122,7 @@ Queued follow-up tasks:
 1. Check the project path first, before any other check.
 2. Validate the whole request before changing anything. A rejected request changes neither the scene nor the undo history.
 3. Every scene edit is one editor Undo/Redo action in the edited scene root's history.
-4. Nothing saves unless `save-scene` runs, with one exception: the plugin registers its `GodotPipelineCapture` game autoload with a guarded `add_autoload_singleton` on editor start, and the entry reaches `project.godot` on disk with the next project-settings save (starting the game saves). Disabling the plugin removes the entry the same way. See `docs/reference.md` ("Game helper") for the exact lines and the measured timing.
+4. Nothing saves unless `save-scene` runs, with three exceptions: `play` saves an unsaved edited scene before it launches the game; the editor itself rewrites the edited scene's file in its own saved form when a play starts and that file has not been saved in that form before, even though nothing was unsaved; and the plugin registers its `GodotPipelineCapture` game autoload with a guarded `add_autoload_singleton` on editor start, whose entry and whose removal on disable reach `project.godot` on disk with the next project-settings save (starting the game saves) — see `docs/reference.md` for `play` and the "Game helper" lines and the measured timing.
 5. Coerce values strictly from the declared type. Never guess from the JSON.
 6. Never block the editor main thread. Poll across frames or hand long work to a child process.
 7. Keep kebab-case command names. Keep the reply shape `{"status":"ok","data":...}` or `{"status":"error","message":...}`.

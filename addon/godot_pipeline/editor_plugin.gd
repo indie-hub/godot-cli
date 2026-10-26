@@ -5,18 +5,21 @@ extends EditorPlugin
 ## Listens on a loopback-only TCP socket and answers a single JSON request
 ## per connection. Supported commands: `status`, `scene_tree`, `inspect_node`,
 ## `query_nodes`, `inspect_class`, `list_resources`, `inspect_resource`,
-## `rename_node`, `create_node`, `set_property`,
-## `delete_node`, `connect_signal`, `set_group`, `set_unique_name`, `instantiate_scene`, `save_scene`, `open_scene`, `console`, `set_parent`, and `eval`. The read commands report the editor's
-## status, the active edited scene's node tree, a node's class/child
-## count/property values, the nodes matching a class, group, and name search,
-## an engine class's ClassDB reflection (ancestors, properties, methods,
-## signals), the resource files the editor file system holds, and the editor
-## log messages captured since the plugin loaded; the editing
-## commands change the active scene through the editor's
-## undo/redo stack (one Undo/Redo step each) and never save it. `save_scene`
-## persists the currently edited scene to the file path it already has, so
-## edits made through the other commands survive a reload. `open_scene` opens
-## a scene by path, optionally saving a dirty edited scene first. Every editing
+## `rename_node`, `create_node`, `set_property`, `delete_node`,
+## `connect_signal`, `set_group`, `set_unique_name`, `instantiate_scene`,
+## `save_scene`, `open_scene`, `console`, `set_parent`, `eval`, `attach_script`,
+## `play` and `stop`. The read commands report the editor's status, the active
+## edited scene's node tree, a node's class/child count/property values, the
+## nodes matching a class, group, and name search, an engine class's ClassDB
+## reflection (ancestors, properties, methods, signals), the resource files the
+## editor file system holds, and the editor log messages captured since the
+## plugin loaded; the editing commands change the active scene through the
+## editor's undo/redo stack (one Undo/Redo step each) and never save it.
+## `save_scene` persists the currently edited scene to the file path it already
+## has, so edits made through the other commands survive a reload. `play` saves
+## an unsaved edited scene before it launches the game, and `stop` ends a game
+## that is running. `open_scene` opens a scene by path, optionally saving a
+## dirty edited scene first. Every editing
 ## command requires a `project_path` that matches the running editor's
 ## project, validates the whole request before it mutates anything, and
 ## rejects targets that would not persist when the scene is saved.
@@ -78,6 +81,8 @@ const COMMANDS := {
 	"set_parent": preload("commands/set_parent.gd"),
 	"eval": preload("commands/eval.gd"),
 	"attach_script": preload("commands/attach_script.gd"),
+	"play": preload("commands/play.gd"),
+	"stop": preload("commands/stop.gd"),
 }
 
 ## Version of the command interface the plugin publishes. A client that does

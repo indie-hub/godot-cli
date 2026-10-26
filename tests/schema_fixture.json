@@ -808,6 +808,60 @@
      "help": "Absolute path of the target project; canonicalized before sending."
     }
    ]
+  },
+  {
+   "name": "play",
+   "description": "Play the edited scene, a named scene or the main scene.",
+   "needs_project_path": true,
+   "edits_scene": true,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "scene_path",
+     "flag": null,
+     "positional": 0,
+     "type": "string",
+     "required": false,
+     "default": null,
+     "help": "res:// path of the scene to play; omit it to play the edited scene."
+    },
+    {
+     "name": "main",
+     "flag": "--main",
+     "positional": null,
+     "type": "boolean",
+     "required": false,
+     "default": false,
+     "help": "Play the project main scene instead of the edited scene."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "stop",
+   "description": "Stop the running game; a no-op when nothing plays.",
+   "needs_project_path": true,
+   "edits_scene": false,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
   }
  ]
 }
