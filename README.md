@@ -8,7 +8,7 @@ The agent sends commands over a local socket. Every edit goes through the editor
 
 - It talks only to a plugin that you install in your own project. The connection is local, over 127.0.0.1.
 - Scene edits go through the editor's undo and redo stack, so you can undo them in the editor. Saving (`save-scene`) and opening a scene (`open-scene`) are not undo steps.
-- It writes nothing to disk unless you run `save-scene`.
+- It writes nothing to disk unless you run `save-scene`, except one line the plugin itself manages: on the first start with the plugin enabled it registers the `GodotPipelineCapture` game autoload, and the `[autoload]` entry reaches `project.godot` with the next project-settings save. Disabling the plugin removes it again. See `docs/reference.md` ("Game helper") for the exact lines.
 - It does not modify the Godot engine.
 
 ## Requirements
@@ -21,6 +21,8 @@ The agent sends commands over a local socket. Every edit goes through the editor
 1. Copy the folder `addon/godot_pipeline` into the `addons` folder of your project.
 2. In the Godot editor, open Project Settings > Plugins and enable Godot Pipeline.
 3. Open the scene you want to work on.
+
+When the editor starts with the plugin enabled, the plugin registers the `GodotPipelineCapture` game autoload (the in-game log and capture helper, `res://addons/godot_pipeline/scripts/helper.gd`). The `[autoload]` entry reaches `project.godot` with the next project-settings save; starting the game saves. A second start changes nothing. Disabling the plugin removes the entry again. While the plugin is toggled off, the command line has no server until the plugin is enabled again. Details and the exact lines are in `docs/reference.md` ("Game helper").
 
 Then build the command-line tool from the repository:
 

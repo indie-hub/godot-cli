@@ -1107,6 +1107,108 @@ the plugin leaves exactly one logger. Not covered, by design: messages logged
 before the plugin loaded, the editor Output panel history, and the output of
 the running game (a separate process).
 
+### Game helper
+
+`console` reports the editor log only. The running game's prints, warnings,
+errors and runtime errors travel a separate channel: the `GodotPipelineCapture`
+game autoload (`res://addons/godot_pipeline/scripts/helper.gd`) forwards them
+to the editor-side debugger plugin (`addon/godot_pipeline/debug_plugin.gd`) over
+the debugger channel, and answers viewport capture requests the same way. No
+new command wraps this yet; the section below documents the infrastructure the
+later `game-log` and `capture-game` commands will build on.
+
+The plugin registers the autoload with a guarded `add_autoload_singleton` in
+its `_enter_tree`: only when no autoload holds the name
+`GodotPipelineCapture` (an entry with the same name but a different path is
+left untouched), and never when the helper script file itself is missing (one
+editor error, no registration). The registration takes effect live at editor
+start; the entry reaches `project.godot` on disk with the next
+project-settings save. Measured: launching the editor writes nothing (the live
+setting is registered, the file is byte-identical), starting the game writes
+the entry, and a second start is byte-identical. Disabling the plugin calls
+`remove_autoload_singleton`, but only when the entry is the one the plugin
+wrote (the `res://` value or the `uid://` value below); a colliding entry
+survives a disable. The removal reaches the file through the editor's queued
+project-settings save about a second and a half later. A bare editor start
+and quit without the plugin writes nothing to `project.godot`, so the rewrite
+below comes with that first save.
+
+A save may hold the line in either of two forms:
+
+```
+GodotPipelineCapture="*res://addons/godot_pipeline/scripts/helper.gd"
+```
+
+or the engine's `uid://` form of the same script:
+
+```
+GodotPipelineCapture="*uid://..."
+```
+
+Which form a save writes is decided by the engine: a clean first play saved
+the `res://` form in one fixture and the `uid://` form in another. Both forms
+load the same script, and a generated uid is specific to the project that
+wrote it, so never rely on a fixed uid value. The first save also normalizes
+`project.godot` the way any engine save does: it adds the `It's best edited
+using the editor UI...` header comment, adds the `[dotnet]` section, drops
+default values, and reorders sections; the exact set of changes depends on the
+project. While the plugin is toggled off, the command line has no server
+until the plugin is enabled again.
+
+To remove the helper by hand with the editor closed, delete the
+`GodotPipelineCapture=...` line from `project.godot` (in either the `res://`
+or the `uid://` form, and the `[autoload]` header if no lines remain) and
+delete the plugin path from the `[editor_plugins]` `enabled=` list; or uncheck
+the plugin in Project Settings > Plugins, which runs the same removal.
+Upgrading from an older helper path: the guard keeps the old line (it never
+overwrites an entry it did not write), so delete the old line by hand and
+restart the editor. Deleting the addon folder without disabling the plugin
+logs `Attempt to open script '.../helper.gd' resulted in error 'File not
+found'`, `Failed loading resource` and `Failed to create an autoload, can't
+load from UID or path` (at
+`editor/settings/editor_autoload_settings.cpp:336`) at editor start, and a
+standalone game still starts and runs without the helper.
+
+The helper does nothing unless `EngineDebugger.is_active()`: a run without
+the debugger registers no logger and no message capture and forwards nothing.
+Otherwise it registers a `Logger` with `OS.add_logger` and
+`EngineDebugger.register_message_capture("godot_pipeline", ...)` in its
+`_ready`, and removes the logger in `_exit_tree`. The logger callbacks can
+arrive from any thread, so every entry waits in a bounded queue (4096 entries;
+overflow counts a drop, never blocks) that the main loop drains, sending each
+one as the message `godot_pipeline:log`. The payload is positional:
+`[seq, msec, dropped, kind, text, error, function, file, line, code, rationale,
+editor_notify, error_type, backtraces]`, where `seq` starts at 1 per game
+process, `msec` is the helper timestamp, and `dropped` is the helper's drop
+count. `kind` is `"message"` for a `_log_message` entry (only `text` and
+`error` apply) or `"error"` for a `_log_error` entry (only the eight engine
+fields apply: `function`, `file`, `line`, `code`, `rationale`,
+`editor_notify`, `error_type`, `backtraces`). For `push_warning` and
+`push_error` the `file` and `line` name the engine
+(`core/variant/variant_utility.cpp`); the script's own file and line arrive
+inside `backtraces`. In the measured runs each `backtraces` element arrives
+as a string. The helper never writes a file.
+
+The editor side keeps the entries in a bounded ring buffer per run (4096
+entries): a new session clears the buffer, and a sequence id at or below the
+previous one opens a new run on a reused session the same way. Dropped entries
+are counted three ways: sequence gaps between received entries, the helper's
+own drop counter from every entry, and ring evictions. Capture requests go out
+as the message `godot_pipeline:capture` with `[id, max_png_bytes]` and the
+helper answers `godot_pipeline:capture_reply` with `[id, ok, width, height,
+scale, png, size, error]`: on success `ok` is true with the PNG bytes as a
+`PackedByteArray` and its size; on failure `ok` is false with empty image
+fields and the reason in `error` (headless renderer, invalid request, or a
+frame that never fits). The helper waits for two `frame_post_draw` signals,
+reads the current viewport image, PNG-encodes it, and while the encoded size
+exceeds `max_png_bytes` halves each dimension and re-encodes; `scale` counts
+the halvings (0 is the full frame). A cap smaller than the full-frame PNG
+forces one or more halvings, reported in `scale`. A runtime error stops the
+game in the debugger until continued. A `request_capture` with no game
+attached returns an empty id at once and sends nothing; a non-empty id means
+the request was sent, and the caller polls `take_capture_reply` with its own
+timeout.
+
 There is no length prefix beyond the newline: a request is one
 newline-terminated JSON object and a reply is one newline-terminated JSON
 object. The plugin buffers the bytes of the request in its own state and
