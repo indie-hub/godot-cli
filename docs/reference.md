@@ -742,6 +742,91 @@ with `data.unsaved` the scenes that still have unsaved changes after the call
 the editor refuses the open, the reply is an `error` naming the requested
 scene, and a save that already happened stays saved.
 
+`play` plays the edited scene, plays a scene named by a `res://` path, or plays
+the project's main scene, in the running editor. `project_path` is required;
+`scene_path` names one scene and is written as the only positional argument;
+`--main` selects the main scene. At most one of `scene_path` and `--main` may
+be given, and with neither the edited scene is played. The request is checked
+in this order, and every refusal happens before a game is started and before
+any file is written: the field types, the `scene_path`/`--main` combination,
+the project path, then the target scene. A default target needs an edited
+scene; the edited scene must have a file path. A `scene_path` must be a
+`res://` path and must load as a scene; a `--main` target must be configured in
+`application/run/main_scene` and must load as a scene. The refusal messages
+are exactly:
+
+- `play requires a string field: project_path`
+- `play requires a string field: scene_path`
+- `play requires a boolean field: main`
+- `play takes either a scene path or --main, not both`
+- `project path mismatch: this editor has <editor path> open, not <requested path>`
+- `no scene is currently being edited`
+- `the edited scene has no file path yet; save it to a file before playing`
+- `play refused <path>: a scene must be named by its res:// path`
+- `no such scene: <path> (play)`
+- `no main scene is configured: application/run/main_scene is empty in project settings`
+- `no such scene: <path> (--main)`
+- `another open scene has unsaved changes: <path>; save it before playing`
+- `failed to save the scene: <path> is still unsaved, so the game was not started`
+
+A play writes the scene file when the edited scene has unsaved changes: the
+command saves it through the editor's own save path before it launches, then
+plays. This does not depend on the `run/auto_save/save_before_running` editor
+setting; the setting is read only to report it in `save_before_running`. A
+save that does not complete leaves the scene unsaved and refuses the request,
+so no game starts. An edited scene with no file path cannot be saved, and a
+dirty scene other than the edited one cannot be saved without switching tabs,
+so both are refused rather than launched over.
+
+Starting the game can also write the edited scene's file when nothing was
+unsaved. Measured on a clean edited scene whose file was hand-written rather
+than produced by the editor: the reply carried `saved: []`, the unsaved list
+stayed empty, and the file changed anyway. The editor's own save that runs
+before a game starts rewrote it in the editor's serialization form: it added
+`uid=` to the scene and to its external resources, added a `unique_id=` to each
+node, dropped `load_steps`, and wrote the properties in its own order. The
+write happened during the play, before the reply; `stop` did not change the
+file. Once the editor had saved the scene (`save_scene`), a later play left the
+file byte-identical. These runs had `run/auto_save/save_before_running` true,
+the default; the false case was not measured. The reply is
+`{"status":"ok","data":{"requested_scene":...,"saved":[...],"restarted":...,"playing":...,"scene":...,"save_before_running":...}}`:
+`requested_scene` is the scene the request named (`res://` form), `saved` lists
+only the scene paths this command saved because they were unsaved (empty when
+nothing was dirty, and it does not report the editor's own rewrite above),
+`restarted` is true when a game was already running before the call, `playing`
+and `scene` are `EditorInterface.is_playing_scene()` and
+`get_playing_scene()` measured immediately after the call, and
+`save_before_running` is the editor setting value. In Godot 4.7.2 the editor
+reports `playing: true` with the requested scene at once, and `status` reports
+the same state: `playing` is the editor's own play state
+(`EditorInterface.is_playing_scene()`), not an acknowledgement from the game.
+It says a game process was started, not that the game rendered a frame. The
+command never waits or polls, and no game-side acknowledgement is built.
+Playing while a game runs restarts it and the reply says `restarted: true`. The
+game is a separate process and the editor passes it no `--headless`, so a window
+opens unless the project sets a headless display driver: with
+`display/display_server/driver.macos="headless"` in `project.godot` the game
+reports `DisplayServer.get_name() == "headless"` and no window.
+
+Starting a game also saves the project settings, so `play` may write
+`project.godot` as well as the scene: the plugin registers its
+`GodotPipelineCapture` autoload in memory at editor start, and that entry
+reaches the file with this save. See "Game helper" for the exact line and the
+measured timing.
+
+`stop` stops the running game. It requires `project_path`, checks it first, and
+refuses a missing or non-string field and a mismatched project. Stopping while
+nothing plays is a no-op that still replies ok, so a client can call it
+unconditionally. The refusal messages are exactly:
+
+- `stop requires a string field: project_path`
+- `project path mismatch: this editor has <editor path> open, not <requested path>`
+
+The reply is
+`{"status":"ok","data":{"was_playing":...,"playing":...,"scene":...}}` with the
+state measured immediately before and after the call; in Godot 4.7.2
+`playing` is false within about 20 ms and `scene` is an empty string.
+
 `list_resources` reports the resource files the editor's file system view
 holds, as a bounded page, and changes nothing: no Undo/Redo step, no dirty
 flag, no file write, and no edited scene is required. `project_path` follows
@@ -1397,6 +1482,10 @@ cargo run -- call instantiate-scene --scene-path res://scenes/S1.tscn --parent-p
 cargo run -- call save-scene --project-path /path/to/project
 cargo run -- call open-scene --scene-path scenes/S1.tscn --project-path /path/to/project
 cargo run -- call open-scene --scene-path res://scenes/S1.tscn --save --project-path /path/to/project
+cargo run -- call play --project-path /path/to/project
+cargo run -- call play res://scenes/S1.tscn --project-path /path/to/project
+cargo run -- call play --main --project-path /path/to/project
+cargo run -- call stop --project-path /path/to/project
 cargo run -- call list-resources --project-path /path/to/project
 cargo run -- call list-resources --path-prefix res://scenes/ --type Texture2D --limit 50 --project-path /path/to/project
 cargo run -- call list-resources --cursor res://scenes/a.png --project-path /path/to/project
