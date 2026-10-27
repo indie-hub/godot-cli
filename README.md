@@ -115,6 +115,8 @@ The new node is in the scene and in the file now. You can undo the edits in the 
 | edit | `save-scene` | Save the open scene to its existing file. |
 | run | `play` | Play the edited scene, a scene named by a `res://` path, or the main scene. Saves an unsaved edited scene first; opens a game window unless the project sets a headless display driver. |
 | run | `stop` | Stop the running game. Does nothing when no game runs. |
+| run | `game-log` | Show the running game's log entries forwarded by the game helper, with the run identity, cursor, drop counters, and script and engine locations for errors. |
+| run | `capture-game` | Capture the running game's viewport as a PNG in the reply. Holds the connection until the helper answers or the wait passes; writes no file. |
 | edit | `eval` | Run a GDScript snippet in the live editor and return its value; may break the one-undo-action and no-main-thread-blocking rules. |
 
 Every edit command except `save-scene` goes through the editor's undo and redo stack and saves nothing. Run `save-scene` to write the scene to disk; `play` saves an unsaved edited scene before it launches the game. `open-scene` changes which scene is open and writes no file unless you pass `--save`.

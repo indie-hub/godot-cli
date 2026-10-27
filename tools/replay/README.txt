@@ -1,4 +1,4 @@
-Golden replay harness for the Godot Pipeline editor plugin (1530 rows:
+Golden replay harness for the Godot Pipeline editor plugin (1604 rows:
 1-148 unchanged, 149-200 cover inspect-class and open-scene, 201-262 cover
 connect-signal, 263-362 cover set-group, 363-413 cover set-unique-name,
 414-477 cover the rename unique-flag fix, 478-530 cover the rename option C
@@ -7,8 +7,8 @@ reloads of the accepted inherited-rename cases, 631-636 cover the
 instantiate-scene no-scene guards, 637-719 cover instantiate-scene accepted and
 rejected cases, 720-729 cover the fresh reloads of the accepted instances,
 730-764 cover list-resources, 765-825 cover inspect-resource, 826-827
-cover the published command interface (now twenty-three entries, with console,
-set_parent, eval, attach_script, play and stop last), 828-842 cover console validation, 843-938 cover
+cover the published command interface (now twenty-five entries, with console,
+set_parent, eval, attach_script, play, stop, game_log and capture_game last), 828-842 cover console validation, 843-938 cover
 set-parent, 939-945 cover the fresh reload of the accepted set-parent moves,
 946-976 cover set-parent in a derived scene, 977-982 cover the fresh reload of
 the derived-scene moves, 983-1051 cover set-parent against the inherited-node
@@ -27,8 +27,14 @@ instance plus a position change on the instance root, 1326-1452 cover the
 attach-script matrix (twenty-six refusals and fourteen accepted attaches
 and detaches, every request bracketed by the script map, history size and
 has-undo, then one attach on a base-inherited node with a property set and
-a save), 1453-1458 cover the fresh reload of that saved derived scene, and
-1459-1530 cover play and stop.
+a save), 1453-1458 cover the fresh reload of that saved derived scene,
+1459-1530 cover play and stop, 1531-1567 cover game_log (golden rows over a
+headless game that quits itself, cursor reads, eight refusals each bracketed
+by identical log reads, a fatal game that stops in the debugger with the
+stopping error already in the buffer, and the log after `stop` ends it) and
+1568-1604 cover capture_game (the headless ok-false error, ten refusals each
+bracketed by identical log reads, a 3 s pending timeout against a stopped
+game, a stop, and the no-game refusal).
 The script identity is read directly with `get_script()` through `eval`
 (six readings bracketing the three script rejection rows in the build
 script, and a per-node script map in the same eval that reads the history
@@ -74,11 +80,15 @@ HOW TO RUN
   are skipped, which is what makes a filtered run quick.
 
   PREREQUISITE SESSIONS
-  Thirty-two of the forty-seven sessions reproduce on their own. The other
-  fifteen read nodes, saved scene files or a message counter that an earlier
-  session left behind, so they do not. --sessions replays those prerequisites
-  automatically and prints their names. A prerequisite is replayed but stores no
-  rows, so FILE still holds only the sessions you named.
+  The shipped inventory declares 49 sessions in SESSION_ORDER and 14 sessions
+  with predecessors in SESSION_PREREQUISITES: twelve need one earlier session,
+  AK needs AI and AJ, and CONSOLE needs A and Y (16 edges in all); the sessions
+  the table names read
+  nodes, saved scene files or a message counter that an earlier session left
+  behind. --sessions replays the declared prerequisites automatically and
+  prints their names. A prerequisite is replayed but stores no rows, so FILE
+  still holds only the sessions you named. Standalone behaviour of every
+  subset was not exercised: only the default full run is the recorded proof.
     session  prerequisite    session  prerequisite
     F        D               AA       Z
     I        H               AC       AB
@@ -88,7 +98,6 @@ HOW TO RUN
     RU       RS              CONSOLE  A and Y
     S        R
     V        U
-  Each pair was measured by replaying it and comparing against the baseline.
   CONSOLE is the slowest case: it needs A and Y, so naming CONSOLE alone costs
   three editor launches instead of one. Without --sessions the whole run happens
   as before and this table is not consulted.
@@ -108,11 +117,11 @@ HOW TO RUN
   run and still fails the full run. Use --sessions to work on one command at a
   time. The full run stays mandatory at integration and for validators.
 
-  Each run takes several minutes: one --import plus forty-seven editor launches
+  Each run takes several minutes: one --import plus forty-nine editor launches
   (in launch order A with no scene, E with no scene, G with no scene, J with no
   scene, T with no scene, W with no scene, X with no scene, Y with no scene, the
   console session with no scene, the play no-scene session with no scene, the
-  eval session with no scene, C with no
+  eval session with no scene, GL with no scene, CG with no scene, C with no
   scene,
   B with res://main.tscn,
   D and F with res://connect.tscn, H and I with res://group.tscn, K and L with
@@ -124,24 +133,31 @@ HOW TO RUN
   res://sp2_local.tscn, AI and AK with res://ib_rename.tscn, AJ with
   res://ib_delete.tscn, RS and RU with res://rs_main.tscn, RD with
   res://rs_derived.tscn, RI with res://rs_inst.tscn, AS with
-  res://as_main.tscn, ASR with res://as_derived.tscn, and PS and PL with
-  res://pl_clean.tscn), 1530 stored rows
-  (1388 requests and 142 file checks).
-  The plugin has twenty-three commands, a different count. Rows are stored A, B, C,
+  res://as_main.tscn, ASR with res://as_derived.tscn, PS and PL with
+  res://pl_clean.tscn, and GL and CG with no scene), 1604 stored rows
+  (1462 requests and 142 file checks).
+  The plugin has twenty-five commands, a different count. Rows are stored A, B, C,
   E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, T, U, V, W, X, Y, CONSOLE,
   Z, AA, AB, AC, AD, AE, AF, AG, AH, AI, AJ, AK, EVAL, RS, RU, RD, RI,
-  AS, ASR, PL0, PS, PL: a
+  AS, ASR, PL0, PS, PL, GL, CG: a
   fresh editor restores the previous session's open scenes, so the no-scene
   sessions (A, E, G, J, T, W, X, Y, the console session and the eval session,
   and C before it opens anything) must run before any scene session. The console
   session runs right after the interface and the eval session right after it;
-  both are no-scene, so they run before the first scene session. Appending
+  both are no-scene, so they run before the first scene session. GL and CG run
+  last with no edited scene and drive the game through scene paths. Appending
   the new sessions keeps rows 1-1222 byte-identical; rows 1223-1325 carry
   the resource-assignment acceptance and rejections, the resource reload, the
   base-inherited override, and the non-editable-instance guard; rows 1326-1452
   carry the attach-script matrix and the derived-scene save, rows 1453-1458
-  carry the fresh reload of that saved scene, and rows 1459-1530 carry the
-  play and stop sessions.
+  carry the fresh reload of that saved scene, rows 1459-1530 carry the
+  play and stop sessions, rows 1531-1567 carry the game_log sessions (golden
+  rows over a headless game that quits itself, cursor reads, eight refusals
+  each bracketed by identical log reads, a fatal game that stops in the
+  debugger, and the log after `stop` ends it) and rows 1568-1604 carry the
+  capture_game sessions (the headless ok-false error, ten refusals each
+  bracketed by identical log reads, a 3 s pending timeout against a stopped
+  game, a stop, and the no-game refusal).
 
 WHAT IT DOES
   Session A (requests 1-23, no edited scene): status ok with scene_path null;
@@ -399,7 +415,7 @@ WHAT IT DOES
 
 Session Y (requests 826-827, no edited scene, runs right after session X):
   the published command interface. Request 826 asks for the interface with no
-  other field and gets protocol_version 1 with the twenty-three command entries,
+  other field and gets protocol_version 1 with the twenty-five command entries,
   each handler's own name, description, flags and arguments, in the order of the
   plugin's COMMANDS table. Request 827 repeats it with a project_path that is
   not the project's: the interface request checks no project path, so the reply
@@ -641,6 +657,27 @@ Session PL (requests 1478-1530, a fresh editor on res://pl_clean.tscn): the
   the directory to 555, the refused play, status, a bracket that still lists
   the scene as unsaved, and the equal hash after the refusal; finally chmod
   back to 755.
+Session GL (requests 1531-1567, no edited scene): the game_log matrix on
+  a headless game. status, then an empty log with no game ever run, a play of
+  the clean scene that prints, warns, errors and quits itself (an unrecorded
+  wait holds for all eight entries and then for the quit), the golden reads
+  (the full log, since 2, limit 2, a cursor past every entry, and the full log
+  again), eight refusals each bracketed by identical log reads (a wrong
+  project, a negative, fractional and non-string since, a zero, oversized and
+  fractional limit, and an unknown field), a play of the fatal scene, an
+  unrecorded wait until the debugger reports stopped, the golden stopped reads
+  (the stopping error with its script and engine locations among the seven
+  entries, and the cursor read), a stop, and the golden after-end log (the
+  entries persist, nothing attached). Timing fields are masked like the eval
+  elapsed time.
+Session CG (requests 1568-1604, no edited scene): the capture_game matrix on
+  a headless game. status, a play of the idle scene, an unrecorded wait for
+  the first entry, and the headless ok-false error row; ten refusals each
+  bracketed by identical log reads (a wrong project, a zero, negative,
+  non-string, fractional and oversized max_png_bytes, an out-of-range and
+  non-string timeout_ms, and an unknown field); a play of the fatal scene, an
+  unrecorded wait until the debugger reports stopped, the 3 s pending timeout
+  error row, a stop, and the no-game refusal.
 
 NORMALISATION
   The throwaway project's absolute path is replaced with <PROJECT> in stored
@@ -808,6 +845,20 @@ DETERMINISM PROOF
   those recordings produced. The 72 new rows (PL0, PS, PL) are the play and stop
   matrix described above. The new whole-file sha256 is
   fb4ee3fe7e1213ba9f61076e856cda71f86c9d00d8b873e91224f166dd26472c.
+
+  The 1604-row baseline was recorded once; a second full replay is byte-identical
+  (compare.py IDENTICAL, 1604 pairs, and cmp clean). A row-by-row diff of main's
+  1530-row file against the new file's first 1530 rows finds differences only at
+  rows 826 and 827, the published interface, which gains game_log and
+  capture_game as its twenty-fourth and twenty-fifth entries (capture_game
+  carries the reply_wait_argument naming timeout_ms) while the twenty-three
+  pre-existing entries stay byte-identical; rows 1-825 keep their sha256
+  b3de103e1ba4de56c5664407a446a1c8c06b76545f44f103ca4cd2efed26e288 and rows
+  828-1530 are unchanged, so the only early change is the additive interface
+  entries the two new commands require. The 74 new rows (GL, CG) are the
+  game_log and capture_game matrix described above; game_log timing fields are
+  masked the way the eval elapsed time is. The new whole-file sha256 is
+  5457de1eab18d98996530dd52ba4575aa2b146fbd986a15de5d50f6bc2de165e.
 
 NEGATIVE CONTROL
   Two scratch copies of the plugin, each with one error string changed by one
@@ -1157,8 +1208,8 @@ NOTES
   isolated-editor probe that sends a real set-parent (and, for the earlier
   commands, connect-signal) request through the plugin and then triggers the
   editor's Undo/Redo through the safe route.
-  The baseline is only valid while the plugin's replies for these 1530 rows
-  (1388 requests and 142 file checks)
+  The baseline is only valid while the plugin's replies for these 1604 rows
+  (1462 requests and 142 file checks)
   are supposed to stay the same. A change that adds or alters a command's
   behavior on purpose needs a new baseline, recorded from the last trusted
   commit, and a fresh determinism check (record three times, compare byte for

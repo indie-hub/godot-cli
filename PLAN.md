@@ -4,7 +4,7 @@ Godot Pipeline is a Rust CLI plus a GDScript EditorPlugin for stock Godot. An ag
 
 ## Status
 
-- The command table in `README.md` holds 20 commands. The plugin publishes their names and arguments, and `godot-cli` dispatches them from that interface.
+- The command table in `README.md` holds 25 commands. The plugin publishes their names and arguments, and `godot-cli` dispatches them from that interface.
 - Phase 1, read and navigate, is complete. `inspect-node`, `query-nodes`, `open-scene` and `inspect-class` shipped in 0.5.0.
 - Phase 2, Godot scene edits, is complete. `connect-signal`, `set-group`, `set-unique-name` and `instantiate-scene` shipped in 0.6.0.
 - `list-resources`, `inspect-resource`, `console`, `set-parent` and `eval` shipped in 0.7.0.
@@ -124,7 +124,7 @@ Queued follow-up tasks:
 3. Every scene edit is one editor Undo/Redo action in the edited scene root's history.
 4. Nothing saves unless `save-scene` runs, with three exceptions: `play` saves an unsaved edited scene before it launches the game; the editor itself rewrites the edited scene's file in its own saved form when a play starts and that file has not been saved in that form before, even though nothing was unsaved; and the plugin registers its `GodotPipelineCapture` game autoload with a guarded `add_autoload_singleton` on editor start, whose entry and whose removal on disable reach `project.godot` on disk with the next project-settings save (starting the game saves) — see `docs/reference.md` for `play` and the "Game helper" lines and the measured timing.
 5. Coerce values strictly from the declared type. Never guess from the JSON.
-6. Never block the editor main thread. Poll across frames or hand long work to a child process.
+6. Never block the editor main thread. Poll across frames or hand long work to a child process. A handler that cannot answer yet returns a pending reply instead: the plugin keeps the connection open, polls the handler's `poll` callable every frame from `_process`, answers when it completes or errors when its declared wait passes, and never blocks. While a reply is pending the request idle timeout does not fire, a disconnect cancels it silently, and the plugin answers no other client until it resolves.
 7. Keep kebab-case command names. Keep the reply shape `{"status":"ok","data":...}` or `{"status":"error","message":...}`.
 8. Godot persistence traps to respect: a node inside an instanced sub-scene is not saved unless Editable Children is enabled, and every node needs the right owner.
 9. Prove each command in an isolated Godot 4.7.2 editor on an alternate port, never the live editor on 47821. Show: no mutation on a rejected request, no implicit save, correct Undo and Redo, and persistence after an explicit save and a fresh reload.
@@ -190,7 +190,7 @@ Queued follow-up tasks:
 | `set-parent` | `set_parent` |
 | `eval` | `eval` (`eval_file` is not covered) |
 
-17 of the 20 built commands cover 30 of the 142 Unity commands. Three built commands, `inspect-class`, `connect-signal` and `set-unique-name`, cover no Unity command, because the Unity command list has nothing like them. They are the Godot-only capabilities marked as built below.
+22 of the 25 built commands cover 34 of the 142 Unity command rows. Three built commands, `inspect-class`, `connect-signal` and `set-unique-name`, cover no Unity command, because the Unity command list has nothing like them. They are the Godot-only capabilities marked as built below.
 
 ## The parity map in numbers
 

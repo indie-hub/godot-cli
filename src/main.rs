@@ -68,6 +68,11 @@ struct CommandInterface {
     needs_project_path: bool,
     #[serde(default)]
     refresh_poll: bool,
+    /// Names the request argument carrying this command's reply wait in
+    /// milliseconds, for a command that holds the reply (pending). Absent
+    /// means the 5 s read timeout applies, as for every existing command.
+    #[serde(default)]
+    reply_wait_argument: Option<String>,
     #[serde(default)]
     arguments: Vec<ArgumentInterface>,
 }
@@ -179,15 +184,16 @@ fn call_command(args: &[String], port: u16, project_path: Option<&str>) -> Resul
     };
     let command = find_command(&interface, name)?;
     let request = build_request(command, arguments, project_path)?;
+    let read_timeout = reply_read_timeout(command, &request);
     let response = match command.refresh_poll && request.get("refresh") == Some(&json!(true)) {
         true => poll_refresh(
             &request,
             // A command reply is read whole: only the interface fetch is bounded.
-            |current| send(port, current, None),
+            |current| send(port, current, None, read_timeout),
             thread::sleep,
             REFRESH_TIMEOUT,
         )?,
-        false => send(port, &request, None)?,
+        false => send(port, &request, None, read_timeout)?,
     };
     match response {
         Response::Ok { data } => {
@@ -227,7 +233,7 @@ fn list_commands(port: u16, args: &[String]) -> Result<(), String> {
 /// kept across invocations.
 fn fetch_commands(port: u16) -> Result<Value, String> {
     let request = json!({ "command": "commands" });
-    match send(port, &request, Some(MAX_INTERFACE_BYTES))? {
+    match send(port, &request, Some(MAX_INTERFACE_BYTES), None)? {
         Response::Error { message } if message.starts_with(UNKNOWN_COMMANDS_REPLY) => {
             Err("the editor plugin is too old for this godot-cli; update the plugin".to_string())
         }
@@ -236,9 +242,36 @@ fn fetch_commands(port: u16) -> Result<Value, String> {
     }
 }
 
-fn send(port: u16, request: &Value, max_reply_bytes: Option<u64>) -> Result<Response, String> {
-    send_request(HOST, port, request, max_reply_bytes)
+fn send(
+    port: u16,
+    request: &Value,
+    max_reply_bytes: Option<u64>,
+    read_timeout: Option<Duration>,
+) -> Result<Response, String> {
+    send_request(HOST, port, request, max_reply_bytes, read_timeout)
         .map_err(|error| describe_client_error(&error, port))
+}
+
+/// How long to wait for this command's reply: the declared wait argument's
+/// value in the built request (an integer number of milliseconds), or the
+/// argument's interface default when the caller did not supply it, plus a
+/// fixed 2 s margin for the reply to travel. Commands without the field, and
+/// the interface fetch, keep the 5 s default (`None`).
+fn reply_read_timeout(command: &CommandInterface, request: &Value) -> Option<Duration> {
+    const WAIT_MARGIN_MSEC: u64 = 2000;
+    let argument_name = command.reply_wait_argument.as_deref()?;
+    let wait_msec = match request.get(argument_name) {
+        Some(Value::Number(number)) => number.as_u64().unwrap_or(0),
+        _ => command
+            .arguments
+            .iter()
+            .find(|argument| argument.name == argument_name)
+            .and_then(|argument| argument.default.as_u64())
+            .unwrap_or(0),
+    };
+    Some(Duration::from_millis(
+        wait_msec.saturating_add(WAIT_MARGIN_MSEC),
+    ))
 }
 
 /// Turns the plugin's `commands` reply into an interface, refusing a version
@@ -1399,6 +1432,162 @@ mod tests {
         assert_eq!(parse_value_argument("Hello world"), json!("Hello world"));
         assert_eq!(parse_value_argument("#ff8800"), json!("#ff8800"));
         assert_eq!(parse_value_argument(""), json!(""));
+    }
+
+    /// A one-command interface whose only command holds its reply for the
+    /// `timeout_ms` argument, used by the wait tests below.
+    fn wait_interface(wait_field: bool) -> Value {
+        let command = if wait_field {
+            json!({
+                "name": "slow",
+                "description": "Hold the reply.",
+                "needs_project_path": false,
+                "edits_scene": false,
+                "refresh_poll": false,
+                "reply_wait_argument": "timeout_ms",
+                "arguments": [
+                    {"name": "timeout_ms", "flag": "--timeout-ms", "positional": null,
+                     "type": "integer", "required": false, "default": 5000,
+                     "help": "How long the reply may take."},
+                ],
+            })
+        } else {
+            json!({
+                "name": "slow",
+                "description": "Hold the reply.",
+                "needs_project_path": false,
+                "edits_scene": false,
+                "refresh_poll": false,
+                "arguments": [
+                    {"name": "timeout_ms", "flag": "--timeout-ms", "positional": null,
+                     "type": "integer", "required": false, "default": 5000,
+                     "help": "How long the reply may take."},
+                ],
+            })
+        };
+        json!({"protocol_version": 1, "commands": [command]})
+    }
+
+    /// Serves the interface fetch at once and delays only the command reply
+    /// by `delay`, proving the CLI outlives the 5 s default when the command
+    /// declares its wait.
+    fn delayed_command_plugin(delay: Duration, wait_field: bool) -> (u16, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind((HOST, 0)).expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+        let handle = thread::spawn(move || {
+            for index in 0..2 {
+                let Some(stream) = accept_within(&listener, 30) else {
+                    break;
+                };
+                let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("read request line");
+                if index == 1 {
+                    thread::sleep(delay);
+                }
+                let reply = if index == 0 {
+                    Response::Ok {
+                        data: wait_interface(wait_field),
+                    }
+                } else {
+                    Response::Ok { data: json!({}) }
+                };
+                let mut reply_line = serde_json::to_string(&reply).expect("serialize reply");
+                reply_line.push('\n');
+                let mut writer = stream;
+                writer
+                    .write_all(reply_line.as_bytes())
+                    .expect("write reply");
+            }
+        });
+        (port, handle)
+    }
+
+    #[test]
+    fn reply_read_timeout_uses_the_declared_wait_plus_two_seconds() {
+        let data = wait_interface(true);
+        let interface: Interface = serde_json::from_value(data).expect("wait interface parses");
+        let command = &interface.commands[0];
+        let with_value = json!({"command": "slow", "timeout_ms": 8000});
+        assert_eq!(
+            reply_read_timeout(command, &with_value),
+            Some(Duration::from_millis(10000))
+        );
+        let with_default = json!({"command": "slow"});
+        assert_eq!(
+            reply_read_timeout(command, &with_default),
+            Some(Duration::from_millis(7000))
+        );
+        let data = wait_interface(false);
+        let interface: Interface = serde_json::from_value(data).expect("plain interface parses");
+        assert_eq!(
+            reply_read_timeout(&interface.commands[0], &with_value),
+            None
+        );
+    }
+
+    #[test]
+    fn a_declared_wait_outlives_the_default_read_timeout() {
+        // The reply arrives after 6 s: past the 5 s default, inside the
+        // declared 8000 ms plus the 2 s margin.
+        let (port, server) = delayed_command_plugin(Duration::from_secs(6), true);
+        run(&with_port(port, &["call", "slow", "--timeout-ms", "8000"]))
+            .expect("the delayed reply is read");
+        server.join().expect("server thread does not panic");
+    }
+
+    #[test]
+    fn without_the_field_a_delayed_reply_still_times_out() {
+        let (port, server) = delayed_command_plugin(Duration::from_secs(6), false);
+        let error = run(&with_port(port, &["call", "slow", "--timeout-ms", "8000"]))
+            .expect_err("the 5 s timeout still applies");
+        assert!(error.contains("network error"), "{error}");
+        server.join().expect("server thread does not panic");
+    }
+
+    #[test]
+    fn a_silent_server_fails_after_the_declared_wait_plus_margin() {
+        // The server never answers the command; the CLI must fail after the
+        // declared 100 ms plus the 2 s margin, not before and not at 5 s.
+        let listener = TcpListener::bind((HOST, 0)).expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+        let server = thread::spawn(move || {
+            for index in 0..2 {
+                let Some(stream) = accept_within(&listener, 30) else {
+                    break;
+                };
+                let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("read request line");
+                if index == 0 {
+                    let reply = Response::Ok {
+                        data: wait_interface(true),
+                    };
+                    let mut reply_line = serde_json::to_string(&reply).expect("serialize reply");
+                    reply_line.push('\n');
+                    let mut writer = stream;
+                    writer
+                        .write_all(reply_line.as_bytes())
+                        .expect("write reply");
+                } else {
+                    thread::sleep(Duration::from_secs(5));
+                }
+            }
+        });
+        let start = std::time::Instant::now();
+        let error = run(&with_port(port, &["call", "slow", "--timeout-ms", "100"]))
+            .expect_err("the silent server fails");
+        let elapsed = start.elapsed();
+        assert!(error.contains("network error"), "{error}");
+        assert!(
+            elapsed >= Duration::from_millis(2100),
+            "failed after {elapsed:?}, before the wait plus margin"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "failed after {elapsed:?}, at the old default instead of the declared wait"
+        );
+        server.join().expect("server thread does not panic");
     }
 
     #[test]

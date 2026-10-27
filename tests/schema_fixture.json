@@ -862,6 +862,79 @@
      "help": "Absolute path of the target project; canonicalized before sending."
     }
    ]
+  },
+  {
+   "name": "game_log",
+   "description": "Show the running game's log entries forwarded by the game helper.",
+   "needs_project_path": true,
+   "edits_scene": false,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "since",
+     "flag": "--since",
+     "positional": null,
+     "type": "integer",
+     "required": false,
+     "default": 0,
+     "help": "Keep entries with a sequence number greater than this cursor."
+    },
+    {
+     "name": "limit",
+     "flag": "--limit",
+     "positional": null,
+     "type": "integer",
+     "required": false,
+     "default": 500,
+     "help": "Keep at most this many of the newest matching entries; the plugin checks the 1 to 4096 range."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "capture_game",
+   "description": "Capture the running game's viewport as a PNG in the reply.",
+   "needs_project_path": true,
+   "edits_scene": false,
+   "refresh_poll": false,
+   "reply_wait_argument": "timeout_ms",
+   "arguments": [
+    {
+     "name": "max_png_bytes",
+     "flag": "--max-png-bytes",
+     "positional": null,
+     "type": "integer",
+     "required": false,
+     "default": 786432,
+     "help": "Largest PNG the helper encodes before halving each dimension; the plugin checks the 1 to 8388608 range."
+    },
+    {
+     "name": "timeout_ms",
+     "flag": "--timeout-ms",
+     "positional": null,
+     "type": "integer",
+     "required": false,
+     "default": 5000,
+     "help": "Longest wait for the helper's answer in milliseconds; the plugin checks the 100 to 30000 range."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
   }
  ]
 }

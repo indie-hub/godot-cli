@@ -827,6 +827,106 @@ The reply is
 state measured immediately before and after the call; in Godot 4.7.2
 `playing` is false within about 20 ms and `scene` is an empty string.
 
+`game_log` reports the running game's log entries held by the editor side of
+the log channel (see "Game helper"), oldest first. Read-only: no Undo/Redo
+action, no dirty flag, no file write, and no edited scene is required.
+`project_path` is checked first then every other field, so a rejected request
+leaves everything unchanged. Optional `since` (default 0) keeps entries with
+a sequence number greater than it; optional `limit` (default 500) keeps at
+most that many of the newest matching entries (1 to 4096). An unknown field
+is refused. When no game has run yet the reply carries an empty entry list,
+not an error. The refusal messages are exactly:
+
+- `game_log requires a string field: project_path`
+- `project path mismatch: this editor has <editor path> open, not <requested path>`
+- `unknown field: <name>`
+- `since must not be negative`, `since must be an integer`
+- `limit must be between 1 and 4096`, `limit must be an integer`
+
+The reply is
+`{"status":"ok","data":{"attached":...,"game_state":...,"run_id":...,"entries":[...],"next_since":...,"received":...,"buffered":...,"gaps":...,"helper_dropped":...,"evicted":...}}`.
+`attached` tells whether a game is attached now; `game_state` is `no_game`
+(nothing attached), `running`, or `stopped_in_debugger` (attached and the
+editor's debugger session reports a stop). `run_id` is the identity of the
+log run the entries belong to: it rises whenever a new game process restarts
+the sequence, so a client can tell a restart from new entries. `next_since`
+is the cursor to pass as `since` next time; calling again with `since` equal
+to it returns an empty list when nothing new arrived. `received` counts every
+entry the editor took in across runs, `buffered` how many the ring holds now,
+and `gaps`, `helper_dropped` and `evicted` count dropped entries three ways
+(sequence gaps between received entries, the helper's own drop counter, ring
+evictions).
+
+A message entry carries `seq`, `msec`, `kind` (`"message"`), `text` and
+`error`. An error entry additionally carries the eight engine fields
+(`function`, `file`, `line`, `code`, `rationale`, `editor_notify`,
+`error_type`, `backtraces`), the raw `backtraces`, the `script_location`
+(`{file, line, function}` or null) parsed from them, and the
+`engine_location` (`{file, line, function}`) from the Logger fields. For
+`push_warning` and `push_error` the Logger file and line name the engine
+(`core/variant/variant_utility.cpp`, measured lines 1033 and 1023 in
+Godot 4.7.2) while the script's own file and line arrive inside the
+backtraces; a runtime error's Logger fields already name the script. A
+backtrace string reads `GDScript backtrace (most recent call first):`
+followed by lines of `    [N] function (res://path.gd:LINE)` (measured in
+Godot 4.7.2); the first frame whose file is a project script is the
+`script_location`, and when no backtrace names a script frame it is null
+while the raw strings stay in `backtraces`. Timestamps vary by run and are
+not a cursor: only `seq` orders entries.
+
+After the game ends the last run's entries stay until the next game starts,
+with `attached` false. While the game sits in the debugger stop after a
+runtime error the stopping error is already in the buffer (measured: the
+entry arrives synchronously with the error, and `game_state` reports
+`stopped_in_debugger`); continuing the game keeps every entry exactly once,
+and `stop` ends the game while the entries stay.
+
+`capture_game` captures the running game's viewport through the game helper
+and answers only when the helper does: the connection stays open until the
+reply completes or the wait passes (see "Command interface"), never blocking
+the editor thread. Read-only except for the capture request itself: no
+Undo/Redo action, no dirty flag, no file write, and the image travels in the
+reply only. `project_path` is checked first then every other field. Optional
+`max_png_bytes` (default 786432) bounds the PNG the helper encodes: the
+helper halves each dimension until the PNG fits, counting the halvings in
+`scale` (0 is the full frame). Optional `timeout_ms` (default 5000, 100 to
+30000) bounds the wait. An unknown field is refused. When no game is
+attached the command refuses at once and sends nothing:
+
+- `no game is attached: start the game before capturing it`
+
+The other refusal messages are exactly:
+
+- `capture_game requires a string field: project_path`
+- `project path mismatch: this editor has <editor path> open, not <requested path>`
+- `unknown field: <name>`
+- `max_png_bytes must be between 1 and 8388608`, `max_png_bytes must be an integer`
+- `timeout_ms must be between 100 and 30000`, `timeout_ms must be an integer`
+
+A helper answer with ok false becomes an error carrying the helper's text
+(measured headless: `no viewport image (headless renderer)`). A wait that
+passes without an answer becomes an error of the form
+`no capture reply arrived within <N> ms: the game is likely stopped in the
+debugger, the helper is not loaded, or the game is busy`. On success the
+reply is
+`{"status":"ok","data":{"source":"game","width":...,"height":...,"scale":...,"png_bytes":...,"image_format":"png","image_base64":...}}`
+with the PNG base64-encoded and `png_bytes` its encoded size. The default
+`max_png_bytes` keeps the base64 reply around one mebibyte (786432 source
+bytes encode to about one mebibyte, which is arithmetic, not a measurement).
+The largest reply independently measured passing whole is a 512x384 windowed
+capture of 638392 PNG bytes in 0.226 s (scale 1), and a 100000-byte cap gave
+128x96 at scale 3 with 30755 PNG bytes in 0.181 s (both measured once on
+2026-10-26 in one fixture). While a reply is pending the plugin answers no other client: a
+second client waits, and the CLI gives up after its own 5 s wait when the
+pending reply outlasts it (measured: `network error talking to the plugin`
+after 5.01 s against an 8 s pending capture, and a 0.823 s wait served
+against a 1 s pending capture). The CLI waits for the
+declared `timeout_ms` plus two seconds; an older CLI without that wait
+would time out after 5 s on a held `capture-game` reply from the unchanged
+read timeout, but no older binary was run. A game stopped in the debugger holds
+capture replies until it is continued; `stop` ends it. No editor viewport
+capture is built; every capture is labeled `"source": "game"`.
+
 `list_resources` reports the resource files the editor's file system view
 holds, as a bounded page, and changes nothing: no Undo/Redo step, no dirty
 flag, no file write, and no edited scene is required. `project_path` follows
@@ -1261,7 +1361,12 @@ Otherwise it registers a `Logger` with `OS.add_logger` and
 `_ready`, and removes the logger in `_exit_tree`. The logger callbacks can
 arrive from any thread, so every entry waits in a bounded queue (4096 entries;
 overflow counts a drop, never blocks) that the main loop drains, sending each
-one as the message `godot_pipeline:log`. The payload is positional:
+one as the message `godot_pipeline:log`. The one exception is a script runtime
+error seen on the main thread: it is sent at once together with the entries
+already queued (sequence numbers assigned under the same mutex, so the order
+stays gap-free), which is what lets an agent retrieve the error that stopped
+the game while the game sits in the debugger stop. Every other entry, and
+every entry from another thread, keeps the queue path. The payload is positional:
 `[seq, msec, dropped, kind, text, error, function, file, line, code, rationale,
 editor_notify, error_type, backtraces]`, where `seq` starts at 1 per game
 process, `msec` is the helper timestamp, and `dropped` is the helper's drop
@@ -1328,7 +1433,7 @@ answers that request without checking a project path and without needing an
 open scene.
 
 The reply is `{"status":"ok","data":{"protocol_version":1,"commands":[...]}}`
-with 20 entries in the order of the `COMMANDS` table. `protocol_version` is
+with 25 entries in the order of the `COMMANDS` table. `protocol_version` is
 the integer 1.
 
 One command entry has `name` (the wire name sent as `command`, with `_`
@@ -1338,7 +1443,10 @@ CLI requires `--project-path`, canonicalizes it, and sends `project_path`;
 false means the CLI accepts the flag but ignores it and sends no
 `project_path`), `edits_scene` (true means the command changes the edited
 scene through the undo stack), `refresh_poll` (true only for
-`list_resources`, which drives the `--refresh` wait), and `arguments` (the
+`list_resources`, which drives the `--refresh` wait), `reply_wait_argument`
+(the request argument carrying a pending command's wait in milliseconds, only
+for `capture_game`, which drives the CLI's read timeout; absent means the
+5 s read timeout applies), and `arguments` (the
 argument list in command-line order). One argument entry has `name` (the
 wire field name), `flag` (the command-line flag such as `--limit`, or null
 for a positional-only argument), `positional` (the positional index, or null
@@ -1388,7 +1496,24 @@ connection for the command request. A rejected invocation sends only the
 fetch; no command request is sent. `list-resources --refresh` sends the
 command request with `refresh` true on its own connection, then repeats the
 same request with `refresh` false on fresh connections every 250 ms until
-the reply reports the scan as finished or 60 seconds pass.
+the reply reports the scan as finished or 60 seconds pass. `capture-game`
+sends its command request once and reads the reply with a timeout of the
+`timeout_ms` it sent (or the command's default when it sent none) plus two
+seconds; every other command and the interface fetch keep the 5 s read
+timeout, and an older CLI without the wait would time out after 5 s on a
+held capture reply from the unchanged read timeout, but no older binary
+was run.
+
+A handler that cannot answer yet returns a pending reply instead of a final
+one: the plugin keeps the connection open, polls the handler's `poll`
+callable every frame from `_process`, writes the reply when it completes or
+an error reply when the declared wait passes, and closes the connection
+afterwards, never blocking the editor thread. The request idle timeout does
+not fire while a reply is pending, and a client that disconnects while
+pending cancels it silently. The plugin serves one connection at a time, so
+a second client waits at the TCP backlog until the pending reply is written
+(measured) or gives up after its own wait, as described under
+`capture_game`.
 
 Each plugin command declares itself where it is implemented: every handler
 script under `commands/` exposes a static `interface()` beside its static
@@ -1494,6 +1619,10 @@ cargo run -- call inspect-resource --resource-path res://scenes/a.tres --project
 cargo run -- call console --project-path /path/to/project
 cargo run -- call console --tail 20 --level error --since 41 --project-path /path/to/project
 cargo run -- call console --clear --project-path /path/to/project
+cargo run -- call game-log --project-path /path/to/project
+cargo run -- call game-log --since 41 --limit 20 --project-path /path/to/project
+cargo run -- call capture-game --project-path /path/to/project
+cargo run -- call capture-game --max-png-bytes 100000 --timeout-ms 8000 --project-path /path/to/project
 cargo run -- call set-parent Box Target --project-path /path/to/project
 cargo run -- call set-parent Box/Empty Target --index 0 --project-path /path/to/project
 cargo run -- call attach-script Player res://player.gd --project-path /path/to/project
@@ -1588,6 +1717,15 @@ before the command request is sent, and the plugin validates the 1..1000 range a
 project check; `--level` (default `all`) keeps one of `info`, `warning`,
 `error`, `script` or `shader`; `--since` (default 0) keeps messages newer
 than that cursor; `--clear` empties the buffer after the reply is built.
+`game-log [--since <n>] [--limit <n>] --project-path <dir>` shows the running
+game's log entries forwarded by the game helper (see Protocol above),
+canonicalizing `--project-path` the same way as the other commands;
+`--since` (default 0) keeps entries with a greater sequence number and
+`--limit` (default 500) keeps at most that many of the newest matching
+entries. `capture-game [--max-png-bytes <n>] [--timeout-ms <n>]
+--project-path <dir>` captures the running game's viewport as a PNG in the
+reply (see Protocol above), canonicalizing `--project-path` the same way as
+the other commands; the CLI waits for the declared wait plus two seconds.
 
 `set-parent <scene-relative-path> <new-parent-scene-relative-path> --project-path <dir> [--index <n>] [--keep-global-transform[=true|false]]`
 moves that node under the new parent through the editor's undo/redo stack
