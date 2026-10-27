@@ -36,6 +36,25 @@ The two transcripts were identical after normalizing the workdir path, the elaps
 
 What the run does not measure. It does not play the scene or capture a running game, which belong to Milestone B; it does not detect a runtime `_init` failure or an unsaved editor buffer, because the commands do not; and the replay harness still brackets rejections without recording the unsaved flag, which is why this script reads the unsaved-scene list through `eval`.
 
+## Milestone B acceptance (run and check)
+
+`tools/acceptance/milestone_b.py` drives the merged play, game-log, capture-game and stop commands end to end through the real `godot-cli` binary against one fixture scene and prints seven PASS lines, one per step, when every step passes, and exits non-zero on the first failed assertion. It passed all seven steps on 2026-10-27 on two fresh workdirs and ports:
+
+```
+python3 tools/acceptance/milestone_b.py \
+  --godot /Users/bruno/Downloads/Godot_mono.app/Contents/MacOS/Godot \
+  --cli <path to godot-cli> --port <port> --workdir <a directory that does not exist> \
+  --out <transcript.json>
+```
+
+What the run measures. S1 records the idle baseline through `status`: not playing with the fixture scene open. S2 plays the scene and polls `status` and `game-log` until the game reports `stopped_in_debugger`: it asserts the heartbeat print is present, exactly one error entry carries the deliberate defect text with the script path, line and function in the entry fields and in both the parsed script location and the engine location, and the raw backtrace names the same line. Before the measured play the run makes one throwaway play and stop, because the first play persists the capture autoload line into `project.godot` and a game started before that save forwards no log entries. S3 fixes the script by overwriting its file with ordinary file tools and asserts the autoload line is on disk. S4 plays again and polls `game-log` for a new run identity reporting `running` with no error entry and with both the heartbeat and the fixed-behaviour line. S5 captures through `capture-game`, decodes the base64 reply with the standard library, checks the PNG signature and that the decoded size matches the reply, and checks the drawn block colour at a pixel inside it and the background colour at a pixel outside it, each scaled down by the reported scale, so a black or empty frame fails. S6 stops and asserts `status` reports not playing, `game-log` reports `no_game` with the last run's entries retained, and no game process for the workdir remains. S7 asserts `capture-game` with no game attached is refused with the documented text.
+
+The checks do not establish correctness beyond what they read; these are the limits found so far, not an exhaustive list. The run asserts named log entries exist, not that every print arrived, so a dropped line outside the asserted set would pass. Two pixels are checked, so a render defect anywhere else in the frame would pass. The error check covers one single-frame backtrace shape; deeper stacks and warnings are not exercised. The stop check finds game processes by the workdir path, so a process that lost its path would pass. Only the file-overwrite fix route is measured; fixing through `attach-script` is not exercised. Capture is measured while the game runs; a capture requested while stopped in the debugger is not exercised.
+
+The two transcripts were identical after normalizing the workdir path, the port, and the elapsed time. Five deliberate defects were used as negative controls, and each made the script exit non-zero at the step it breaks: a defect left unfixed so the new run stops in the debugger, a fixture drawn in the wrong colour so the pixel check fails, a game that never errors so the stop never arrives, a skipped stop so the game still plays, and corrupted PNG bytes so the signature check fails. The corrupted-reply control corrupts the received bytes in memory before the check, so it proves the signature check fails rather than that the CLI delivers corrupt bytes.
+
+What the run does not measure. It does not pause or inspect a running game beyond its log; it captures the game viewport only, never the editor; it exercises runtime errors only, not warnings pushed from game code; and it needs a game window for the capture, so a headless display driver is out of scope.
+
 ## How this plan was made, and how far to trust it
 
 - Bruno's target is the functionality of the Unity command line. On 2026-10-13 the command list was read from a live Unity 6000.4.4f1 project: 142 commands, each with a name, tags, typed parameters and a JSON Schema. The reads changed nothing on the Unity side.
