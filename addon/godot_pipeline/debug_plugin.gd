@@ -42,12 +42,27 @@ var _evicted := 0
 var _capture_replies := {}
 var _next_capture := 1
 
+## The capture ids with a reply still owed: `request_capture` adds the id,
+## and a reply is stored only for an outstanding id, so a late reply for a
+## request the command already retired (completion, deadline, disconnect or
+## a new session) is discarded instead of retained.
+var _outstanding := {}
+
+## Counts the log runs seen so far: a new session and a sequence restart each
+## open a new run. `game_log` reports it so a client can tell that the
+## sequence restarted. The editor opens the first run at startup, so it is 1
+## even before any game has run.
+var _run_id := 0
+
 
 ## A new game process starts a new run: the buffer and the gap detection
 ## restart, while the drop totals keep counting across runs.
 func _setup_session(_session_id: int) -> void:
 	_entries = []
 	_last_seq = 0
+	_run_id += 1
+	_capture_replies = {}
+	_outstanding = {}
 
 
 ## The first session with a game still attached, or null. Sessions outlive
@@ -110,6 +125,7 @@ func _record_log(data: Array) -> void:
 		# the drop totals keep counting across runs.
 		_entries = []
 		_last_seq = 0
+		_run_id += 1
 	if seq > 0:
 		if _last_seq > 0 and seq > _last_seq + 1:
 			_seq_gaps += seq - _last_seq - 1
@@ -122,10 +138,15 @@ func _record_log(data: Array) -> void:
 		_evicted += 1
 
 
-## Stores one capture reply by its request id for polling.
+## Stores one capture reply by its request id for polling, but only while
+## the id is outstanding: a reply that arrives after the command retired
+## its id is discarded instead of retained.
 func _record_capture_reply(data: Array) -> void:
-	_capture_replies[str(data[0]) if data.size() > 0 else "0"] = {
-		"id": str(data[0]) if data.size() > 0 else "0",
+	var id := str(data[0]) if data.size() > 0 else "0"
+	if not _outstanding.has(id):
+		return
+	_capture_replies[id] = {
+		"id": id,
 		"ok": bool(data[1]) if data.size() > 1 else false,
 		"width": int(data[2]) if data.size() > 2 else 0,
 		"height": int(data[3]) if data.size() > 3 else 0,
@@ -134,6 +155,13 @@ func _record_capture_reply(data: Array) -> void:
 		"size": int(data[6]) if data.size() > 6 else 0,
 		"error": str(data[7]) if data.size() > 7 else "",
 	}
+
+
+## The identity of the current log run, for the cursor after it: a new
+## session or sequence restart raises it, starting from the editor's own
+## first run.
+func run_identity() -> int:
+	return _run_id
 
 
 ## The log entries with a sequence number greater than `since`, oldest first.
@@ -149,6 +177,19 @@ func entries_since(since: int) -> Array:
 ## counter, and ring evictions.
 func dropped_count() -> Dictionary:
 	return {"gaps": _seq_gaps, "helper": _helper_dropped, "evicted": _evicted}
+
+
+## The state of the attached game for a later command: whether a game is
+## still attached, and what it is doing. A game the debugger holds after a
+## runtime error reports `stopped_in_debugger`; its queued log entries wait
+## for a continue and a capture waits too, while `stop` ends it.
+func game_state() -> String:
+	var session := _live_session()
+	if session == null:
+		return "no_game"
+	if session.is_breaked():
+		return "stopped_in_debugger"
+	return "running"
 
 
 ## The state of the session for a later command: whether a game is still
@@ -172,15 +213,28 @@ func request_capture(max_png_bytes: int) -> String:
 		return ""
 	var id := "cap_%d" % _next_capture
 	_next_capture += 1
+	_outstanding[id] = true
 	session.send_message(PREFIX + ":capture", [id, max_png_bytes])
 	return id
 
 
 ## Removes and returns the stored reply for `id`, or an empty Dictionary
-## when no reply arrived yet.
+## when no reply arrived yet or the id is no longer outstanding.
 func take_capture_reply(id: String) -> Dictionary:
+	if not _outstanding.has(id):
+		_capture_replies.erase(id)
+		return {}
 	if not _capture_replies.has(id):
 		return {}
 	var reply: Dictionary = _capture_replies[id]
 	_capture_replies.erase(id)
 	return reply
+
+
+## Retires one capture id: its stored reply, if any, is dropped and any
+## later reply for it is discarded. Called when the command completes, when
+## its wait passes, when its client goes away, and when a new game session
+## starts.
+func retire_capture(id: String) -> void:
+	_outstanding.erase(id)
+	_capture_replies.erase(id)

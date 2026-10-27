@@ -15,7 +15,10 @@ extends Node
 ## `code`, `rationale`, `editor_notify`, `error_type`, `script_backtraces`).
 ## The logger callbacks can arrive from any thread, so each entry is appended
 ## to a bounded queue under a `Mutex` and the queue is drained on the main
-## loop in `_process`, where the entries are sent from. Appending never blocks:
+## loop in `_process`, where the entries are sent from — except a script
+## runtime error seen on the main thread, which is sent at once with the
+## entries already queued, so the stopping error reaches the editor even
+## while the debugger holds the game. Appending never blocks:
 ## when the queue is full the entry is dropped and `_dropped` counts it. Every
 ## sent entry carries a `seq` number starting at 1 and increasing by one per
 ## game process, the timestamp in msec, and the current drop count, so the
@@ -58,14 +61,29 @@ class CaptureLogger extends Logger:
 	var _pending: Array = []
 	var _next_seq := 1
 	var _dropped := 0
+	## The thread `_ready` ran on. Only a script runtime error seen on this
+	## thread flushes at once; every other entry keeps the queue path.
+	var _main_thread := 0
+
+	## Records which thread is the main loop thread. Called once from
+	## `_ready`, which always runs there.
+	func set_main_thread(id: int) -> void:
+		_main_thread = id
+
+
+	## Whether this call runs on the main loop thread.
+	func is_main_thread() -> bool:
+		return OS.get_thread_caller_id() == _main_thread
 
 	## Plain stdout messages (`print`) arrive with `error` false and stderr
 	## ones (`printerr`) with it true.
 	func _log_message(message: String, error: bool) -> void:
 		_append(["message", message, error, "", "", 0, "", "", false, 0, []])
 
-	## All eight engine fields arrive intact; only their packing into the
-	## payload happens here.
+	## A script runtime error on the main thread flushes at once: the entries
+	## already queued go first, then this one, each with its sequence number
+	## assigned under the mutex, so the order stays gap-free. Anything else
+	## keeps the queue path the main loop drains.
 	func _log_error(function: String, file: String, line: int, code: String, rationale: String, editor_notify: bool, error_type: int, script_backtraces: Array) -> void:
 		var traces: Array = []
 		if script_backtraces != null:
@@ -74,6 +92,10 @@ class CaptureLogger extends Logger:
 					traces.append(entry)
 				else:
 					traces.append(str(entry))
+		if error_type == 2 and is_main_thread():
+			for entry in take_and_append(["error", "", false, function, file, line, code, rationale, editor_notify, error_type, traces]):
+				EngineDebugger.send_message(PREFIX + ":log", entry)
+			return
 		_append(["error", "", false, function, file, line, code, rationale, editor_notify, error_type, traces])
 
 	## Appends one entry with the next sequence number, timestamp and drop
@@ -98,6 +120,20 @@ class CaptureLogger extends Logger:
 		return entries
 
 
+	## Moves the queued entries plus one more into the caller's hands, with
+	## the next sequence numbers assigned under the same lock, so the flushed
+	## batch keeps the numbers monotonic and unique. The main loop sends them.
+	func take_and_append(fields: Array) -> Array:
+		_mutex.lock()
+		var seq := _next_seq
+		_next_seq += 1
+		var entries := _pending
+		_pending = []
+		entries.append([seq, Time.get_ticks_msec(), _dropped] + fields)
+		_mutex.unlock()
+		return entries
+
+
 var _logger: CaptureLogger = null
 var _capture_queue: Array = []
 var _capturing := false
@@ -109,6 +145,7 @@ func _ready() -> void:
 		return
 	print("HELPER active=true")
 	_logger = CaptureLogger.new()
+	_logger.set_main_thread(OS.get_thread_caller_id())
 	OS.add_logger(_logger)
 	EngineDebugger.register_message_capture(PREFIX, _on_capture_message)
 

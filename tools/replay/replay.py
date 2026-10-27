@@ -85,6 +85,16 @@ STAGED_COMMANDS = [
         '\t"stop": preload("commands/stop.gd"),',
         '\t"play": preload("commands/play.gd"),',
     ),
+    (
+        os.path.join("commands", "game_log.gd"),
+        '\t"game_log": preload("commands/game_log.gd"),',
+        '\t"stop": preload("commands/stop.gd"),',
+    ),
+    (
+        os.path.join("commands", "capture_game.gd"),
+        '\t"capture_game": preload("commands/capture_game.gd"),',
+        '\t"game_log": preload("commands/game_log.gd"),',
+    ),
 ]
 
 PROJECT_GODOT = """; Engine configuration file.
@@ -2902,6 +2912,14 @@ def normalize_eval_reply(reply):
     return reply
 
 
+def normalize_game_log_reply(reply):
+    # A game-log reply carries the helper's wall-clock timestamps, which differ
+    # every run. They are replaced by a fixed placeholder the same way the
+    # eval elapsed time is, so a stored row is reproducible; the sequence ids,
+    # texts and counters stay verbatim.
+    return re.sub(r'"msec":\d+', '"msec":"<MSEC>"', reply)
+
+
 def check_eval_display(rows_eval):
     # Every status-ok eval reply carries `display`: the readable form of the
     # returned value as a string, or null when the run did not complete or the
@@ -3153,6 +3171,43 @@ def wait_filesystem_ready(port, proj, timeout=120):
         time.sleep(0.5)
 
 
+def wait_game_state(port, proj, want, timeout=90):
+    # Polls game-log until the attached game reports the wanted state (or
+    # stops reporting one). This wait is not recorded; the game boots and
+    # stops on its own clock, so a recorded poll could catch it mid-flight.
+    # `want` is "running", "stopped_in_debugger" or "gone" (not attached).
+    deadline = time.time() + timeout
+    while True:
+        reply = json.loads(send_one(port, json.dumps(
+            {"command": "game_log", "project_path": proj},
+            separators=(",", ":")), True, 25))
+        if reply.get("status") != "ok":
+            raise RuntimeError("game_log poll failed: %s" % reply)
+        state = reply["data"]["game_state"]
+        if (want == "gone" and not reply["data"]["attached"]) or state == want:
+            return
+        if time.time() >= deadline:
+            raise RuntimeError("game never reached %s" % want)
+        time.sleep(0.2)
+
+
+def wait_game_entries(port, proj, count, timeout=90):
+    # Polls game-log until the editor holds at least `count` entries. This
+    # wait is not recorded; a running game streams on its own clock.
+    deadline = time.time() + timeout
+    while True:
+        reply = json.loads(send_one(port, json.dumps(
+            {"command": "game_log", "project_path": proj},
+            separators=(",", ":")), True, 25))
+        if reply.get("status") != "ok":
+            raise RuntimeError("game_log poll failed: %s" % reply)
+        if len(reply["data"]["entries"]) >= count:
+            return
+        if time.time() >= deadline:
+            raise RuntimeError("game log never reached %d entries" % count)
+        time.sleep(0.2)
+
+
 def launch(proj, scene):
     args = [GODOT, "--headless", "--path", proj, "--editor"]
     if scene:
@@ -3242,6 +3297,17 @@ def run_session(port, proj, scene, requests, expected_scene, ready_filesystem=Fa
                     raise RuntimeError("did not expect %r in %s" % (needle, rel))
                 rows.append(("CHECK %s %s" % (kind, text), "ok"))
                 continue
+            if kind == "wait_game_state":
+                # Unrecorded: holds the session until the game reaches the
+                # wanted state, so the recorded rows after it meet a settled
+                # game instead of racing its clock.
+                wait_game_state(port, proj, text)
+                continue
+            if kind == "wait_game_entries":
+                # Unrecorded: holds the session until the editor holds this
+                # many log entries.
+                wait_game_entries(port, proj, int(text))
+                continue
             if kind == "eval_parse":
                 display = json.loads(rows[int(text)][1])["data"]["display"]
                 code = ("extends RefCounted\nfunc run(editor, undo_redo) -> Variant:\n\t"
@@ -3255,6 +3321,9 @@ def run_session(port, proj, scene, requests, expected_scene, ready_filesystem=Fa
             reply = send_one(port, wire, newline, 25)
             if '"command":"eval"' in wire:
                 reply = normalize_eval_reply(reply)
+                json.loads(reply)
+            if '"command":"game_log"' in wire:
+                reply = normalize_game_log_reply(reply)
                 json.loads(reply)
             rows.append((wire.replace(proj, "<PROJECT>"),
                          reply.replace(proj, "<PROJECT>")))
@@ -3939,6 +4008,182 @@ def build_ps():
     ]
 
 
+# Game-log and capture fixtures (sessions GL and CG). Written only after every
+# existing session, so session W's listings never name them and rows before GL
+# stay byte-identical.
+GL_CLEAN_GD = """extends Node
+var _frame := 0
+func _ready() -> void:
+\tprint("GL print one")
+\tpush_warning("GL warning one")
+\tpush_error("GL error one")
+func _process(_delta: float) -> void:
+\t_frame += 1
+\tif _frame <= 3:
+\t\tprint("GL frame ", _frame)
+\tif _frame == 2:
+\t\tpush_warning("GL late warning")
+\tif _frame == 3:
+\t\tpush_error("GL late error")
+\tif _frame >= 4:
+\t\tget_tree().quit()
+"""
+
+GL_FATAL_GD = """extends Node
+var _frame := 0
+func _ready() -> void:
+\tprint("GL print one")
+\tpush_warning("GL warning one")
+\tpush_error("GL error one")
+func _process(_delta: float) -> void:
+\t_frame += 1
+\tif _frame <= 2:
+\t\tprint("GL frame ", _frame)
+\tif _frame == 2:
+\t\tpush_warning("GL late warning")
+\tif _frame == 3:
+\t\tvar a: Array = []
+\t\ta[5] = 1
+"""
+
+GL_IDLE_GD = """extends Node
+func _ready() -> void:
+\tprint("GL idle print")
+"""
+
+GL_CLEAN_TSCN = """[gd_scene load_steps=2 format=3]
+[ext_resource type="Script" path="res://gl_clean.gd" id="1"]
+[node name="GlClean" type="Node"]
+script = ExtResource("1")
+"""
+
+GL_FATAL_TSCN = """[gd_scene load_steps=2 format=3]
+[ext_resource type="Script" path="res://gl_fatal.gd" id="1"]
+[node name="GlFatal" type="Node"]
+script = ExtResource("1")
+"""
+
+GL_IDLE_TSCN = """[gd_scene load_steps=2 format=3]
+[ext_resource type="Script" path="res://gl_idle.gd" id="1"]
+[node name="GlIdle" type="Node"]
+script = ExtResource("1")
+"""
+
+
+def write_gl_fixtures(proj):
+    for name, text in [
+        ("gl_clean.gd", GL_CLEAN_GD),
+        ("gl_fatal.gd", GL_FATAL_GD),
+        ("gl_idle.gd", GL_IDLE_GD),
+        ("gl_clean.tscn", GL_CLEAN_TSCN),
+        ("gl_fatal.tscn", GL_FATAL_TSCN),
+        ("gl_idle.tscn", GL_IDLE_TSCN),
+    ]:
+        with open(os.path.join(proj, name), "w") as f:
+            f.write(text)
+
+
+def gl_log(project="<PROJ>", **kw):
+    request = {"command": "game_log", "project_path": project}
+    request.update(kw)
+    return ("line", json.dumps(request, separators=(",", ":")))
+
+
+def cg_cap(project="<PROJ>", **kw):
+    request = {"command": "capture_game", "project_path": project}
+    request.update(kw)
+    return ("line", json.dumps(request, separators=(",", ":")))
+
+
+def _bracket_gl(out, request):
+    # A rejected game-log request changes nothing the log reports: the same
+    # read before and after brackets it.
+    out.append(gl_log())
+    out.append(request)
+    out.append(gl_log())
+
+
+def _bracket_cg(out, request):
+    # A rejected capture changes nothing the log reports: the same read
+    # before and after brackets it. The idle game prints once and then holds
+    # still, so the bracket reads stay equal.
+    out.append(gl_log())
+    out.append(request)
+    out.append(gl_log())
+
+
+def build_gl():
+    # Session GL: the game-log matrix on a headless game. A clean game that
+    # quits itself (entries then stay), the cursor reads, the refusals each
+    # bracketed by identical log reads, a fatal game that stops in the
+    # debugger (the stopping error is already in the buffer), and the log
+    # after `stop` ends it.
+    out = [
+        ("line", '{"command":"status"}'),
+        gl_log(),
+        ("line", '{"command":"play","project_path":"<PROJ>","scene_path":"res://gl_clean.tscn"}'),
+        # The clean game quits itself; wait for every entry first (its count
+        # is fixed), then for the quit, so the golden rows meet a settled log.
+        ("wait_game_entries", "8"),
+        ("wait_game_state", "gone"),
+        gl_log(),
+        gl_log(since=2),
+        gl_log(limit=2),
+        gl_log(since=999999),
+        gl_log(),
+    ]
+    for request in [
+        ("line", '{"command":"game_log","project_path":"/no/replay-mismatch","since":0,"limit":1}'),
+        ("line", '{"command":"game_log","project_path":"<PROJ>","since":-1}'),
+        ("line", '{"command":"game_log","project_path":"<PROJ>","since":1.5}'),
+        ("line", '{"command":"game_log","project_path":"<PROJ>","since":"x"}'),
+        ("line", '{"command":"game_log","project_path":"<PROJ>","limit":0}'),
+        ("line", '{"command":"game_log","project_path":"<PROJ>","limit":4097}'),
+        ("line", '{"command":"game_log","project_path":"<PROJ>","limit":1.5}'),
+        ("line", '{"command":"game_log","project_path":"<PROJ>","bogus":1}'),
+    ]:
+        _bracket_gl(out, request)
+    out.append(("line", '{"command":"play","project_path":"<PROJ>","scene_path":"res://gl_fatal.tscn"}'))
+    out.append(("wait_game_state", "stopped_in_debugger"))
+    out.append(gl_log())
+    out.append(gl_log(since=6))
+    out.append(("line", '{"command":"stop","project_path":"<PROJ>"}'))
+    out.append(gl_log())
+    return out
+
+
+def build_cg():
+    # Session CG: the capture matrix on a headless game. The helper answers
+    # ok false without a viewport image; every refusal is bracketed by
+    # identical log reads; a fatal game holds the pending reply until its
+    # wait passes; with no game the command refuses at once.
+    out = [
+        ("line", '{"command":"status"}'),
+        ("line", '{"command":"play","project_path":"<PROJ>","scene_path":"res://gl_idle.tscn"}'),
+        ("wait_game_entries", "1"),
+        cg_cap(),
+    ]
+    for request in [
+        ("line", '{"command":"capture_game","project_path":"/no/replay-mismatch"}'),
+        ("line", '{"command":"capture_game","project_path":"<PROJ>","max_png_bytes":0}'),
+        ("line", '{"command":"capture_game","project_path":"<PROJ>","max_png_bytes":-5}'),
+        ("line", '{"command":"capture_game","project_path":"<PROJ>","max_png_bytes":"x"}'),
+        ("line", '{"command":"capture_game","project_path":"<PROJ>","max_png_bytes":1.5}'),
+        ("line", '{"command":"capture_game","project_path":"<PROJ>","max_png_bytes":8388609}'),
+        ("line", '{"command":"capture_game","project_path":"<PROJ>","timeout_ms":99}'),
+        ("line", '{"command":"capture_game","project_path":"<PROJ>","timeout_ms":30001}'),
+        ("line", '{"command":"capture_game","project_path":"<PROJ>","timeout_ms":"x"}'),
+        ("line", '{"command":"capture_game","project_path":"<PROJ>","bogus":1}'),
+    ]:
+        _bracket_cg(out, request)
+    out.append(("line", '{"command":"play","project_path":"<PROJ>","scene_path":"res://gl_fatal.tscn"}'))
+    out.append(("wait_game_state", "stopped_in_debugger"))
+    out.append(cg_cap(timeout_ms=3000))
+    out.append(("line", '{"command":"stop","project_path":"<PROJ>"}'))
+    out.append(cg_cap())
+    return out
+
+
 # The order rows are stored in, which is not the order the sessions run in.
 # Each session writes its rows at its own place here, so a session that
 # --sessions left out leaves a gap instead of shifting the rows after it.
@@ -3946,7 +4191,7 @@ SESSION_ORDER = ("A", "B", "C", "E", "D", "F", "G", "H", "I", "J", "K", "L",
                  "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y",
                  "CONSOLE", "Z", "AA", "AB", "AC", "AD", "AE", "AF", "AG",
                  "AH", "AI", "AJ", "AK", "EVAL", "RS", "RU", "RD", "RI",
-                 "AS", "ASR", "PL0", "PS", "PL")
+                 "AS", "ASR", "PL0", "PS", "PL", "GL", "CG")
 
 # The request list of each session, in storage order. A session records exactly
 # one row per request, so the length of these lists is the stored row layout.
@@ -3967,7 +4212,8 @@ SESSION_REQUESTS = (
     ("AK", build_ak()), ("EVAL", build_eval()), ("RS", build_rs()),
     ("RU", build_ru()), ("RD", build_rd()), ("RI", build_ri()),
     ("AS", build_as()), ("ASR", build_asr()), ("PL0", build_pl0()),
-    ("PS", build_ps()), ("PL", build_pl()),
+    ("PS", build_ps()), ("PL", build_pl()), ("GL", build_gl()),
+    ("CG", build_cg()),
 )
 
 
@@ -4279,7 +4525,8 @@ def main():
         # command files are copied back too. The set-parent fixtures are written
         # now as well, so the earlier sessions never listed them.
         for rel in ("console.gd", "set_parent.gd", "eval.gd",
-                    "attach_script.gd", "play.gd", "stop.gd"):
+                    "attach_script.gd", "play.gd", "stop.gd",
+                    "game_log.gd", "capture_game.gd"):
             shutil.copy2(os.path.join(a.plugin_dir, "commands", rel),
                          os.path.join(dst, "commands", rel))
         with open(target, "w") as f:
@@ -4362,6 +4609,13 @@ def main():
         write_pl_fixtures(proj)
         play("PS", "res://pl_clean.tscn", build_ps(), "res://pl_clean.tscn")
         play("PL", "res://pl_clean.tscn", build_pl(), "res://pl_clean.tscn")
+        # The game-log and capture sessions run last, so their fixtures are
+        # written here and their rows are appended at the end of the
+        # baseline. Both run with no edited scene and drive the game through
+        # scene paths; unrecorded waits settle the game before golden rows.
+        write_gl_fixtures(proj)
+        play("GL", None, build_gl(), None)
+        play("CG", None, build_cg(), None)
         rows = [row for name in SESSION_ORDER for row in blocks[name]]
         with open(a.out, "w") as f:
             for req, rep in rows:

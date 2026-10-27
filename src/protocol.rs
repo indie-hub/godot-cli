@@ -52,12 +52,15 @@ impl std::error::Error for ClientError {}
 /// back: the interface fetch passes its bound so a hostile or broken editor
 /// cannot make the client allocate without limit, and a command passes `None`
 /// because the plugin answers with whatever the command produced, which can be
-/// tens of megabytes.
+/// tens of megabytes. `read_timeout` overrides the 5 s default wait for the
+/// reply; a pending command passes its declared wait plus a margin, and every
+/// other call passes `None`.
 pub fn send_request(
     host: &str,
     port: u16,
     request: &serde_json::Value,
     max_reply_bytes: Option<u64>,
+    read_timeout: Option<Duration>,
 ) -> Result<Response, ClientError> {
     let address = (host, port)
         .to_socket_addrs()
@@ -72,7 +75,7 @@ pub fn send_request(
     let mut stream =
         TcpStream::connect_timeout(&address, CONNECT_TIMEOUT).map_err(ClientError::Connect)?;
     stream
-        .set_read_timeout(Some(READ_TIMEOUT))
+        .set_read_timeout(Some(read_timeout.unwrap_or(READ_TIMEOUT)))
         .map_err(ClientError::Io)?;
 
     let mut line =
@@ -156,7 +159,8 @@ mod tests {
                 .expect("write response");
         });
 
-        let response = send_request(HOST, port, &request, None).expect("send_request succeeds");
+        let response =
+            send_request(HOST, port, &request, None, None).expect("send_request succeeds");
         assert_eq!(
             response,
             Response::Ok {
@@ -173,7 +177,7 @@ mod tests {
         let port = listener.local_addr().expect("local addr").port();
         drop(listener); // Free the port so the connection below is refused.
 
-        let error = send_request(HOST, port, &serde_json::json!({}), None)
+        let error = send_request(HOST, port, &serde_json::json!({}), None, None)
             .expect_err("connection should fail");
         assert!(matches!(error, ClientError::Connect(_)));
     }

@@ -8,7 +8,7 @@ extends EditorPlugin
 ## `rename_node`, `create_node`, `set_property`, `delete_node`,
 ## `connect_signal`, `set_group`, `set_unique_name`, `instantiate_scene`,
 ## `save_scene`, `open_scene`, `console`, `set_parent`, `eval`, `attach_script`,
-## `play` and `stop`. The read commands report the editor's status, the active
+## `play`, `stop`, `game_log` and `capture_game`. The read commands report the editor's status, the active
 ## edited scene's node tree, a node's class/child count/property values, the
 ## nodes matching a class, group, and name search, an engine class's ClassDB
 ## reflection (ancestors, properties, methods, signals), the resource files the
@@ -18,7 +18,10 @@ extends EditorPlugin
 ## `save_scene` persists the currently edited scene to the file path it already
 ## has, so edits made through the other commands survive a reload. `play` saves
 ## an unsaved edited scene before it launches the game, and `stop` ends a game
-## that is running. `open_scene` opens a scene by path, optionally saving a
+## that is running. `game_log` reports the running game's log entries held by
+## the editor side of the log channel, and `capture_game` holds the connection
+## open until the game answers a viewport capture or its wait passes (see the
+## pending-reply members below). `open_scene` opens a scene by path, optionally saving a
 ## dirty edited scene first. Every editing
 ## command requires a `project_path` that matches the running editor's
 ## project, validates the whole request before it mutates anything, and
@@ -83,6 +86,8 @@ const COMMANDS := {
 	"attach_script": preload("commands/attach_script.gd"),
 	"play": preload("commands/play.gd"),
 	"stop": preload("commands/stop.gd"),
+	"game_log": preload("commands/game_log.gd"),
+	"capture_game": preload("commands/capture_game.gd"),
 }
 
 ## Version of the command interface the plugin publishes. A client that does
@@ -108,6 +113,24 @@ var _server: TCPServer
 var _connection: StreamPeerTCP
 var _console_logger: Logger
 var _debug_plugin: EditorDebuggerPlugin
+
+## A held reply, when a command returns one. The handler's reply carries a
+## `_pending` dictionary with the `poll` callable (called every frame from
+## `_process`; it returns an empty Dictionary while the answer is not ready
+## and the full reply once it is), the relative `deadline_msec`, the
+## `timeout_message` answered when the deadline passes, and an optional
+## `on_cancel` callable run once when the client goes away first or when the
+## deadline passes (a command uses it to retire what the late reply would
+## otherwise retain). While a
+## reply is pending the connection stays open, the request idle timeout does
+## not fire, and the plugin answers no other client: the server holds one
+## connection at a time, so a second client waits at the TCP backlog until
+## the pending reply is written (measured) or the deadline passes.
+var _pending_poll := Callable()
+var _pending_cancel := Callable()
+var _pending_start_msec := 0
+var _pending_wait_msec := 0
+var _pending_timeout_message := ""
 
 var _request_buffer := PackedByteArray()
 var _request_scanned := 0
@@ -191,6 +214,9 @@ func _process(_delta: float) -> void:
 		_request_buffer = PackedByteArray()
 		_request_scanned = 0
 		_request_last_activity_msec = Time.get_ticks_msec()
+	if _pending_poll.is_valid():
+		_poll_pending()
+		return
 	_connection.poll()
 	if _connection.get_status() != StreamPeerSocket.STATUS_CONNECTED:
 		_reset_connection()
@@ -212,7 +238,8 @@ func _process(_delta: float) -> void:
 		var newline_index := _scan_for_newline()
 		if newline_index >= 0:
 			_handle_complete_request(newline_index)
-			_reset_connection()
+			if not _pending_poll.is_valid():
+				_reset_connection()
 			return
 	if _request_buffer.is_empty():
 		# The connection has sent nothing; close it once it has been silent
@@ -222,7 +249,8 @@ func _process(_delta: float) -> void:
 	else:
 		if Time.get_ticks_msec() - _request_last_activity_msec > REQUEST_IDLE_TIMEOUT_MSEC:
 			_handle_idle_fallback()
-			_reset_connection()
+			if not _pending_poll.is_valid():
+				_reset_connection()
 
 
 ## Scans the request buffer for the first newline byte, starting from the
@@ -265,12 +293,48 @@ func _handle_idle_fallback() -> void:
 ## Drops the current connection and its partial request, so state never leaks
 ## between connections.
 func _reset_connection() -> void:
+	_clear_pending()
 	if _connection != null:
 		_connection.disconnect_from_host()
 		_connection = null
 	_request_buffer = PackedByteArray()
 	_request_scanned = 0
 	_request_last_activity_msec = 0
+
+
+## Forgets a held reply without answering it. The connection handling is the
+## caller's business.
+func _clear_pending() -> void:
+	_pending_poll = Callable()
+	_pending_cancel = Callable()
+	_pending_start_msec = 0
+	_pending_wait_msec = 0
+	_pending_timeout_message = ""
+
+
+## Advances a held reply by one frame: answers and closes when the poll
+## reports the reply, errors and closes when the deadline passes, and drops
+## everything silently when the client went away. Never blocks.
+func _poll_pending() -> void:
+	_connection.poll()
+	if _connection.get_status() != StreamPeerSocket.STATUS_CONNECTED:
+		if _pending_cancel.is_valid():
+			_pending_cancel.call()
+		_reset_connection()
+		return
+	var done: Dictionary = _pending_poll.call()
+	if not done.is_empty():
+		_clear_pending()
+		_reply(done)
+		_reset_connection()
+		return
+	if Time.get_ticks_msec() - _pending_start_msec >= _pending_wait_msec:
+		var message := _pending_timeout_message
+		if _pending_cancel.is_valid():
+			_pending_cancel.call()
+		_clear_pending()
+		_reply_error(message)
+		_reset_connection()
 
 
 ## Dispatches a parsed request to the command's script. Malformed requests
@@ -295,7 +359,19 @@ func _handle_request(raw_text: String, raw_bytes: int) -> void:
 	if handler == null:
 		_reply_error("unknown command: %s" % str(command))
 		return
-	_reply(handler.run(self, parsed))
+	var result: Dictionary = handler.run(self, parsed)
+	# A handler that cannot answer yet returns a reply carrying `_pending`
+	# instead (see the member comment above): keep the connection open and
+	# let `_process` answer from there. Anything else is answered at once.
+	if result.has("_pending"):
+		var pending: Dictionary = result["_pending"]
+		_pending_poll = pending["poll"]
+		_pending_cancel = pending.get("on_cancel", Callable())
+		_pending_start_msec = Time.get_ticks_msec()
+		_pending_wait_msec = int(pending["deadline_msec"])
+		_pending_timeout_message = str(pending["timeout_message"])
+		return
+	_reply(result)
 
 
 func _reply_error(message: String) -> void:
