@@ -75,12 +75,30 @@ Decisions of 2026-09-29, kept with the same meaning:
 | Question | Decision |
 | --- | --- |
 | Expose an MCP server? | Deferred until a host without a shell needs it. The CLI stays the interface. Every agent host in use today has a shell. |
-| External writes (project settings, resource files, scripts, imports, exports) | Not yet. Reads and scene edits ship first, and external writes come after governance gates exist. |
+| External writes (project settings, resource files, scripts, imports, exports) | Not built. Reads and scene edits ship first. The gates that must exist before the first write command are under "Disk writes and write gates". |
 | Live game and debugger inspection | Deferred until play control and headless tests exist. |
 | `open-scene` with a dirty scene | Without `--save` the target opens and the dirty scene stays open as a background tab; with `--save` only the edited scene is saved first. There is no discard option. The reply lists the scenes that still have unsaved changes in `unsaved`. |
-| Governance gates on direct command-line calls | Deferred. The Unity command line has no global switch. Its safety model is per call: `dry_run` on 40 commands and `confirm` on 29 commands. 18 of those 29 refuse the call without `confirm=true`, 7 need it only when the call would overwrite an existing file, and 4 accept it for parity and do not need it. Godot's design is still open. |
+| Governance gates on direct command-line calls | Not built. The Unity command line has no global switch. Its safety model is per call: `dry_run` on 40 commands and `confirm` on 29 commands. 18 of those 29 refuse the call without `confirm=true`, 7 need it only when the call would overwrite an existing file, and 4 accept it for parity and do not need it. Godot's gates are the per-command write classes under "Disk writes and write gates"; they are guardrails against an agent's accidents, not a security boundary. |
 
-Why external writes wait: scene edits go through the editor's undo stack, so Ctrl+Z reverses them. Writes to `project.godot`, `.tres` and `.res` files, scripts, imports and exports go straight to disk with no undo, and one edit can affect many scenes. A shared material file is an example. Real safety for those needs gates such as "overwrite is off by default", and those do not exist yet.
+### Disk writes and write gates
+
+The gates cover every named plugin command that changes a file on disk or a project setting except `eval`. They are guardrails against accidents by an agent that uses those commands, not a security boundary: `eval` refuses nobody, and in the measured editor the code it runs wrote a file outside the project. The plugin may write `project.godot` where this contract says so.
+
+Every write by a covered named plugin command falls in exactly one class. `eval` and the editor's own activity are outside the gates and outside these classes.
+
+- **W0, an edit to the edited scene.** It changes the scene in memory only, as one undoable editor action (rule 3); a WS save writes it.
+- **WS, an ordinary save of an open scene to its own path.** Built: `save-scene` and `open-scene --save`; proposed and unbuilt: the named-scene save. It replaces that scene's file by design and needs no flag. `play` saves a dirty edited scene this way, under its rule-4 exception.
+- **W1, a new file inside `res://`.** A command that creates a scene or a resource refuses unless the path is inside `res://`, has an allowed extension, has an existing parent folder, and does not exist when it validates. W1 has no overwrite flag.
+- **W2, an overwrite or a delete of an existing file that is not a WS save and not W3.** Save-as onto an existing path, deleting a file and rewriting a resource file are examples. A command refuses unless given an explicit named flag (proposed and unbuilt: `--overwrite` and `--delete`). These writes have no undo, and one file can be used by many scenes; the reply lists the files it replaced or removed and the dependents it knows.
+- **W3, project settings.** Staged, then applied explicitly, as below. The apply overwrites `project.godot` by contract and takes no W2 flag.
+
+The reply fields are proposed and unbuilt: `written` (the paths it wrote), `affected` (the other files and scenes it found that reference what changed) with `affected_complete`, false whenever the command cannot establish that it found every dependent, `undoable` with `undo_scope` (what an undo would reverse), and `failed` and `uncertain` when a multi-file write is partial. `--dry-run` (proposed and unbuilt) validates the whole request and returns the intended paths and effects with `written` empty, and writes nothing. A validation failure never mutates. An I/O failure after some writes can leave a partial result: the contract promises no rollback.
+
+**W3, input actions.** Edits are staged in plugin-owned data, never in live ProjectSettings and never in the editor's InputMap. In the tested fixtures a staged key reached `project.godot` while a plugin-registration save was pending, and the cause was not isolated. An explicit save there also wrote an unrelated changed setting, so a save can write other live changes, including settings the human changed in the editor; the 4.8-dev source skips hidden and unchanged-default properties. A staged key in live state is therefore not safe: the plugin does not control when the editor saves project settings. A read command (proposed and unbuilt) shows the staged edits. One apply command (proposed and unbuilt) writes them with `ProjectSettings.set_setting` and `ProjectSettings.save()`. Its reply states that the save can write other live changes, including settings the human changed in the editor, lists the keys it changed, and says that a hand-written `project.godot` can be normalised on the first save. Removal is `set_setting(name, null)` plus a save, because ProjectSettings has no `clear_setting`. Reading the applied state goes through ProjectSettings: in the tested editor a custom project action was absent from the editor's own InputMap after a fresh start, and the engine initialises the editor with default keys and the game with the project's (`main/main.cpp:2329-2335`, 4.8-dev source); a separately launched game reported the action present. A staged edit is discarded by an explicit discard command (proposed and unbuilt). The apply is `undoable: false` for the file on disk.
+
+**No-overwrite limit.** A W1 command refuses when the target exists at the moment it validates and reports that refusal. It does not promise exclusivity, and it does not promise that the target is still absent when the bytes are written. In the sequenced test (existence check, an outside process creates the file, then the editor saves) both vendors saw the competing bytes lost. In 200 coordinated races one vendor saw both writers' bytes survive on different iterations. The enumerated 4.7.2 FileAccess and DirAccess method lists and flags contain no exclusive-create method or flag; the flag enum at `core/io/file_access.h:57-62` is 4.8-dev source. That is an API observation, not a statement about a GDExtension or an external process.
+
+**Named-scene save instead of `save_all` (proposed and unbuilt).** The command saves the open scene named by a `res://` path, only if it has unsaved changes, to its own path. It refuses an untitled or never-saved scene and never opens a save-as dialog. It never stops a running game and never saves the default environment. The engine's `EditorInterface.save_all_scenes` instead saves a dirty scene to its own path, queues a dirty scene that is untitled or whose folder is missing for a save-as dialog, stops a running game, and calls a default-environment save that writes only when a valid fallback environment has a resource-file path (`editor_node.cpp:2614-2617`, `2662-2687`, `3096-3103`, 4.8-dev source, read not run), so the command does not use it. Unmeasured: whether a plugin can save a background (non-edited) open tab to its own path without making it the edited scene, and what that does to the open tabs and to the running game. That measurement is required before the command is built.
 
 Decisions of 2026-10-13:
 
@@ -140,8 +158,8 @@ Queued follow-up tasks:
 
 1. Check the project path first, before any other check.
 2. Validate the whole request before changing anything. A rejected request changes neither the scene nor the undo history.
-3. Every scene edit is one editor Undo/Redo action in the edited scene root's history.
-4. Nothing saves unless `save-scene` runs, with three exceptions: `play` saves an unsaved edited scene before it launches the game; the editor itself rewrites the edited scene's file in its own saved form when a play starts and that file has not been saved in that form before, even though nothing was unsaved; and the plugin registers its `GodotPipelineCapture` game autoload with a guarded `add_autoload_singleton` on editor start, whose entry and whose removal on disable reach `project.godot` on disk with the next project-settings save (starting the game saves) — see `docs/reference.md` for `play` and the "Game helper" lines and the measured timing.
+3. Every scene edit is one editor Undo/Redo action in the edited scene root's history. A write to another file is not a scene edit and gets no scene undo.
+4. A named plugin command writes a file or a setting only as its class under "Disk writes and write gates" allows: an ordinary save of an open scene to its own path is WS and needs no flag; a new file in `res://` is W1; an overwrite or a delete that is neither a WS save nor W3 is W2 and needs its named flag; project settings are W3, staged and applied explicitly. The built saves are `save-scene` and `open-scene --save`. `eval` and the editor's own activity are outside these gates. Three exceptions: `play` saves an unsaved edited scene before it launches the game; the editor itself rewrites the edited scene's file in its own saved form when a play starts and that file has not been saved in that form before, even though nothing was unsaved; and the plugin registers its `GodotPipelineCapture` game autoload with a guarded `add_autoload_singleton` on editor start, whose entry and whose removal on disable reach `project.godot` on disk with the next project-settings save (starting the game saves) — see `docs/reference.md` for `play` and the "Game helper" lines and the measured timing.
 5. Coerce values strictly from the declared type. Never guess from the JSON.
 6. Never block the editor main thread. Poll across frames or hand long work to a child process. A handler that cannot answer yet returns a pending reply instead: the plugin keeps the connection open, polls the handler's `poll` callable every frame from `_process`, answers when it completes or errors when its declared wait passes, and never blocks. While a reply is pending the request idle timeout does not fire, a disconnect cancels it silently, and the plugin answers no other client until it resolves.
 7. Keep kebab-case command names. Keep the reply shape `{"status":"ok","data":...}` or `{"status":"error","message":...}`.
@@ -170,7 +188,7 @@ Queued follow-up tasks:
 
 **The code is not confined.** Nobody is refused: there is no caller guard, as in the Unity command. There is no dry run either.
 
-**The two exceptions to the rules.** Rule 3 requires one Undo/Redo action per scene edit. Rule 6 requires that the main thread never blocks. `eval` is an exception to both. Direct scene edits from the submitted code create no undo entry and do not mark the scene unsaved. One `EditorUndoRedoManager` action does. The code can hold the main thread for as long as it runs. The rules section itself is not edited.
+**The two exceptions to the rules.** Rule 3 requires one Undo/Redo action per scene edit. Rule 6 requires that the main thread never blocks. `eval` is an exception to both. Direct scene edits from the submitted code create no undo entry and do not mark the scene unsaved. One `EditorUndoRedoManager` action does. The code can hold the main thread for as long as it runs.
 
 **What `scene_changed` can see.** The plugin fingerprints the live scene tree before and after the call. The fingerprint uses the path, the class, the owner, the script, the groups, the connections and the stored properties. It found all ten tested edits: add with an owner, add without an owner, remove, rename, a property change, a reorder, a property change inside an instanced sub-scene, a signal connection, a group add, and a script attach. Repeated captures of an unchanged scene gave identical results. On a scene of 203 nodes the fingerprint took a mean of 20.5732 ms over five runs. A second vendor re-ran the fingerprint on a 203-node fixture and measured 20.9 to 25.0 ms.
 
@@ -221,8 +239,8 @@ Queued follow-up tasks:
 
 | Class | Rows |
 | --- | --- |
-| `DIRECT` | 10 |
-| `ADAPT` | 116 |
+| `DIRECT` | 9 |
+| `ADAPT` | 117 |
 | `GODOT_NATIVE` | 1 |
 | `UNITY_ONLY` | 15 |
 | total | 142 |
@@ -248,7 +266,7 @@ Queued follow-up tasks:
 | gameobjects | 14 | 12 `ADAPT`, 2 `DIRECT` |
 | assets | 12 | 8 `ADAPT`, 4 `DIRECT` |
 | scripts | 10 | 10 `ADAPT` |
-| scenes | 9 | 7 `ADAPT`, 2 `DIRECT` |
+| scenes | 9 | 8 `ADAPT`, 1 `DIRECT` |
 | build | 8 | 5 `ADAPT`, 1 `GODOT_NATIVE`, 2 `UNITY_ONLY` |
 | editor | 7 | 2 `DIRECT`, 4 `ADAPT`, 1 `UNITY_ONLY` |
 | prefabs | 7 | 7 `ADAPT` |
@@ -262,9 +280,9 @@ Queued follow-up tasks:
 
 The 17 groups add up to 142.
 
-### The 10 `DIRECT` commands
+### The 9 `DIRECT` commands
 
-`create_folder`, `delete_asset`, `delete_gameobject`, `editor_focus`, `editor_status`, `get_scene_hierarchy`, `read_text_file`, `rename_gameobject`, `save_all`, `write_text_file`.
+`create_folder`, `delete_asset`, `delete_gameobject`, `editor_focus`, `editor_status`, `get_scene_hierarchy`, `read_text_file`, `rename_gameobject`, `write_text_file`.
 
 Four of them are covered by a built command. `delete_gameobject` is covered by `delete-node`, `editor_status` by `status`, `get_scene_hierarchy` by `scene-tree`, and `rename_gameobject` by `rename-node`.
 
@@ -305,7 +323,7 @@ These are Godot concepts with no counterpart in the Unity command list. They are
 - **Command interface.** The plugin publishes the interface of its commands and the CLI reads it on every run; see [the command interface](docs/reference.md#command-interface).
 - **MCP facade (deferred).** If one is built, make it a Rust stdio adapter over the same commands, with the plugin staying the authority on the scene. Do not put an MCP HTTP server inside the GDScript plugin: it would add protocol and concurrency work to the editor thread. Do not expose a command before the command underneath it exists. The earlier plan listed a facade tool list as the target of this parity work; that surface is not the target.
 - **Batches.** Unity's `changes/apply` applies a ChangeSet in one undo step. The Godot equivalent is one `EditorUndoRedoManager` action that holds many operations. A batch must validate every step against the resulting state before it opens the action. Defer this until the small commands and a preflight model exist. Disk writes, imports, exports and tests can never join a scene undo action.
-- **Governance (deferred).** The Unity command line has no global switch. Its safety is per call: `dry_run` on 40 commands and `confirm` on 29 commands, and 18 of those 29 refuse the call without `confirm=true`. That model fits Godot's rule that a request is validated whole before anything changes. Godot's own design is still open: whether the gates live on the command line, on the plugin, or on both, and how an operator grants them. The earlier sketch put the grants in per-user `EditorSettings`; that sketch came from the wrong reference.
+- **Governance (deferred).** The Unity command line has no global switch. Its safety is per call: `dry_run` on 40 commands and `confirm` on 29 commands, and 18 of those 29 refuse the call without `confirm=true`. That model fits Godot's rule that a request is validated whole before anything changes. Godot's gates are the per-command write classes under "Disk writes and write gates", checked by the plugin; the earlier sketch put the grants in per-user `EditorSettings` and came from the wrong reference.
 - **Long work.** A child Godot process started with `OS.execute_with_pipe` can be polled, its output can be read, and it can be killed with `OS.kill`. The engine's own flags `--headless`, `--script` and `--export-release` run outside the editor. An endless loop inside the editor process cannot be interrupted: the editor stops replying. Run long work in a child process, return an operation ID, and poll from the Rust side. A client timeout is not a cancellation.
 - **Editor-to-game debugger channel.** The editor talks to the running game over an `EditorDebuggerSession`. Messages such as `scene:suspend_changed` arrive on that channel, and `EngineDebugger` can capture data from the game side. Both were measured in 4.7.2. The game project still needs a small capture script to send images.
 - **Package search.** A plugin can search the official asset store with `HTTPRequest`. The Unity command line covers the same need with `package_search` and the other package commands. Query grammar, paging and offline cache differ, and there is no offline cache.
@@ -330,10 +348,10 @@ That is 21 Unity commands. The other 97 rows are docs and source only, and neith
 
 - The order of work. Nothing in this plan fixes it.
 - Which file paths may `eval_file` read? Nothing is decided. The measured code could read and write outside the project, and Bruno decided that no caller is refused.
-- Should the exceptions to rule 3 and rule 6 be written into the rules section itself, instead of being stated in the `eval` section? This plan leaves the rules section unchanged.
+- Should the exceptions to rule 3 and rule 6 be written into the rules section itself, instead of being stated in the `eval` section?
 - How would a C# `eval` be compiled? No working route was found in the tested editor, and external compilers were not tested.
-- Governance gates: does Godot adopt the Unity per-call model of `dry_run` and `confirm`, and do the gates cover direct command-line calls as well as any other interface?
-- External writes: when do project settings, resource files, scripts, imports and exports start? No external-write command is built.
+- Governance gates: the write classes decide by command on the command line. Whether a later interface repeats them is open; nothing else is built.
+- External writes: when do project settings, resource files, scripts, imports and exports start? No external-write command is built, and [Phase 4](docs/phase-4.md) lists the measurements each one needs first.
 - The `commands` discovery subcommand, which prints every command with its argument schema as JSON, exists: the plugin publishes the schema and `godot-cli` reads it from the running editor, with no cache.
 - How much measurement does a `docs and source only` row need before it is built?
 - The 15 `UNITY_ONLY` rows: is a Godot-flavored alternative wanted for each, or is the gap accepted?
