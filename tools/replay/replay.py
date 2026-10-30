@@ -52,8 +52,8 @@ WRONG_PROJECT = "/no/replay-mismatch"
 # COMMANDS line after). Session W's listing rows name the commands folder, so
 # every command added after the 825-row baseline must be absent while A..W
 # record. inspect-resource is restored before session X; console (which also
-# wires a Logger into editor_plugin.gd), set_parent and eval are restored
-# together before session Y.
+# wires a Logger into editor_plugin.gd), set_parent, eval and the input
+# commands are restored together before session Y.
 STAGED_COMMANDS = [
     (
         os.path.join("commands", "inspect_resource.gd"),
@@ -94,6 +94,31 @@ STAGED_COMMANDS = [
         os.path.join("commands", "capture_game.gd"),
         '\t"capture_game": preload("commands/capture_game.gd"),',
         '\t"game_log": preload("commands/game_log.gd"),',
+    ),
+    (
+        os.path.join("commands", "input_events.gd"),
+        None,
+        None,
+    ),
+    (
+        os.path.join("commands", "input_stage.gd"),
+        '\t"input_stage": preload("commands/input_stage.gd"),',
+        '\t"capture_game": preload("commands/capture_game.gd"),',
+    ),
+    (
+        os.path.join("commands", "input_read.gd"),
+        '\t"input_read": preload("commands/input_read.gd"),',
+        '\t"input_stage": preload("commands/input_stage.gd"),',
+    ),
+    (
+        os.path.join("commands", "input_apply.gd"),
+        '\t"input_apply": preload("commands/input_apply.gd"),',
+        '\t"capture_game": preload("commands/capture_game.gd"),',
+    ),
+    (
+        os.path.join("commands", "input_discard.gd"),
+        '\t"input_discard": preload("commands/input_discard.gd"),',
+        '\t"input_apply": preload("commands/input_apply.gd"),',
     ),
 ]
 
@@ -4184,6 +4209,320 @@ def build_cg():
     return out
 
 
+def is_stage(action, events=None, deadzone=None, remove=False, project="<PROJ>"):
+    d = {"command": "input_stage", "project_path": project, "action": action}
+    if events is not None:
+        d["events"] = events
+    if deadzone is not None:
+        d["deadzone"] = deadzone
+    if remove:
+        d["remove"] = True
+    import json as _json
+    return ("line", _json.dumps(d, separators=(",", ":")))
+
+def is_read(action=None, project="<PROJ>"):
+    d = {"command": "input_read", "project_path": project}
+    if action is not None:
+        d["action"] = action
+    import json as _json
+    return ("line", _json.dumps(d, separators=(",", ":")))
+
+def _bracket_is(out, request):
+    out.append(is_read())
+    out.append(request)
+    out.append(is_read())
+
+IS_KEY = [{"type": "key", "physical_keycode": 87, "shift": True}]
+IS_MOUSE = [{"type": "mouse_button", "button_index": 1}]
+IS_MOUSE9 = [{"type": "mouse_button", "button_index": 9}]
+IS_JOYBTN = [{"type": "joypad_button", "button_index": 0, "device": -1}]
+IS_JOYMOT = [{"type": "joypad_motion", "axis": 0, "axis_value": -1.0, "device": -1}]
+
+def build_input_stage():
+    out = [
+        ("line", '{"command":"status"}'),
+        ("file_sha256", "project.godot"),
+        is_read(),
+    ]
+    out.append(is_stage("gp091_move", IS_KEY, 0.5))
+    out.append(is_read())
+    out.append(is_stage("gp091_fire", IS_MOUSE))
+    out.append(is_stage("gp091_jump", IS_JOYBTN, 0.3))
+    out.append(is_stage("gp091_strafe", IS_JOYMOT))
+    out.append(is_read())
+    out.append(is_read("gp091_move"))
+    out.append(is_stage("gp091_fire", None, None, True))
+    out.append(is_read("gp091_fire"))
+    out.append(("file_sha256", "project.godot"))
+    for request in [
+        ("line", '{"command":"input_stage"}'),
+        ("line", '{"command":"input_stage","project_path":"<PROJ>"}'),
+        ("line", '{"command":"input_stage","project_path":7,"action":"gp091_move"}'),
+        is_stage("gp091_move", IS_KEY, 0.5, False, "/no/replay-mismatch"),
+        is_stage("bad/name", IS_KEY),
+        is_stage("", IS_KEY),
+        ("line", '{"command":"input_stage","project_path":"<PROJ>","action":"gp091_noev"}'),
+        is_stage("gp091_bad", []),
+        is_stage("gp091_bad", IS_KEY * 33),
+        is_stage("gp091_bad", "oops"),
+        is_stage("gp091_bad", [{"type": "key"}]),
+        is_stage("gp091_bad", [{"type": "key", "physical_keycode": 0, "keycode": 0}]),
+        is_stage("gp091_bad", [{"type": "key", "physical_keycode": 87.5}]),
+        is_stage("gp091_bad", [{"type": "key", "physical_keycode": 87, "device": 16}]),
+        is_stage("gp091_bad", [{"type": "mouse_button", "button_index": 1.5}]),
+        is_stage("gp091_bad", [{"type": "mouse_button", "button_index": 10}]),
+        is_stage("gp091_bad", [{"type": "joypad_button", "button_index": 128}]),
+        is_stage("gp091_bad", [{"type": "joypad_motion", "axis": 10, "axis_value": 1.0}]),
+        is_stage("gp091_bad", [{"type": "joypad_motion", "axis": 0, "axis_value": 0.5}]),
+        is_stage("gp091_bad", [{"type": "joypad_button", "button_index": 0, "device": -2}]),
+        is_stage("gp091_bad", IS_KEY, 1.5),
+        is_stage("gp091_bad", IS_KEY, "oops"),
+        is_stage("gp091_move", IS_KEY, 0.5, True),
+        is_stage("gp091_move", None, 0.5, True),
+        ("line", '{"command":"input_stage","project_path":"<PROJ>","action":"gp091_bad","events":[{"type":"key","physical_keycode":87}],"unexpected":true}'),
+        ("line", '{"command":"input_stage","project_path":"/no/replay-mismatch"}'),
+        ("line", '{"command":"input_stage","project_path":"<PROJ>","action":"bad\\u0000name","events":[{"type":"key","physical_keycode":87}]}'),
+    ]:
+        _bracket_is(out, request)
+    out.append(("file_sha256", "project.godot"))
+    return out
+
+def build_input_read():
+    out = [
+        ("line", '{"command":"status"}'),
+        ("file_sha256", "project.godot"),
+        is_read(),
+        is_stage("gp091_probe", IS_MOUSE9),
+        is_read(),
+        is_read("gp091_probe"),
+        is_read("gp091_missing"),
+        ("line", '{"command":"eval","project_path":"<PROJ>","code":"extends RefCounted\\nfunc run(editor, undo_redo):\\n\\tvar e := InputEventKey.new()\\n\\te.physical_keycode = 87 as Key\\n\\tProjectSettings.set_setting(\\"input/gp091_replay\\", {\\"deadzone\\": 0.5, \\"events\\": [e]})\\n\\tProjectSettings.save()\\n\\treturn {}\\n"}'),
+        is_read(),
+        is_read("gp091_replay"),
+        ("file_sha256", "project.godot"),
+    ]
+    for request in [
+        ("line", '{"command":"input_read"}'),
+        ("line", '{"command":"input_read","project_path":7}'),
+        is_read(None, "/no/replay-mismatch"),
+        is_read("bad/name"),
+        is_read(7),
+        ("line", '{"command":"input_read","project_path":"<PROJ>","bogus":1}'),
+        ("line", '{"command":"input_read","project_path":"<PROJ>","action":"bad\\u0000"}'),
+    ]:
+        _bracket_is(out, request)
+    out.append(("file_sha256", "project.godot"))
+    return out
+
+
+# The staging store the input sessions fill through eval: input-stage is a
+# later command, and the store's shape is fixed, so the sessions write the
+# same dictionary under the contract's metadata key on the editor interface.
+# The events are real InputEvent objects, as the staged store holds them.
+INPUT_STAGE_META = "godot_pipeline_input_staging"
+
+INPUT_STAGE_BOTH = (
+    "var store := {}\n"
+    "\tvar key := InputEventKey.new()\n"
+    "\tkey.physical_keycode = 87\n"
+    "\tkey.shift_pressed = true\n"
+    "\tvar motion := InputEventJoypadMotion.new()\n"
+    "\tmotion.axis = 0\n"
+    "\tmotion.axis_value = 1.0\n"
+    "\tmotion.device = -1\n"
+    "\tstore[\"gp092_shift_w\"] = {\"deadzone\": 0.5, \"events\": [key], \"remove\": false}\n"
+    "\tstore[\"gp092_stick\"] = {\"deadzone\": 0.3, \"events\": [motion], \"remove\": false}\n"
+    "\teditor.set_meta(\"" + INPUT_STAGE_META + "\", store)\n"
+    "\treturn store.size()")
+
+INPUT_STAGE_BAD_DEADZONE = (
+    "var store := {}\n"
+    "\tstore[\"gp092_bad\"] = {\"deadzone\": 1.5, \"events\": [], \"remove\": false}\n"
+    "\teditor.set_meta(\"" + INPUT_STAGE_META + "\", store)\n"
+    "\treturn 1")
+
+INPUT_STAGE_BAD_EVENT = (
+    "var store := {}\n"
+    "\tstore[\"gp092_bad\"] = {\"deadzone\": 0.5, \"events\": [42], \"remove\": false}\n"
+    "\teditor.set_meta(\"" + INPUT_STAGE_META + "\", store)\n"
+    "\treturn 1")
+
+INPUT_STAGE_FFFD = (
+    "var store := {}\n"
+    "\tstore[\"x\" + String.chr(0xFFFD) + \"y\"] = {\"deadzone\": 0.5, \"events\": [], \"remove\": true}\n"
+    "\teditor.set_meta(\"" + INPUT_STAGE_META + "\", store)\n"
+    "\treturn 1")
+
+INPUT_STAGE_CHANGED_DEADZONE = (
+    "var store := {}\n"
+    "\tvar motion := InputEventJoypadMotion.new()\n"
+    "\tmotion.axis = 0\n"
+    "\tmotion.axis_value = 1.0\n"
+    "\tmotion.device = -1\n"
+    "\tstore[\"gp092_stick\"] = {\"deadzone\": 0.9, \"events\": [motion], \"remove\": false}\n"
+    "\teditor.set_meta(\"" + INPUT_STAGE_META + "\", store)\n"
+    "\treturn 1")
+
+INPUT_STAGE_NAMES = (
+    "var store := {}\n"
+    "\tif editor.has_meta(\"" + INPUT_STAGE_META + "\"):\n"
+    "\t\tstore = editor.get_meta(\"" + INPUT_STAGE_META + "\")\n"
+    "\tvar names := []\n"
+    "\tfor name in store:\n"
+    "\t\tnames.append(str(name))\n"
+    "\treturn JSON.stringify(names)")
+
+INPUT_STAGE_LIVE = (
+    "var out := {}\n"
+    "\tfor name in [\"gp092_shift_w\", \"gp092_stick\"]:\n"
+    "\t\tvar key: String = \"input/\" + str(name)\n"
+    "\t\tout[name] = {\"setting\": ProjectSettings.has_setting(key), \"inputmap\": InputMap.has_action(name)}\n"
+    "\treturn JSON.stringify(out)")
+
+INPUT_STAGE_PERSISTED = (
+    "var out := {}\n"
+    "\tfor name in [\"gp092_shift_w\", \"gp092_stick\"]:\n"
+    "\t\tvar key: String = \"input/\" + str(name)\n"
+    "\t\tif not ProjectSettings.has_setting(key):\n"
+    "\t\t\tout[name] = null\n"
+    "\t\t\tcontinue\n"
+    "\t\tvar value: Dictionary = ProjectSettings.get_setting(key)\n"
+    "\t\tvar events: Array = value.get(\"events\", [])\n"
+    "\t\tvar first: Variant = events[0] if not events.is_empty() else null\n"
+    "\t\tout[name] = {\"deadzone\": value.get(\"deadzone\"), \"events\": events.size(), "
+    "\"class\": first.get_class() if first is Object else null, "
+    "\"device\": first.device if first is InputEvent else null}\n"
+    "\treturn JSON.stringify(out)")
+
+
+def stage_eval(body):
+    """An eval request that runs `body` inside func run(editor, undo_redo)."""
+    code = ("extends RefCounted\nfunc run(editor, undo_redo) -> Variant:\n\t"
+            + body)
+    return ("line", json.dumps({"command": "eval", "project_path": "<PROJ>",
+                                "code": code}, separators=(",", ":")))
+
+
+def ia(**kw):
+    """An input_apply request; `kw` may carry dry_run."""
+    request = {"command": "input_apply", "project_path": "<PROJ>"}
+    request.update(kw)
+    return ("line", json.dumps(request, separators=(",", ":")))
+
+
+def idc(**kw):
+    """An input_discard request; `kw` may carry action."""
+    request = {"command": "input_discard", "project_path": "<PROJ>"}
+    request.update(kw)
+    return ("line", json.dumps(request, separators=(",", ":")))
+
+
+def build_input_apply():
+    # Session INPUT_APPLY: the write command, on an engine-written
+    # project.godot. main() restores the fixture's hand-written file just
+    # before this session, so the first hash is deterministic; every later
+    # file check is a content check, because the first save normalizes the
+    # file with a project-specific autoload uid. Staging writes nothing; the
+    # dry run writes nothing and keeps the store; the apply writes both blocks
+    # in one save and clears the store; the refusals leave file, live settings
+    # and store unchanged.
+    out = [
+        ("line", '{"command":"status"}'),
+        ("file_sha256", "project.godot"),
+        stage_eval(INPUT_STAGE_NAMES),
+        ia(),
+        stage_eval(INPUT_STAGE_BOTH),
+        ("file_sha256", "project.godot"),
+        stage_eval(INPUT_STAGE_LIVE),
+        ia(dry_run=True),
+        ("file_sha256", "project.godot"),
+        stage_eval(INPUT_STAGE_LIVE),
+        stage_eval(INPUT_STAGE_NAMES),
+        ia(),
+        ("file_contains", "project.godot|gp092_shift_w={"),
+        ("file_contains", "project.godot|gp092_stick={"),
+        ("file_contains", 'project.godot|"physical_keycode":87'),
+        ("file_contains", 'project.godot|"deadzone": 0.3'),
+        ("file_contains", "project.godot|InputEventJoypadMotion"),
+        stage_eval(INPUT_STAGE_PERSISTED),
+        # A save that cannot write the file restores the live values and keeps
+        # the store; the project directory is read-only for these rows, which
+        # is what makes ProjectSettings.save() fail.
+        ("chmod", ".|555"),
+        stage_eval(INPUT_STAGE_CHANGED_DEADZONE),
+        ia(),
+        stage_eval(INPUT_STAGE_PERSISTED),
+        stage_eval(INPUT_STAGE_NAMES),
+        ("chmod", ".|755"),
+        idc(),
+        ia(),
+        ia(dry_run="yes"),
+        stage_eval(INPUT_STAGE_BAD_DEADZONE),
+        ia(dry_run=True),
+        stage_eval(INPUT_STAGE_NAMES),
+        stage_eval(INPUT_STAGE_BAD_EVENT),
+        ia(),
+        stage_eval(INPUT_STAGE_LIVE),
+        ("file_not_contains", "project.godot|gp092_bad={"),
+        idc(action="nope"),
+        stage_eval(INPUT_STAGE_NAMES),
+        idc(),
+        stage_eval(INPUT_STAGE_NAMES),
+        # Unknown top-level fields are refused before any mutation; the
+        # misspelled dry_run row keeps the file byte-identical.
+        ("file_sha256", "project.godot"),
+        stage_eval(INPUT_STAGE_NAMES),
+        ("line", '{"command":"input_apply","project_path":"<PROJ>","unexpected":true}'),
+        stage_eval(INPUT_STAGE_NAMES),
+        ("file_sha256", "project.godot"),
+        ("file_sha256", "project.godot"),
+        stage_eval(INPUT_STAGE_NAMES),
+        ("line", '{"command":"input_apply","project_path":"<PROJ>","dryrun":true}'),
+        stage_eval(INPUT_STAGE_NAMES),
+        ("file_sha256", "project.godot"),
+        ("file_sha256", "project.godot"),
+        stage_eval(INPUT_STAGE_FFFD),
+        ("line", '{"command":"input_apply","project_path":"<PROJ>"}'),
+        stage_eval(INPUT_STAGE_NAMES),
+        ("file_sha256", "project.godot"),
+        # Order rows: a wrong project with valid fields is refused by the
+        # guard, a missing field by the field check.
+        stage_eval(INPUT_STAGE_NAMES),
+        ("line", '{"command":"input_apply","project_path":"/no/replay-mismatch"}'),
+        stage_eval(INPUT_STAGE_NAMES),
+        stage_eval(INPUT_STAGE_NAMES),
+        ("line", '{"command":"input_apply"}'),
+        stage_eval(INPUT_STAGE_NAMES),
+    ]
+    return out
+
+
+def build_input_discard():
+    # Session INPUT_DISCARD: the no-write command. One entry, then the rest,
+    # then an already empty store; every refusal keeps the store. The store is
+    # staged through eval because input-stage is a later command.
+    out = [
+        ("line", '{"command":"status"}'),
+        stage_eval(INPUT_STAGE_BOTH),
+        idc(action="gp092_stick"),
+        stage_eval(INPUT_STAGE_NAMES),
+        idc(),
+        stage_eval(INPUT_STAGE_NAMES),
+        idc(),
+        idc(action="nope"),
+        stage_eval(INPUT_STAGE_NAMES),
+        idc(action=7),
+        stage_eval(INPUT_STAGE_NAMES),
+        ("line", '{"command":"input_discard","project_path":"<PROJ>","bogus":1}'),
+        stage_eval(INPUT_STAGE_NAMES),
+        ("line", '{"command":"input_discard","project_path":"<PROJ>","action":"x\\u0000"}'),
+        stage_eval(INPUT_STAGE_NAMES),
+        ("line", '{"command":"input_discard","project_path":"/no/replay-mismatch"}'),
+        stage_eval(INPUT_STAGE_NAMES),
+        ("line", '{"command":"input_discard"}'),
+        stage_eval(INPUT_STAGE_NAMES),
+    ]
+    return out
 # The order rows are stored in, which is not the order the sessions run in.
 # Each session writes its rows at its own place here, so a session that
 # --sessions left out leaves a gap instead of shifting the rows after it.
@@ -4191,7 +4530,9 @@ SESSION_ORDER = ("A", "B", "C", "E", "D", "F", "G", "H", "I", "J", "K", "L",
                  "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y",
                  "CONSOLE", "Z", "AA", "AB", "AC", "AD", "AE", "AF", "AG",
                  "AH", "AI", "AJ", "AK", "EVAL", "RS", "RU", "RD", "RI",
-                 "AS", "ASR", "PL0", "PS", "PL", "GL", "CG")
+                 "AS", "ASR", "PL0", "PS", "PL", "GL", "CG",
+                  "INPUT_STAGE", "INPUT_READ",
+                  "INPUT_APPLY", "INPUT_DISCARD")
 
 # The request list of each session, in storage order. A session records exactly
 # one row per request, so the length of these lists is the stored row layout.
@@ -4213,7 +4554,10 @@ SESSION_REQUESTS = (
     ("RU", build_ru()), ("RD", build_rd()), ("RI", build_ri()),
     ("AS", build_as()), ("ASR", build_asr()), ("PL0", build_pl0()),
     ("PS", build_ps()), ("PL", build_pl()), ("GL", build_gl()),
-    ("CG", build_cg()),
+    ("CG", build_cg()), ("INPUT_STAGE", build_input_stage()),
+    ("INPUT_READ", build_input_read()),
+    ("INPUT_APPLY", build_input_apply()),
+    ("INPUT_DISCARD", build_input_discard()),
 )
 
 
@@ -4424,6 +4768,9 @@ def main():
             abs_path = os.path.join(dst, rel)
             if os.path.exists(abs_path):
                 os.remove(abs_path)
+                if line is None:
+                    staged.append((rel, line, anchor))
+                    continue
                 if patched.count(line) != 1:
                     raise SystemExit("%s COMMANDS line not unique" % rel)
                 patched = patched.replace(line + "\n", "")
@@ -4505,6 +4852,8 @@ def main():
                 return
             _, line, anchor = entry
             shutil.copy2(os.path.join(a.plugin_dir, rel), os.path.join(dst, rel))
+            if line is None:
+                return
             with open(target) as f:
                 current_plugin = f.read()
             if current_plugin.count(line) != 0:
@@ -4526,7 +4875,9 @@ def main():
         # now as well, so the earlier sessions never listed them.
         for rel in ("console.gd", "set_parent.gd", "eval.gd",
                     "attach_script.gd", "play.gd", "stop.gd",
-                    "game_log.gd", "capture_game.gd"):
+                    "game_log.gd", "capture_game.gd",
+                    "input_events.gd", "input_stage.gd", "input_read.gd",
+                    "input_apply.gd", "input_discard.gd"):
             shutil.copy2(os.path.join(a.plugin_dir, "commands", rel),
                          os.path.join(dst, "commands", rel))
         with open(target, "w") as f:
@@ -4616,6 +4967,17 @@ def main():
         write_gl_fixtures(proj)
         play("GL", None, build_gl(), None)
         play("CG", None, build_cg(), None)
+        play("INPUT_STAGE", None, build_input_stage(), None)
+        play("INPUT_READ", None, build_input_read(), None)
+        # The apply sessions rewrite the fixture's project.godot, so the file
+        # is put back first for a deterministic start and restored afterwards
+        # for any session added later.
+        with open(os.path.join(proj, "project.godot"), "w") as f:
+            f.write(PROJECT_GODOT)
+        play("INPUT_APPLY", None, build_input_apply(), None)
+        play("INPUT_DISCARD", None, build_input_discard(), None)
+        with open(os.path.join(proj, "project.godot"), "w") as f:
+            f.write(PROJECT_GODOT)
         rows = [row for name in SESSION_ORDER for row in blocks[name]]
         with open(a.out, "w") as f:
             for req, rep in rows:
