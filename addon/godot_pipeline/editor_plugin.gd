@@ -8,7 +8,7 @@ extends EditorPlugin
 ## `rename_node`, `create_node`, `set_property`, `delete_node`,
 ## `connect_signal`, `set_group`, `set_unique_name`, `instantiate_scene`,
 ## `save_scene`, `open_scene`, `console`, `set_parent`, `eval`, `attach_script`,
-## `play`, `stop`, `game_log` and `capture_game`. The read commands report the editor's status, the active
+## `play`, `stop`, `game_log`, `capture_game`, `input_stage`, `input_read`, `input_apply` and `input_discard`. The read commands report the editor's status, the active
 ## edited scene's node tree, a node's class/child count/property values, the
 ## nodes matching a class, group, and name search, an engine class's ClassDB
 ## reflection (ancestors, properties, methods, signals), the resource files the
@@ -27,7 +27,10 @@ extends EditorPlugin
 ## project, validates the whole request before it mutates anything, and
 ## rejects targets that would not persist when the scene is saved.
 ## `set_property` additionally rejects an int value that is not one of the
-## declared values of an enum-hinted int property. `eval` runs submitted
+## declared values of an enum-hinted int property. `input_apply` writes the
+## input actions `input_stage` left on the editor interface to
+## `project.godot` with one project-settings save, and `input_discard` drops
+## them without writing. `eval` runs submitted
 ## GDScript in the live editor: it is the one command that may break rule 3 (a
 ## direct scene edit from the snippet creates no undo entry) and rule 6 (the
 ## snippet can hold the main thread); its timeout is best effort and never
@@ -88,6 +91,10 @@ const COMMANDS := {
 	"stop": preload("commands/stop.gd"),
 	"game_log": preload("commands/game_log.gd"),
 	"capture_game": preload("commands/capture_game.gd"),
+	"input_stage": preload("commands/input_stage.gd"),
+	"input_read": preload("commands/input_read.gd"),
+	"input_apply": preload("commands/input_apply.gd"),
+	"input_discard": preload("commands/input_discard.gd"),
 }
 
 ## Version of the command interface the plugin publishes. A client that does

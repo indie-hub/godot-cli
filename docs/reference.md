@@ -1093,6 +1093,88 @@ writes, so a `StringName` shows as `&"name"` and a `NodePath` as
 a non-empty `Callable` or a `Signal` completes with `display` `Callable()` or
 `Signal()`, which loses its target identity, and an `RID` displays as `RID(id)`.
 
+`input_apply` writes the staged input actions to `project.godot` with one
+`ProjectSettings.save()`, or validates them with `--dry-run`. It takes
+`project_path` and the optional boolean `dry_run` (default false). The field checks run first, then the project-path mismatch, then the unknown-field check, the empty-store and malformed-entry checks, and the dry-run-or-apply; nothing is written and the store is untouched until every check has passed. It needs no edited scene and creates no undo step.
+
+The staged actions are the Dictionary `input-stage` keeps under the
+`godot_pipeline_input_staging` key of the object `plugin.get_editor_interface()`
+returns, as action name -> `{"deadzone": <number>, "events": [<InputEvent>],
+"remove": <bool>}`. The store holds real `InputEvent` objects, never JSON, and
+it exists only in that editor process: a restart drops it. The staged data was
+invisible to `project.godot`, `ProjectSettings` and the editor's InputMap until
+the apply ran, in this run before and after staging.
+
+Each entry with `remove` false sets `input/<name>` to `{"deadzone", "events"}`
+from the staged objects; an entry with `remove` true sets the same setting to
+null, which removes it, because `ProjectSettings` has no clear function. One
+`ProjectSettings.save()` then writes the file. The write has no undo, and it
+writes every live project setting, including settings changed in the editor
+that were not yet saved, so the file can change beyond the staged actions; the
+reply's `warning` says so, and says a hand-written `project.godot` can be
+normalized on the first save. On an engine-written `project.godot` the apply of
+two staged actions added only the `[input]` section and the two blocks, in this
+run; on a hand-written one the same apply also normalizes the file (header
+comment, `config/features`, the game helper autoload and the `[dotnet]`
+section), and the generated autoload uid is specific to that project. An apply
+with no staged entry writes nothing.
+
+A successful apply clears the staging store. The reply is
+`{"status":"ok","data":{"written":[...],"changed":[{"action":...,
+"change":"set"|"remove"}],"dry_run":...,"staged_cleared":...,"undoable":false,
+"undo_scope":"none: the disk write has no undo in the editor","warning":"..."}}`:
+`written` is `["res://project.godot"]`, or empty with `dry_run` true, and
+`staged_cleared` is true only after a real apply.
+
+A refusal answers before any live value changes, so the file, `ProjectSettings`,
+the editor's InputMap and the staging store are unchanged afterwards. The
+messages are `input_apply requires a string field: project_path`,
+`input_apply requires a boolean field: dry_run`,
+`project path mismatch: this editor has <open-path> open, not <requested-path>`,
+`unknown field: <name>` for any other top-level field, with caller-supplied text escaped as `\uXXXX` for control characters so the reply parses as JSON, `nothing is staged: stage an action with input-stage before applying`,
+`the staging store is not a dictionary; nothing was applied`, and one malformed
+entry refuses the whole apply: `staged action name is invalid: <name>; nothing
+was applied`, `staged entry is malformed for action <name>: it is not a
+dictionary; nothing was applied`, `staged entry is malformed for action <name>:
+deadzone must be a number from 0.0 to 1.0; nothing was applied`, `staged entry
+is malformed for action <name>: remove must be a boolean; nothing was applied`,
+`staged entry is malformed for action <name>: events must be an array of
+InputEvent objects; nothing was applied`, and `staged entry is malformed for
+action <name>: a removal entry must have no events; nothing was applied`. A
+dry run validates the same entries. A failed save replies `ProjectSettings.save()
+failed: <error>; the live settings were restored to their previous values and
+the staging store is kept, but project.godot may be partly written`.
+
+After a restart of the editor both applied actions read back through
+`ProjectSettings` with the staged values: the key event's device is 16 (the
+constructor default) and one event, and the joypad action's deadzone is the
+staged number. A separately launched headless game reported both actions
+present with one event each, the staged deadzones (a game reads the deadzone as
+its own 32-bit float, so 0.3 prints as `0.30000001192093`) and
+`event_is_action` true for the staged key event. The editor's own InputMap did
+not report either action in this run, before or after the apply. The plugin
+holds one staging store and one port, so only one editor instance can host it
+at a time, as above.
+
+`input_discard` drops staged input actions without writing any file and without
+touching `ProjectSettings` or the editor's InputMap. It takes `project_path`
+and the optional string `action`. The `project_path` string check runs first, then the project-path mismatch, then the unknown-field check and the action checks; the store is untouched until every check has passed. Without
+`action` it discards every staged entry and removes the store; with it, only
+that entry. The reply is
+`{"status":"ok","data":{"discarded":[...],"staged_count":...}}`: `discarded`
+names the actions that were staged and are now gone, in store order, and
+`staged_count` is the number still staged (0 after a discard-all). Discarding
+when nothing is staged, with no `action`, is not an error: it replies an empty
+`discarded` list and `staged_count` 0.
+
+The refusals are `input_discard requires a string field: project_path`,
+`input_discard requires a string field: action`, the same project-path
+mismatch message as above, `unknown field: <name>` for any other top-level field, with caller-supplied text escaped as `\uXXXX` for control characters so the reply parses as JSON, `no staged entry for action: <name>` for a name the
+store does not hold (or for any `action` when nothing is staged), and
+`the staging store is not a dictionary; nothing was discarded`. A name holding U+FFFD
+is refused with the same `refused action` wording as `input_stage` (naming `input_discard` instead). A refusal
+leaves the store unchanged.
+
 ### What the logger can and cannot capture
 
 A `Logger` is installed with `OS.add_logger` just before the call and removed
@@ -1433,7 +1515,7 @@ answers that request without checking a project path and without needing an
 open scene.
 
 The reply is `{"status":"ok","data":{"protocol_version":1,"commands":[...]}}`
-with 25 entries in the order of the `COMMANDS` table. `protocol_version` is
+with one entry per command in the order of the `COMMANDS` table. `protocol_version` is
 the integer 1.
 
 One command entry has `name` (the wire name sent as `command`, with `_`
@@ -1628,6 +1710,10 @@ cargo run -- call set-parent Box/Empty Target --index 0 --project-path /path/to/
 cargo run -- call attach-script Player res://player.gd --project-path /path/to/project
 cargo run -- call attach-script Player res://enemy.gd --replace --project-path /path/to/project
 cargo run -- call attach-script Player --detach --project-path /path/to/project
+cargo run -- call input-apply --project-path /path/to/project
+cargo run -- call input-apply --dry-run --project-path /path/to/project
+cargo run -- call input-discard --project-path /path/to/project
+cargo run -- call input-discard --action jump --project-path /path/to/project
 ```
 
 `status` reports the editor version, whether a scene is playing, and the
@@ -1745,6 +1831,72 @@ mutating commands. `--replace` allows a node that already holds a different
 script to take this one. `attach-script <scene-relative-path> --detach
 --project-path <dir>` removes the node's script instead. Either form is one
 Undo/Redo step, and nothing is saved until `save-scene` runs.
+
+
+`input_stage` stages one input action's whole entry, replacing any earlier staged entry for the same name. `input_read` shows staged and applied input actions. Both are W3 staging reads: they write no file and touch neither live `ProjectSettings` nor the editor's `InputMap`, need no edited scene, create no undo step, and need no saved scene. Only `input_apply` writes `project.godot` through `ProjectSettings.save()`. The port is fixed, so only one Godot editor instance can host this plugin on a machine at a time.
+
+`input-stage --project-path <dir> --action <name> [--events <json>] [--deadzone <float>] [--remove]` stages the entry for `<name>`. `--remove` stages a removal and is refused with `--events` or `--deadzone`. Without `--remove`, `--events` is required and must hold 1 to 32 wire event objects. `--deadzone` defaults to 0.2, the engine's own default. `input-read --project-path <dir> [--action <name>]` filters both maps to one name when given. The field presence, type and combination checks run first, then the project-path mismatch, then the unknown-field check, the action-name check and the deadzone and event validation for `input-stage` (the action-name check for `input-read`); nothing is mutated until every check has passed. A rejected request leaves the staging store, live `ProjectSettings`, the `InputMap` and `project.godot` unchanged.
+
+The staging store is one `Dictionary` kept as a meta value under the key `godot_pipeline_input_staging` on the object returned by `plugin.get_editor_interface()`. Setting the meta from `eval` reads back through `input_read`, so the `eval` editor argument is that same object. A removal entry holds deadzone 0.2, empty events and remove true. An editor restart clears the store.
+
+Wire event objects. Every event carries a string `type`; unknown fields are refused. Godot parses every JSON number as a float: a whole-valued float such as 65.0 is accepted in an integer field and stored as the integer 65, while a fractional value such as 65.5 is refused with `input_stage refused event 0: \`keycode\` must be an integer of at least 0`.
+
+- `{"type":"key","physical_keycode":int,"keycode":int,"key_label":int,"shift":bool,"ctrl":bool,"alt":bool,"meta":bool}`: at least one of `physical_keycode` and `keycode` is non-zero, both default 0; `key_label` defaults 0; modifiers default false. Key codes are Godot Key integers from 0 to 8388607 (87 is W); names are not accepted. No `device` is accepted. Replies report `device` as read (16 from the constructor).
+- `{"type":"mouse_button","button_index":int,"shift":bool,"ctrl":bool,"alt":bool,"meta":bool}`: `button_index` 1 to 9. No `device` is accepted. Replies report `device` as read (32 from the constructor).
+- `{"type":"joypad_button","button_index":int,"device":int}`: `button_index` 0 to 127; `device` defaults -1 and holds -1 to 2147483647.
+- `{"type":"joypad_motion","axis":int,"axis_value":float,"device":int}`: `axis` 0 to 9; `axis_value` is -1.0 or 1.0; `device` defaults -1 and holds -1 to 2147483647.
+
+Action names hold no path or setting syntax: a non-empty string without `/`, `:`, `=`, `"`, backslash, newline or control characters. `ui_` names are not special. Deadzone is a number 0.0 to 1.0 inclusive.
+
+`input_stage` replies `{"status":"ok","data":{"action":name,"staged":entry,"staged_count":int}}` where entry is `{"deadzone":float,"events":[wire],"remove":bool}` encoded from the stored objects (key and mouse events carry `device` 16 and 32). `input_read` replies `{"status":"ok","data":{"staged":{name:entry},"applied":{name:{"deadzone":float,"events":[wire]}},"applied_unreadable":{name:reason}}}`. Staged removal entries carry empty events. Applied names only the actions the `[input]` section of `project.godot` on disk lists; their values are read live from `ProjectSettings`, never from `InputMap`. An action block without a `deadzone` key reads as the engine default 0.2. An unchanged engine default the file never names is not listed, so a pristine project reads an empty applied map. A value that is not a `Dictionary` with an `events` array lands in `applied_unreadable` with reason `setting is not a Dictionary with an events array`. `ProjectSettings.property_can_revert` does not decide this: it reports true for a pristine built-in action, so the rule reads the file instead of asking the engine which settings changed. An event object that is not one of the four classes encodes as `{"type":"other","class":"<ClassName>"}`. When `project.godot` cannot be loaded the command fails instead of reading an empty map: `input_read cannot read res://project.godot: File not found` for a missing file and `input_read cannot read res://project.godot: Parse error` for the malformed text `[input` followed by `invalid`.
+
+The command refusals are (a caller-supplied string prints escaped: control characters below 0x20 and DEL print as `\uXXXX`, so every refusal parses as JSON):
+
+- `input_stage requires string fields: project_path, action`
+- `input_stage requires a boolean field: remove`
+- `input_stage cannot combine --remove with --events or --deadzone`
+- `project path mismatch: this editor has <editor path> open, not <requested path>`
+- `unknown field: <name>` for any other top-level field
+- `input_stage refused action <name>: action must be a non-empty string without '/', ':', '=', '"', backslash, newline or control characters or U+FFFD. The request parser replaces an invalid or NUL character with U+FFFD, which this command refuses`
+- `input_stage refused events: events must be a non-empty array of at most 32 event objects`
+- `input_stage refused deadzone <value>: deadzone must be a number from 0.0 to 1.0`
+- `input_stage refused event <index>: event must be an object with a string field \`type\``
+- `input_stage refused event <index>: unknown event type \`<type>\`; expected \`key\`, \`mouse_button\`, \`joypad_button\` or \`joypad_motion\``
+- `input_stage refused event <index>: unknown field \`<field>\` for type \`<type>\``
+- `input_stage refused event <index>: type \`<type>\` requires field \`<field>\``
+- `input_stage refused event <index>: \`physical_keycode\` must be an integer of at least 0`
+- `input_stage refused event <index>: \`physical_keycode\` must be an integer from 0 to 8388607`
+- `input_stage refused event <index>: \`keycode\` must be an integer of at least 0`
+- `input_stage refused event <index>: \`keycode\` must be an integer from 0 to 8388607`
+- `input_stage refused event <index>: \`key_label\` must be an integer of at least 0`
+- `input_stage refused event <index>: \`key_label\` must be an integer from 0 to 8388607`
+- `input_stage refused event <index>: \`key\` requires at least one of \`physical_keycode\` or \`keycode\` to be non-zero`
+- `input_stage refused event <index>: \`<field>\` must be a boolean`
+- `input_stage refused event <index>: \`button_index\` must be an integer from 1 to 9`
+- `input_stage refused event <index>: \`button_index\` must be an integer from 0 to 127`
+- `input_stage refused event <index>: \`device\` must be an integer of at least -1`
+- `input_stage refused event <index>: \`device\` must be an integer from -1 to 2147483647`
+- `input_stage refused event <index>: \`axis\` must be an integer from 0 to 9`
+- `input_stage refused event <index>: \`axis_value\` must be -1.0 or 1.0`
+
+The `input_read` refusals are:
+
+- `input_read requires a string field: project_path`
+- `input_read requires a string field: action`
+- `project path mismatch: this editor has <editor path> open, not <requested path>`
+- `unknown field: <name>` for any other top-level field
+- `input_read refused action <name>: action must be a non-empty string without '/', ':', '=', '"', backslash, newline or control characters or U+FFFD. The request parser replaces an invalid or NUL character with U+FFFD, which this command refuses`
+
+Measured in this stage on one fixture project (headless Godot 4.7.2, isolated editor on an alternate port): staging a key with Shift reports device 16; mouse, joypad button and joypad motion stage and read back; deadzone 0.2 default and 0.3 stored; removal stages and reads with empty events; every listed refusal leaves the staging store, live settings, the InputMap and `project.godot` unchanged; an `eval` `set_setting` plus `save` then reads as applied; an editor restart clears staged entries while applied stays on disk. The file rule was measured: a pristine read lists no built-in action, an applied custom action is listed, a hand-edited `ui_accept` with a different event lists after a restart, and a custom action holding the same value as a built-in default is still listed because the file names it. The limit is the other direction: a live-only setting the file does not name is invisible until it is saved. `property_can_revert` cannot replace the file read: on the pristine fixture it reports true for `input/ui_accept`.
+`input-apply [--dry-run] --project-path <dir>` writes the staged input actions
+to `project.godot` with one project-settings save (see Protocol above),
+canonicalizing `--project-path` the same way as the other commands, and refuses
+when nothing is staged. `--dry-run` validates the staged entries and writes
+nothing. `input-discard [--action <name>] --project-path <dir>` drops one staged
+action, or every staged action when `--action` is omitted, without writing (see
+Protocol above), canonicalizing `--project-path` the same way.
+
+Combined workflow (single fixture `proj_gp093_e2e`, engine-written `project.godot`, headless Godot 4.7.2). `input-stage` staged `gp093_move` (physical W with Shift, deadzone 0.5) and `gp093_joy` (axis 0, value -1.0, device -1, deadzone 0.5); `input-read` showed both staged and neither under `applied`, and `project.godot` stayed byte-identical. `input-apply --dry-run` wrote nothing and kept the store. `input-apply` wrote the two `[input]` blocks, cleared the store, and `input-read` showed both under `applied` with no staged entries. A restarted editor still showed both applied: the key event gained `device` 16 against the staged form, the joypad event read back unchanged. A headless game (`DisplayServer.get_name()=="headless"`) reported both actions with one event, deadzone 0.5, and a freshly built matching event answered `is_action` true for both. Staging `--remove` for both plus `input-apply`, then restarting, showed neither under `applied`, and the game reported both absent.
 
 ## Verification
 
