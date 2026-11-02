@@ -25,6 +25,12 @@ every display row with a parse request that returns `str_to_var` of the display
 the reply carried and requires the parsed value to equal the value that row
 returned.
 
+The offline `install` session runs last. It needs no editor and no port: it
+runs the command-line binary named by `--cli` (default `target/debug/godot-cli`
+under the repository root) on scratch projects under `<PROJECT>/install`, and
+stores each exit status and output. Its replies additionally replace the
+compiled-in addon source path with `<ADDON_SOURCE>`.
+
 Stdlib only. Never connects to 47821.
 """
 
@@ -43,6 +49,9 @@ import time
 import zlib
 
 GODOT = os.environ.get("GODOT", "godot")
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CLI = os.environ.get("GODOT_CLI", os.path.join(ROOT, "target", "debug", "godot-cli"))
+ADDON_SOURCE = os.path.realpath(os.path.join(ROOT, "addon", "godot_pipeline"))
 PORT_LINE = "const PORT := 47821"
 WRONG_PROJECT = "/no/replay-mismatch"
 
@@ -94,6 +103,16 @@ STAGED_COMMANDS = [
         os.path.join("commands", "capture_game.gd"),
         '\t"capture_game": preload("commands/capture_game.gd"),',
         '\t"game_log": preload("commands/game_log.gd"),',
+    ),
+    (
+        os.path.join("commands", "game_key.gd"),
+        '\t"game_key": preload("commands/game_key.gd"),',
+        '\t"capture_game": preload("commands/capture_game.gd"),',
+    ),
+    (
+        os.path.join("commands", "game_click.gd"),
+        '\t"game_click": preload("commands/game_click.gd"),',
+        '\t"game_key": preload("commands/game_key.gd"),',
     ),
     (
         os.path.join("commands", "input_events.gd"),
@@ -159,6 +178,15 @@ enabled=PackedStringArray("res://addons/godot_pipeline/plugin.cfg")
 ; the project setting is the only way to keep the replay windowless.
 display_server/driver="headless"
 display_server/driver.macos="headless"
+"""
+
+INSTALL_PROJECT_GODOT = """; Engine configuration file.
+
+config_version=5
+
+[application]
+
+config/name="install"
 """
 
 PROPS_GD = """extends Node
@@ -3262,7 +3290,13 @@ def launch(proj, scene):
     args = [GODOT, "--headless", "--path", proj, "--editor"]
     if scene:
         args.append(scene)
-    return subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # The copied plugin's port comes from the patched `const PORT`; an inherited
+    # GODOT_PIPELINE_PORT would override it and the session would wait on the
+    # wrong port.
+    env = {key: value for key, value in os.environ.items()
+           if key != "GODOT_PIPELINE_PORT"}
+    return subprocess.Popen(args, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, env=env)
 
 
 def stop(proc, proj=None):
@@ -3380,6 +3414,53 @@ def run_session(port, proj, scene, requests, expected_scene, ready_filesystem=Fa
         return rows
     finally:
         stop(proc, proj)
+
+
+def ensure_dir(path):
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def run_cli_session(proj, cli, requests):
+    """The offline CLI session: scratch projects under <PROJECT>/install and no
+    editor. A `cli` request stores the exit status and the parsed output, a
+    `file` request stores the file text, and a `write` request appends text so
+    the overwrite refusal can be reached."""
+    base = os.path.join(proj, "install")
+    with open(os.path.join(ensure_dir(os.path.join(base, "p1")), "project.godot"), "w") as f:
+        f.write(INSTALL_PROJECT_GODOT)
+    ensure_dir(os.path.join(base, "no-project"))
+    with open(os.path.join(ensure_dir(os.path.join(base, "not-plugin")), "readme.txt"), "w") as f:
+        f.write("not the plugin\n")
+    source = ADDON_SOURCE
+    rows = []
+    for kind, text in requests:
+        if kind == "write":
+            relative, _, content = text.partition("|")
+            with open(os.path.join(proj, relative), "a") as f:
+                f.write(content)
+            rows.append(("CHECK write %s" % relative, "ok"))
+            continue
+        if kind == "file":
+            with open(os.path.join(proj, text)) as f:
+                rows.append(("CHECK file %s" % text, f.read()))
+            continue
+        argv = [cli] + [part.replace("<PROJECT>", proj) for part in text]
+        result = subprocess.run(argv, capture_output=True, text=True)
+        reply = {"exit": result.returncode}
+        if result.stdout.strip():
+            try:
+                reply["stdout"] = json.loads(result.stdout)
+            except ValueError:
+                reply["stdout"] = result.stdout
+        if result.stderr.strip():
+            reply["stderr"] = result.stderr
+        stored = json.dumps(reply, sort_keys=True, separators=(",", ":"))
+        stored = stored.replace(proj, "<PROJECT>")
+        if source:
+            stored = stored.replace(source, "<ADDON_SOURCE>")
+        rows.append(("CLI " + " ".join(text), stored))
+    return rows
 
 
 # A minimal valid 2x2 RGBA PNG (a solid red square), built so the bytes are
@@ -4263,6 +4344,103 @@ IS_MOUSE9 = [{"type": "mouse_button", "button_index": 9}]
 IS_JOYBTN = [{"type": "joypad_button", "button_index": 0, "device": -1}]
 IS_JOYMOT = [{"type": "joypad_motion", "axis": 0, "axis_value": -1.0, "device": -1}]
 
+def gk_line(**kw):
+    request = {"command": "game_key", "project_path": "<PROJ>"}
+    request.update(kw)
+    return ("line", json.dumps(request, separators=(",", ":")))
+
+
+def gc_line(**kw):
+    request = {"command": "game_click", "project_path": "<PROJ>"}
+    request.update(kw)
+    return ("line", json.dumps(request, separators=(",", ":")))
+
+
+def _bracket_gk(out, request):
+    # A rejected key request changes nothing the log reports: the same read
+    # before and after brackets it. With no game the log stays empty.
+    out.append(gl_log())
+    out.append(request)
+    out.append(gl_log())
+
+
+def _bracket_gc(out, request):
+    # A rejected click request changes nothing the log reports: the same
+    # read before and after brackets it. With no game the log stays empty.
+    out.append(gl_log())
+    out.append(request)
+    out.append(gl_log())
+
+
+def build_game_key():
+    # Session GAME_KEY: the key matrix without a game. Every refusal is
+    # bracketed by identical log reads; the two order rows prove the
+    # project-path check runs before the unknown-field check and that runs
+    # before argument validation. A well-formed press with no game refuses
+    # at once and sends nothing.
+    out = [
+        ("line", '{"command":"status"}'),
+    ]
+    for request in [
+        ("line", '{"command":"game_key","project_path":"/no/replay-mismatch","key":68}'),
+        ("line", '{"command":"game_key","project_path":"/no/replay-mismatch","key":"x"}'),
+        ("line", '{"command":"game_key"}'),
+        ("line", '{"command":"game_key","project_path":"<PROJ>"}'),
+        ("line", '{"command":"game_key","project_path":7,"key":68}'),
+        gk_line(key="x"),
+        gk_line(key=0),
+        gk_line(key=-1),
+        gk_line(key=8388608),
+        gk_line(key=1.5),
+        gk_line(key=68, pressed="yes"),
+        gk_line(key=68, hold_frames=-1),
+        gk_line(key=68, hold_frames=3601),
+        gk_line(key=68, hold_frames=1.5),
+        gk_line(key=68, pressed=False, hold_frames=10),
+        gk_line(key=68, timeout_ms=99),
+        gk_line(key=68, timeout_ms=30001),
+        gk_line(key=68, timeout_ms="x"),
+        ("line", '{"command":"game_key","project_path":"<PROJ>","key":68,"bogus":1}'),
+        ("line", '{"command":"game_key","project_path":"<PROJ>","key":"x","bogus":1}'),
+        gk_line(key=68),
+        gk_line(key=68, pressed=False),
+        gk_line(key=68, hold_frames=30),
+    ]:
+        _bracket_gk(out, request)
+    return out
+
+
+def build_game_click():
+    # Session GAME_CLICK: the click matrix without a game. Every refusal is
+    # bracketed by identical log reads; the two order rows prove the
+    # project-path check runs before the unknown-field check and that runs
+    # before argument validation. A well-formed click with no game refuses
+    # at once and sends nothing.
+    out = [
+        ("line", '{"command":"status"}'),
+    ]
+    for request in [
+        ("line", '{"command":"game_click","project_path":"/no/replay-mismatch","x":576,"y":382}'),
+        ("line", '{"command":"game_click","project_path":"/no/replay-mismatch","x":"a","bogus":1}'),
+        ("line", '{"command":"game_click"}'),
+        ("line", '{"command":"game_click","project_path":"<PROJ>"}'),
+        ("line", '{"command":"game_click","project_path":7,"x":576,"y":382}'),
+        gc_line(y=382),
+        gc_line(x=576),
+        gc_line(x="a", y=382),
+        gc_line(x=576, y=1.5),
+        gc_line(x=-1, y=382),
+        gc_line(x=576, y=-2),
+        gc_line(x=576, y=382, timeout_ms=99),
+        gc_line(x=576, y=382, timeout_ms=30001),
+        gc_line(x=576, y=382, timeout_ms="x"),
+        ("line", '{"command":"game_click","project_path":"<PROJ>","x":576,"y":382,"bogus":1}'),
+        gc_line(x=576, y=382),
+    ]:
+        _bracket_gc(out, request)
+    return out
+
+
 def build_input_stage():
     out = [
         ("line", '{"command":"status"}'),
@@ -4686,6 +4864,28 @@ def build_save_open_scene():
         ("line", '{"command":"save_open_scene","project_path":"/no/replay-mismatch","path":"res://main.tscn"}'),
         ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
     ]
+
+
+def build_install():
+    # Session INSTALL: the offline `install` subcommand on scratch projects
+    # under <PROJECT>/install. It needs no editor and no port, so it runs last
+    # and never changes what an editor session sees.
+    return [
+        ("cli", ["install", "<PROJECT>/install/p1"]),
+        ("cli", ["install", "<PROJECT>/install/p1"]),
+        ("file", "install/p1/project.godot"),
+        ("cli", ["install", "<PROJECT>/install/no-project"]),
+        ("cli", ["install", "<PROJECT>/install/p1",
+                 "--addon-source", "<PROJECT>/install/absent"]),
+        ("cli", ["install", "<PROJECT>/install/p1",
+                 "--addon-source", "<PROJECT>/install/not-plugin"]),
+        ("write", "install/p1/addons/godot_pipeline/editor_plugin.gd|# local edit\n"),
+        ("cli", ["install", "<PROJECT>/install/p1"]),
+        ("cli", ["install", "<PROJECT>/install/p1", "--overwrite"]),
+        ("file", "install/p1/project.godot"),
+    ]
+
+
 # The order rows are stored in, which is not the order the sessions run in.
 # Each session writes its rows at its own place here, so a session that
 # --sessions left out leaves a gap instead of shifting the rows after it.
@@ -4697,7 +4897,8 @@ SESSION_ORDER = ("A", "B", "C", "E", "D", "F", "G", "H", "I", "J", "K", "L",
                   "INPUT_STAGE", "INPUT_READ",
                   "INPUT_APPLY", "INPUT_DISCARD",
                   "create_scene", "save_scene_as",
-                  "list_open_scenes", "save_open_scene")
+                  "list_open_scenes", "save_open_scene",
+                   "INSTALL", "GAME_KEY", "GAME_CLICK")
 
 # The request list of each session, in storage order. A session records exactly
 # one row per request, so the length of these lists is the stored row layout.
@@ -4727,6 +4928,9 @@ SESSION_REQUESTS = (
     ("save_scene_as", build_save_scene_as()),
     ("list_open_scenes", build_list_open_scenes()),
     ("save_open_scene", build_save_open_scene()),
+    ("INSTALL", build_install()),
+    ("GAME_KEY", build_game_key()),
+    ("GAME_CLICK", build_game_click()),
 )
 
 
@@ -4812,6 +5016,8 @@ def main():
     ap.add_argument("--plugin-dir", required=True)
     ap.add_argument("--port", type=int, default=47902)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--cli", default=CLI, help="the godot-cli binary the "
+                    "offline install session runs (default: %(default)s)")
     ap.add_argument("--sessions", help="comma-separated session names to replay "
                     "instead of all of them")
     a = ap.parse_args()
@@ -4831,6 +5037,9 @@ def main():
         if added:
             print("prerequisite sessions added, their rows are not stored: %s"
                   % " ".join(added))
+    if "INSTALL" in running and not os.path.isfile(a.cli):
+        raise SystemExit("no godot-cli at %s; run cargo build or pass --cli"
+                         % a.cli)
     proj = os.path.realpath(tempfile.mkdtemp(prefix="gp015golden-"))
     try:
         with open(os.path.join(proj, "project.godot"), "w") as f:
@@ -5045,6 +5254,7 @@ def main():
         for rel in ("console.gd", "set_parent.gd", "eval.gd",
                     "attach_script.gd", "play.gd", "stop.gd",
                     "game_log.gd", "capture_game.gd",
+                    "game_key.gd", "game_click.gd",
                     "input_events.gd", "input_stage.gd", "input_read.gd",
                     "input_apply.gd", "input_discard.gd",
                     "scene_write.gd", "create_scene.gd", "save_scene_as.gd",
@@ -5153,6 +5363,15 @@ def main():
         play("save_scene_as", "res://main.tscn", build_save_scene_as(), "res://main.tscn")
         play("list_open_scenes", None, build_list_open_scenes(), None)
         play("save_open_scene", "res://main.tscn", build_save_open_scene(), "res://main.tscn")
+        # The install session needs no editor, so it runs last: the scratch
+        # projects it creates inside the throwaway project are never scanned.
+        blocks["INSTALL"] = (run_cli_session(proj, a.cli, build_install())
+                             if "INSTALL" in running else [])
+        # The game-input sessions run last, with no edited scene and no
+        # game: every row is a refusal or a no-game error, so their rows are
+        # appended at the end of the baseline.
+        play("GAME_KEY", None, build_game_key(), None)
+        play("GAME_CLICK", None, build_game_click(), None)
         rows = [row for name in SESSION_ORDER for row in blocks[name]]
         with open(a.out, "w") as f:
             for req, rep in rows:

@@ -8,7 +8,7 @@ extends EditorPlugin
 ## `rename_node`, `create_node`, `set_property`, `delete_node`,
 ## `connect_signal`, `set_group`, `set_unique_name`, `instantiate_scene`,
 ## `save_scene`, `open_scene`, `console`, `set_parent`, `eval`, `attach_script`,
-## `play`, `stop`, `game_log`, `capture_game`, `input_stage`, `input_read`, `input_apply`, `input_discard`, `create_scene`, `save_scene_as`, `list_open_scenes` and `save_open_scene`. The read commands report the editor's status, the active
+## `play`, `stop`, `game_log`, `capture_game`, `game_key`, `game_click`, `input_stage`, `input_read`, `input_apply`, `input_discard`, `create_scene`, `save_scene_as`, `list_open_scenes` and `save_open_scene`. The read commands report the editor's status, the active
 ## edited scene's node tree, a node's class/child count/property values, the
 ## nodes matching a class, group, and name search, an engine class's ClassDB
 ## reflection (ancestors, properties, methods, signals), the resource files the
@@ -21,7 +21,10 @@ extends EditorPlugin
 ## that is running. `game_log` reports the running game's log entries held by
 ## the editor side of the log channel, and `capture_game` holds the connection
 ## open until the game answers a viewport capture or its wait passes (see the
-## pending-reply members below). `open_scene` opens a scene by path, optionally saving a
+## pending-reply members below). `game_key` presses, holds and releases a
+## physical key in the running game and `game_click` clicks the left mouse
+## button at viewport coordinates, both holding the connection the same way.
+## `open_scene` opens a scene by path, optionally saving a
 ## dirty edited scene first. Every editing
 ## command requires a `project_path` that matches the running editor's
 ## project, validates the whole request before it mutates anything, and
@@ -38,8 +41,11 @@ extends EditorPlugin
 ## scene tree changed. The plugin also registers the `GodotPipelineCapture`
 ## game autoload on first start (guarded, see `_enter_tree`) and attaches the
 ## editor side of the in-game log and capture channel (`debug_plugin.gd`,
-## added and removed with the plugin). The port is fixed, so only
-## one Godot editor instance can host this plugin on a machine at a time.
+## added and removed with the plugin). The port is the default below, or the
+## value of `GODOT_PIPELINE_PORT` when that variable is set and valid; an
+## invalid value refuses to listen instead of falling back, because the
+## default port may belong to another running editor. So one editor per port
+## can host this plugin on a machine at a time.
 ## Requests and replies are single newline-terminated JSON objects. The plugin
 ## assembles a request across reads (up to an 8 MiB cap and a 5 second idle
 ## timeout), so a request may arrive in several TCP segments.
@@ -51,7 +57,14 @@ extends EditorPlugin
 ## live in `commands/command_support.gd`.
 
 const HOST := "127.0.0.1"
+## The default port. `GODOT_PIPELINE_PORT` overrides it at startup; see
+## `_resolve_port`.
 const PORT := 47821
+## The environment variable that selects a different port, so several editors
+## can run side by side.
+const PORT_VARIABLE := "GODOT_PIPELINE_PORT"
+const PORT_MIN := 1024
+const PORT_MAX := 65535
 
 ## A request larger than this (in bytes) is rejected without being applied.
 ## It bounds the buffered request while it is being assembled across reads.
@@ -91,6 +104,8 @@ const COMMANDS := {
 	"stop": preload("commands/stop.gd"),
 	"game_log": preload("commands/game_log.gd"),
 	"capture_game": preload("commands/capture_game.gd"),
+	"game_key": preload("commands/game_key.gd"),
+	"game_click": preload("commands/game_click.gd"),
 	"input_stage": preload("commands/input_stage.gd"),
 	"input_read": preload("commands/input_read.gd"),
 	"input_apply": preload("commands/input_apply.gd"),
@@ -150,20 +165,41 @@ var _request_last_activity_msec := 0
 
 func _enter_tree() -> void:
 	_register_autoload_once()
+	var port := _resolve_port()
+	if port == 0:
+		return
 	_server = TCPServer.new()
-	var error := _server.listen(PORT, HOST)
+	var error := _server.listen(port, HOST)
 	if error != OK:
-		push_error("Godot Pipeline: failed to listen on %s:%d (%s)" % [HOST, PORT, error_string(error)])
+		push_error("Godot Pipeline: failed to listen on %s:%d (%s)" % [HOST, port, error_string(error)])
 		_server = null
 		return
 	set_process(true)
-	print("Godot Pipeline: listening on %s:%d" % [HOST, PORT])
+	print("Godot Pipeline: listening on %s:%d" % [HOST, port])
 	if _console_logger == null:
 		_console_logger = ConsoleCommand.Capture.new()
 		OS.add_logger(_console_logger)
 	if _debug_plugin == null:
 		_debug_plugin = DebugPlugin.new()
 		add_debugger_plugin(_debug_plugin)
+
+
+## The port to listen on: the default when `GODOT_PIPELINE_PORT` is unset or
+## empty, the variable's value when it is a valid integer in the allowed
+## range, and 0 after a clear error otherwise. Zero means "do not listen":
+## silently falling back to the default could collide with a live editor.
+func _resolve_port() -> int:
+	var raw := OS.get_environment(PORT_VARIABLE)
+	if raw.is_empty():
+		return PORT
+	if not raw.is_valid_int():
+		push_error("Godot Pipeline: %s is not an integer: %s" % [PORT_VARIABLE, raw])
+		return 0
+	var port := int(raw)
+	if port < PORT_MIN or port > PORT_MAX:
+		push_error("Godot Pipeline: %s is outside %d..%d: %s" % [PORT_VARIABLE, PORT_MIN, PORT_MAX, raw])
+		return 0
+	return port
 
 
 func _exit_tree() -> void:

@@ -90,7 +90,7 @@ static func interface() -> Dictionary:
 		"edits_scene": false,
 		"refresh_poll": false,
 		"arguments": [
-		{"name": "scene_path", "flag": "--scene-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Scene path; res://, relative, absolute-inside-project, '..' or uid:// as long as it resolves inside the project."},
+		{"name": "scene_path", "flag": "--scene-path", "positional": 0, "type": "string", "required": true, "default": null, "help": "Scene path; res://, relative, absolute-inside-project, '..' or uid:// as long as it resolves inside the project."},
 		{"name": "save", "flag": "--save", "positional": null, "type": "boolean", "required": false, "default": false, "help": "Save the dirty edited scene first; without it the dirty scene stays open as a background tab."},
 		{"name": "project_path", "flag": "--project-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Absolute path of the target project; canonicalized before sending."},
 		],

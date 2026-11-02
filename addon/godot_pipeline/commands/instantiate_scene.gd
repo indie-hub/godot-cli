@@ -104,8 +104,8 @@ static func interface() -> Dictionary:
 		"edits_scene": true,
 		"refresh_poll": false,
 		"arguments": [
-		{"name": "scene_path", "flag": "--scene-path", "positional": null, "type": "string", "required": true, "default": null, "help": "A res:// .tscn or .scn path that loads as a PackedScene."},
-		{"name": "parent_path", "flag": "--parent-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Scene-relative parent path; the scene root or a node owned by it."},
+		{"name": "scene_path", "flag": "--scene-path", "positional": 0, "type": "string", "required": true, "default": null, "help": "A res:// .tscn or .scn path that loads as a PackedScene."},
+		{"name": "parent_path", "flag": "--parent-path", "positional": 1, "type": "string", "required": true, "default": null, "help": "Scene-relative parent path; the scene root or a node owned by it."},
 		{"name": "project_path", "flag": "--project-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Absolute path of the target project; canonicalized before sending."},
 		],
 	}
