@@ -26,6 +26,11 @@ extends EditorDebuggerPlugin
 ## the stored reply once it arrives. A reply is `{id, ok, width, height,
 ## scale, png, size, error}` with the PNG bytes as a `PackedByteArray`; an
 ## empty id or an empty Dictionary means no live session or no reply yet.
+## Key and click replies work the same way: `request_key` sends
+## `[id, keycode, pressed, hold_frames, timeout_ms]` and the reply is
+## `{id, ok, key, pressed, held_frames, released, error}`, while
+## `request_click` sends `[id, x, y]` and the reply is
+## `{id, ok, x, y, button, error}`.
 
 const PREFIX := "godot_pipeline"
 
@@ -41,6 +46,10 @@ var _helper_dropped := 0
 var _evicted := 0
 var _capture_replies := {}
 var _next_capture := 1
+var _key_replies := {}
+var _next_key := 1
+var _click_replies := {}
+var _next_click := 1
 
 ## The capture ids with a reply still owed: `request_capture` adds the id,
 ## and a reply is stored only for an outstanding id, so a late reply for a
@@ -62,6 +71,8 @@ func _setup_session(_session_id: int) -> void:
 	_last_seq = 0
 	_run_id += 1
 	_capture_replies = {}
+	_key_replies = {}
+	_click_replies = {}
 	_outstanding = {}
 
 
@@ -93,6 +104,12 @@ func _capture(message: String, data: Array, _session_id: int) -> bool:
 		return true
 	if message == PREFIX + ":capture_reply":
 		_record_capture_reply(data)
+		return true
+	if message == PREFIX + ":key_reply":
+		_record_key_reply(data)
+		return true
+	if message == PREFIX + ":click_reply":
+		_record_click_reply(data)
 		return true
 	return false
 
@@ -157,6 +174,41 @@ func _record_capture_reply(data: Array) -> void:
 	}
 
 
+## Stores one key reply by its request id for polling, but only while the
+## id is outstanding: a reply that arrives after the command retired its id
+## is discarded instead of retained.
+func _record_key_reply(data: Array) -> void:
+	var id := str(data[0]) if data.size() > 0 else "0"
+	if not _outstanding.has(id):
+		return
+	_key_replies[id] = {
+		"id": id,
+		"ok": bool(data[1]) if data.size() > 1 else false,
+		"key": int(data[2]) if data.size() > 2 else 0,
+		"pressed": bool(data[3]) if data.size() > 3 else false,
+		"held_frames": int(data[4]) if data.size() > 4 else 0,
+		"released": bool(data[5]) if data.size() > 5 else false,
+		"error": str(data[6]) if data.size() > 6 else "",
+	}
+
+
+## Stores one click reply by its request id for polling, but only while the
+## id is outstanding: a reply that arrives after the command retired its id
+## is discarded instead of retained.
+func _record_click_reply(data: Array) -> void:
+	var id := str(data[0]) if data.size() > 0 else "0"
+	if not _outstanding.has(id):
+		return
+	_click_replies[id] = {
+		"id": id,
+		"ok": bool(data[1]) if data.size() > 1 else false,
+		"x": int(data[2]) if data.size() > 2 else 0,
+		"y": int(data[3]) if data.size() > 3 else 0,
+		"button": str(data[4]) if data.size() > 4 else "",
+		"error": str(data[5]) if data.size() > 5 else "",
+	}
+
+
 ## The identity of the current log run, for the cursor after it: a new
 ## session or sequence restart raises it, starting from the editor's own
 ## first run.
@@ -216,6 +268,78 @@ func request_capture(max_png_bytes: int) -> String:
 	_outstanding[id] = true
 	session.send_message(PREFIX + ":capture", [id, max_png_bytes])
 	return id
+
+
+## Sends a key request to the attached game and returns its id at once; the
+## caller polls `take_key_reply`. Returns an empty id when no game is
+## attached, which is the no-game failure.
+func request_key(keycode: int, pressed: bool, hold_frames: int, timeout_ms: int) -> String:
+	var session := _live_session()
+	if session == null:
+		return ""
+	var id := "key_%d" % _next_key
+	_next_key += 1
+	_outstanding[id] = true
+	session.send_message(PREFIX + ":key", [id, keycode, pressed, hold_frames, timeout_ms])
+	return id
+
+
+## Removes and returns the stored reply for `id`, or an empty Dictionary
+## when no reply arrived yet or the id is no longer outstanding.
+func take_key_reply(id: String) -> Dictionary:
+	if not _outstanding.has(id):
+		_key_replies.erase(id)
+		return {}
+	if not _key_replies.has(id):
+		return {}
+	var reply: Dictionary = _key_replies[id]
+	_key_replies.erase(id)
+	return reply
+
+
+## Retires one key id: its stored reply, if any, is dropped and any later
+## reply for it is discarded. Called when the command completes, when its
+## wait passes, when its client goes away, and when a new game session
+## starts.
+func retire_key(id: String) -> void:
+	_outstanding.erase(id)
+	_key_replies.erase(id)
+
+
+## Sends a click request to the attached game and returns its id at once;
+## the caller polls `take_click_reply`. Returns an empty id when no game is
+## attached, which is the no-game failure.
+func request_click(x: int, y: int) -> String:
+	var session := _live_session()
+	if session == null:
+		return ""
+	var id := "click_%d" % _next_click
+	_next_click += 1
+	_outstanding[id] = true
+	session.send_message(PREFIX + ":click", [id, x, y])
+	return id
+
+
+## Removes and returns the stored reply for `id`, or an empty Dictionary
+## when no reply arrived yet or the id is no longer outstanding.
+func take_click_reply(id: String) -> Dictionary:
+	if not _outstanding.has(id):
+		_click_replies.erase(id)
+		return {}
+	if not _click_replies.has(id):
+		return {}
+	var reply: Dictionary = _click_replies[id]
+	_click_replies.erase(id)
+	return reply
+
+
+## Retires one click id: its stored reply, if any, is dropped and any later
+## reply for it is discarded. Called when the command completes, when its
+## wait passes, when its client goes away, and when a new game session
+## starts.
+func retire_click(id: String) -> void:
+	_outstanding.erase(id)
+	_click_replies.erase(id)
 
 
 ## Removes and returns the stored reply for `id`, or an empty Dictionary

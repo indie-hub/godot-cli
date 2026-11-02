@@ -1066,6 +1066,111 @@ read timeout, but no older binary was run. A game stopped in the debugger holds
 capture replies until it is continued; `stop` ends it. No editor viewport
 capture is built; every capture is labeled `"source": "game"`.
 
+`game_key` presses, holds and releases a physical key in the running game
+through the game helper and answers only when the helper does: the connection
+stays open until the reply completes or the wait passes (see "Command
+interface"), never blocking the editor thread. The helper injects the key
+with `Input.parse_input_event` carrying the physical keycode, so the event
+travels the full pipeline (`_input`, `_unhandled_input`, then the action
+state one frame later): per-key game code and `Input.get_vector` polling
+both see it. Unmapped keys still fire `_input` but move nothing; check the
+bindings with `input-read` first. `project_path` is checked first then every other field. `key` (positional 0) is the physical keycode
+(e.g. 68 for D) in the 1 to 8388607 range the input commands check, so a
+code the game can bind is a code this command can press. Optional `pressed`
+(default true) releases the key instead: a `pressed:false` call answers at
+once with `released` true. Optional `hold_frames` (default 0) keeps the key
+down for that many physics frames before the game releases it and the reply
+waits for the release; 0 leaves the key down until a `pressed:false` call,
+like a held finger, and is refused together with `pressed:false` because a
+hold releases itself. Optional `timeout_ms` (default 5000, 100 to 30000)
+bounds the wait. The documented hold range is 0 to 3600 frames, but the wait
+caps what can succeed: the helper needs the hold time at the game's physics
+rate plus a one-second reply margin, so with the 30000 ms maximum timeout
+and 60 physics frames per second the largest hold that can succeed is about
+1740 frames (computed, 60 times 29 s), and 3600 can never succeed with an
+allowed timeout. Before injecting anything for a hold, the helper compares
+the wait against the time the hold needs at the game's own physics rate and
+refuses, naming the minimum wait, when the wait cannot cover it; nothing is
+injected on that refusal. An unknown field is refused. When no game is
+attached the command refuses at once and sends nothing:
+
+- `no game is attached: start the game before pressing it`
+
+The other refusal messages are exactly:
+
+- `game_key requires a string field: project_path`
+- `game_key requires an integer field: key`
+- `project path mismatch: this editor has <editor path> open, not <requested path>`
+- `unknown field: <name>`
+- `game_key refused event 0: \`key\` requires at least one of \`physical_keycode\` or \`keycode\` to be non-zero` (key 0), `game_key refused event 0: \`physical_keycode\` must be an integer of at least 0` (key -1) and the matching 0 to 8388607 range form (key 8388608): the input commands own key check, shared with `input-stage`, so a code the game can bind is a code this command can press; a non-integer key such as 1.5 never reaches the plugin, the CLI refuses it first (`invalid <key> value: expected an integer, got 1.5`); a whole-valued JSON float such as 68.0 counts as the integer 68
+- `game_key requires a boolean field: pressed`
+- `hold_frames must be between 0 and 3600`, `hold_frames must be an integer`
+- `game_key cannot combine hold_frames with pressed false: a hold releases itself`
+- `timeout_ms must be between 100 and 30000`, `timeout_ms must be an integer`
+
+A helper answer with ok false becomes an error carrying the helper's text
+(a hold the wait cannot cover names the minimum wait at the game's physics
+rate). A wait that passes without an answer becomes an error of the form
+`no key reply arrived within <N> ms: the game is likely stopped in the
+debugger, the helper is not loaded, or the game is busy`. On success the
+reply is
+`{"status":"ok","data":{"key":...,"pressed":...,"held_frames":...,"released":...}}`
+where `held_frames` counts the physics frames the key stayed down and
+`released` tells whether the key is up again. The release of a hold is
+driven inside the game, so a client timeout still leaves the key released
+as long as the game keeps running. A one-frame hold: a hold of one frame, polled once per physics frame,
+was seen by the polling code in every repetition measured; polling from
+`_process` was not measured. While the tree is
+paused the helper still injects (it runs with `PROCESS_MODE_ALWAYS`), the
+hold still counts down and releases, but the paused game polls no movement;
+check the effect with `game-log` and `capture-game`. A game stopped in the
+debugger holds key replies until it is continued; `stop` ends it. The CLI
+waits for the declared `timeout_ms` plus two seconds. A command sent while
+a key hold or click is pending waits for it, and a second command may fail
+with a network error (`Resource temporarily unavailable (os error 35)`)
+instead of the timeout message (measured: a game-log call during a
+long hold answered after the hold, and a second game-click during a
+long hold failed that way). Only physical keys
+are built; modifiers, gamepad, touch and motion events are not.
+
+`game_click` clicks the left mouse button at viewport coordinates in the
+running game through the game helper and answers only when the helper does:
+the connection stays open until the reply completes or the wait passes (see
+"Command interface"), never blocking the editor thread. The helper injects
+a left-button press and, one frame later, the release at the same viewport
+position (the space `capture-game` reports) with `Input.parse_input_event`:
+the pair is what a Button answers, firing on release, and no hover is sent
+because none is needed. A click outside any control only reaches `_input`.
+`project_path` is checked first then every other field. `x` and `y` (positional 0 and 1) are viewport pixels, 0 or more;
+there is no upper bound. Optional `timeout_ms` (default 5000, 100 to 30000)
+bounds the wait. An unknown field is refused. When no game is attached the
+command refuses at once and sends nothing:
+
+- `no game is attached: start the game before clicking it`
+
+The other refusal messages are exactly:
+
+- `game_click requires a string field: project_path`
+- `project path mismatch: this editor has <editor path> open, not <requested path>`
+- `unknown field: <name>`
+- `x must not be negative`, `x must be an integer` (and the same two for `y`)
+- `timeout_ms must be between 100 and 30000`, `timeout_ms must be an integer`
+
+A helper answer with ok false becomes an error carrying the helper's text.
+A wait that passes without an answer becomes an error of the form
+`no click reply arrived within <N> ms: the game is likely stopped in the
+debugger, the helper is not loaded, or the game is busy`. On success the
+reply is `{"status":"ok","data":{"x":...,"y":...,"button":"left"}}`. While
+the tree is paused the reply still returns but the Button does not press
+(Godot GUI semantics); verify with `game-log` and `capture-game`. A game
+stopped in the debugger holds click replies until it is continued; `stop`
+ends it. The CLI waits for the declared `timeout_ms` plus two seconds.
+A click pending holds the next command the same way a key hold does.
+Only the left button is built; middle, right and other buttons have no
+argument to name them with, and hover is not built. A game with no window
+(standalone headless) has no debugger channel, so it cannot be clicked
+through this command; `capture-game` on it answers ok false the same way.
+
 `list_resources` reports the resource files the editor's file system view
 holds, as a bounded page, and changes nothing: no Undo/Redo step, no dirty
 flag, no file write, and no edited scene is required. `project_path` follows
@@ -1641,10 +1746,13 @@ request of several megabytes pauses the editor while it runs. Measured with
 `set-property` arrays of about 4 MB and about 7.65 MB, the longest tick was
 roughly 0.2 to 0.5 seconds. A request of a few kilobytes is unaffected.
 
-The port is fixed and there is no discovery or negotiation step, so only one
-Godot editor instance can host the plugin on a given machine at a time.
-Override the CLI's port with `--port` if the plugin is configured to listen
-elsewhere.
+The plugin listens on port 47821 by default. Set `GODOT_PIPELINE_PORT` when the
+editor starts to choose another port: an integer from 1024 to 65535 is used,
+an unset or empty variable keeps 47821, and any other value makes the plugin
+print `Godot Pipeline: GODOT_PIPELINE_PORT ...` and not listen at all, never
+falling back to 47821 because another editor may hold it. Pass the same number
+to the CLI with `--port`. There is no discovery or negotiation step, so one
+editor per port can host the plugin on a machine at a time.
 
 ### Command interface
 
@@ -1803,6 +1911,9 @@ Both examples are the parsed entries of `tests/schema_fixture.json`.
 ```sh
 cargo run -- commands
 cargo run -- commands --json
+cargo run -- install /path/to/project
+cargo run -- install /path/to/project --addon-source /path/to/addon/godot_pipeline
+cargo run -- install /path/to/project --overwrite
 cargo run -- --help
 cargo run -- --version
 cargo run -- call status
@@ -1844,6 +1955,10 @@ cargo run -- call game-log --project-path /path/to/project
 cargo run -- call game-log --since 41 --limit 20 --project-path /path/to/project
 cargo run -- call capture-game --project-path /path/to/project
 cargo run -- call capture-game --max-png-bytes 100000 --timeout-ms 8000 --project-path /path/to/project
+cargo run -- call game-key 68 --project-path /path/to/project
+cargo run -- call game-key 68 --hold-frames 30 --timeout-ms 8000 --project-path /path/to/project
+cargo run -- call game-key 68 --pressed=false --project-path /path/to/project
+cargo run -- call game-click 576 382 --project-path /path/to/project
 cargo run -- call set-parent Box Target --project-path /path/to/project
 cargo run -- call set-parent Box/Empty Target --index 0 --project-path /path/to/project
 cargo run -- call attach-script Player res://player.gd --project-path /path/to/project
@@ -1854,6 +1969,43 @@ cargo run -- call input-apply --dry-run --project-path /path/to/project
 cargo run -- call input-discard --project-path /path/to/project
 cargo run -- call input-discard --action jump --project-path /path/to/project
 ```
+
+`install <project-path> [--addon-source <dir>] [--overwrite]` prepares a project
+without an editor. It copies the plugin folder (the `addon/godot_pipeline` of
+the repository the binary was built from, or `--addon-source`) into
+`<project>/addons/godot_pipeline`, skipping `.uid` files, and adds
+`res://addons/godot_pipeline/plugin.cfg` to the `[editor_plugins]` `enabled`
+list in `project.godot`, creating the section when it is absent and preserving
+every other byte. Validation of the inputs runs first and a refused install
+leaves the project byte-identical: it refuses a folder with no `project.godot`,
+a `project.godot` it cannot read or write, that is not UTF-8, or that starts
+with a byte order mark, an `[editor_plugins]` section that appears more than
+once or holds more than one `enabled` key, an `enabled` value that is not a
+one-line `enabled = PackedStringArray(...)` (spaces around `=` are accepted), a
+missing or non-plugin source, a source file it cannot read, and a target that
+resolves outside the project. An existing `addons/godot_pipeline` that differs
+from the source is refused without `--overwrite`.
+`--overwrite` replaces only the files the source addon contains: each differing
+file is overwritten in place, every other file in the folder (including `.uid`
+files and files the user added) is left as it is, and nothing is removed. A
+write failure partway (a read-only subfolder, a read-only project folder) can
+leave part of the addon copied and the plugin not enabled, and a rerun
+completes it. A symlinked `project.godot` is replaced by a regular file. The
+reply's `created` and `replaced` lists name every file it wrote; `changed`,
+`plugin_added` and `plugin_enabled` state what it did, and the last two are read
+back from `project.godot` after the write. A second run on an installed project
+copies nothing, changes nothing, and prints
+`"message":"already installed; nothing changed"`. `project.godot` and the addon
+files are written through a temporary file in the same folder and a rename, and
+`project.godot` keeps its file mode. In the measured run, running `install`
+while an editor was open on the project left the added entry in
+`project.godot` after the editor exited. `install` is an offline CLI command
+and not a plugin command: it has no plugin interface entry and changes no
+schema fixture, and the plugin's own command gates do not run for it. It writes
+inside the project only: new files under `addons/godot_pipeline` are a W1
+write, overwriting an existing addon file is a W2 write and needs
+`--overwrite`, and the `[editor_plugins]` edit is a project settings (W3) write
+made directly because no editor is involved.
 
 `status` reports the editor version, whether a scene is playing, and the
 path of the scene currently open for editing. `scene-tree` reports the node
@@ -1903,7 +2055,7 @@ the `%` unique name of that node, or clears it with `--remove`, through the
 editor's undo/redo stack (see Protocol above), canonicalizing `--project-path`
 the same way as the other mutating commands. Nothing is saved until
 `save-scene` runs.
-`instantiate-scene --scene-path <path> --parent-path <scene-relative-path> --project-path <dir>`
+`instantiate-scene <scene_path>|--scene-path <path> <parent_path>|--parent-path <path> --project-path <dir>` (both forms work)
 adds an instance of the scene at `<path>` under the parent node through the
 editor's undo/redo stack (see Protocol above), canonicalizing `--project-path`
 the same way as the other mutating commands. `<parent-path>` must be the scene
@@ -1912,7 +2064,7 @@ root (`.`) or a node owned by it. Nothing is saved until `save-scene` runs.
 file path it already has (see Protocol above), canonicalizing `--project-path`
 the same way as the other mutating commands. The reply's `data.path` is the
 saved scene's `res://` path.
-`open-scene --scene-path <path> --project-path <dir> [--save]` opens the
+`open-scene <scene_path>|--scene-path <path> --project-path <dir> [--save]` opens the
 scene at `<path>` in the running editor (see Protocol above); `<path>` may be
 a `res://`, relative, absolute-inside-project, `..`, or `uid://` path the
 editor accepts. Imported scenes (`.gltf` and friends) are rejected before
@@ -1952,6 +2104,15 @@ entries. `capture-game [--max-png-bytes <n>] [--timeout-ms <n>]
 reply (see Protocol above), canonicalizing `--project-path` the same way as
 the other commands; the CLI waits for the declared wait plus two seconds.
 
+`game-key <keycode> [--pressed[=true|false]] [--hold-frames <n>] [--timeout-ms <n>]
+--project-path <dir>` presses, holds and releases a physical key in the running
+game (see Protocol above), canonicalizing `--project-path` the same way as the
+other commands; the CLI waits for the declared wait plus two seconds.
+`game-click <x> <y> [--timeout-ms <n>] --project-path <dir>` clicks the left
+mouse button at viewport coordinates in the running game (see Protocol above),
+canonicalizing `--project-path` the same way as the other commands; the CLI
+waits for the declared wait plus two seconds.
+
 `set-parent <scene-relative-path> <new-parent-scene-relative-path> --project-path <dir> [--index <n>] [--keep-global-transform[=true|false]]`
 moves that node under the new parent through the editor's undo/redo stack
 (see Protocol above), canonicalizing `--project-path` the same way as the
@@ -1972,7 +2133,7 @@ script to take this one. `attach-script <scene-relative-path> --detach
 Undo/Redo step, and nothing is saved until `save-scene` runs.
 
 
-`input_stage` stages one input action's whole entry, replacing any earlier staged entry for the same name. `input_read` shows staged and applied input actions. Both are W3 staging reads: they write no file and touch neither live `ProjectSettings` nor the editor's `InputMap`, need no edited scene, create no undo step, and need no saved scene. Only `input_apply` writes `project.godot` through `ProjectSettings.save()`. The port is fixed, so only one Godot editor instance can host this plugin on a machine at a time.
+`input_stage` stages one input action's whole entry, replacing any earlier staged entry for the same name. `input_read` shows staged and applied input actions. Both are W3 staging reads: they write no file and touch neither live `ProjectSettings` nor the editor's `InputMap`, need no edited scene, create no undo step, and need no saved scene. Only `input_apply` writes `project.godot` through `ProjectSettings.save()`. Each editor needs its own port (see Protocol above).
 
 `input-stage --project-path <dir> --action <name> [--events <json>] [--deadzone <float>] [--remove]` stages the entry for `<name>`. `--remove` stages a removal and is refused with `--events` or `--deadzone`. Without `--remove`, `--events` is required and must hold 1 to 32 wire event objects. `--deadzone` defaults to 0.2, the engine's own default. `input-read --project-path <dir> [--action <name>]` filters both maps to one name when given. The field presence, type and combination checks run first, then the project-path mismatch, then the unknown-field check, the action-name check and the deadzone and event validation for `input-stage` (the action-name check for `input-read`); nothing is mutated until every check has passed. A rejected request leaves the staging store, live `ProjectSettings`, the `InputMap` and `project.godot` unchanged.
 
@@ -2053,8 +2214,12 @@ command, run against a fake plugin that publishes the interface in
 `tests/schema_fixture.json`, each compared with the request that must reach
 the plugin as parsed JSON; the integer grammar; the protocol-version and
 too-old-plugin messages; the help and version output; the `list-resources`
-`--refresh` wait loop; the `inspect-resource` symlink containment; and the
-`set-property` value parsing.
+`--refresh` wait loop; the `inspect-resource` symlink containment; the
+`set-property` value parsing; and the `install` copy, idempotent second run,
+`--overwrite` refusal and in-place replacement that keeps user and `.uid` files,
+the refusals that run before the first write (non-UTF-8, read-only and
+multi-line `enabled` project files, an unreadable source file), and the
+`[editor_plugins]` edits, including an `enabled` key with spaces around `=`.
 
 `tools/console_truncate_check.gd` drives the console message byte cap through
 the handler itself: a split euro and a split emoji (which the naive cut stores

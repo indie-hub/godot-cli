@@ -18,17 +18,27 @@ The agent sends commands over a local socket. Every edit goes through the editor
 
 ## Install
 
-1. Copy the folder `addon/godot_pipeline` into the `addons` folder of your project.
-2. In the Godot editor, open Project Settings > Plugins and enable Godot Pipeline.
-3. Open the scene you want to work on.
-
-When the editor starts with the plugin enabled, the plugin registers the `GodotPipelineCapture` game autoload (the in-game log and capture helper, `res://addons/godot_pipeline/scripts/helper.gd`). The `[autoload]` entry reaches `project.godot` with the next project-settings save; starting the game saves. A second start changes nothing. Disabling the plugin removes the entry again. While the plugin is toggled off, the command line has no server until the plugin is enabled again. Details and the exact lines are in `docs/reference.md` ("Game helper").
-
-Then build the command-line tool from the repository:
+Build the command-line tool from the repository:
 
     cargo build
 
-The plugin listens on port 47821. The port is fixed in the plugin source (`const PORT` in `addon/godot_pipeline/editor_plugin.gd`). The command-line tool uses 47821 unless you pass `--port`. Each editor needs its own port. To run a second editor, give it its own copy of the plugin with that line changed to a free port, and pass the same number to the command-line tool with `--port`.
+Install the plugin into your project with one command. This needs no editor:
+
+    target/debug/godot-cli install /path/to/project
+
+`install` copies the plugin folder into `addons/godot_pipeline` and adds `res://addons/godot_pipeline/plugin.cfg` to the `[editor_plugins]` `enabled` list in `project.godot`, creating that section when it is absent and preserving the rest of the file. It copies no `.uid` files. Validation of the inputs runs first and a refused install leaves the project untouched, but a write failure partway (a read-only subfolder, a read-only project folder) can leave part of the addon copied and the plugin not enabled, and a rerun completes it. A symlinked `project.godot` is replaced by a regular file. Run it again on an installed project: it changes nothing and says so. `--overwrite` replaces only the files the source addon contains: it overwrites them in place, keeps every other file in `addons/godot_pipeline` (including `.uid` files and files you added) and deletes nothing. The reply lists the files it `created` and the files it `replaced`. `--addon-source <dir>` installs a different copy of the plugin. It refuses a folder that has no `project.godot`, a `project.godot` it cannot read, cannot write, or that is not UTF-8, and an `[editor_plugins]` `enabled` value it cannot edit in place; the error names the cause.
+
+Then open the project in the editor and open the scene you want to work on. The plugin is already enabled; Project Settings > Plugins shows it. In the measured run, running `install` while an editor was open on the project still left the entry in `project.godot` after the editor exited.
+
+When the editor starts with the plugin enabled, the plugin registers the `GodotPipelineCapture` game autoload (the in-game log and capture helper, `res://addons/godot_pipeline/scripts/helper.gd`). The `[autoload]` entry reaches `project.godot` with the next project-settings save; starting the game saves. A second start changes nothing. Disabling the plugin removes the entry again. While the plugin is toggled off, the command line has no server until the plugin is enabled again. Details and the exact lines are in `docs/reference.md` ("Game helper").
+
+## Port
+
+The plugin listens on port 47821 unless `GODOT_PIPELINE_PORT` is set when the editor starts:
+
+    GODOT_PIPELINE_PORT=47900 godot --headless --path /path/to/project --editor
+
+The value must be an integer from 1024 to 65535. Any other value makes the plugin print an error and not listen at all; it never falls back to 47821, because another editor may already hold that port. Pass the same number to the command-line tool with `--port`, for example `godot-cli --port 47900 call status`. Each editor needs its own port; two editors with different values run side by side.
 
 ## Quick start
 
@@ -117,6 +127,8 @@ The new node is in the scene and in the file now. You can undo the edits in the 
 | run | `stop` | Stop the running game. Does nothing when no game runs. |
 | run | `game-log` | Show the running game's log entries forwarded by the game helper, with the run identity, cursor, drop counters, and script and engine locations for errors. |
 | run | `capture-game` | Capture the running game's viewport as a PNG in the reply. Holds the connection until the helper answers or the wait passes; writes no file. |
+| run | `game-key` | Press, hold and release a physical key in the running game. |
+| run | `game-click` | Click the left mouse button at viewport coordinates in the running game. |
 | edit | `eval` | Run a GDScript snippet in the live editor and return its value; may break the one-undo-action and no-main-thread-blocking rules. |
 
 Every edit command except `save-scene` goes through the editor's undo and redo stack and saves nothing. Run `save-scene` to write the scene to disk; `play` saves an unsaved edited scene before it launches the game. `open-scene` changes which scene is open and writes no file unless you pass `--save`.

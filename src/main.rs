@@ -1,17 +1,20 @@
 //! Godot Pipeline CLI.
 //!
 //! Talks to the `godot_pipeline` GDScript editor plugin over a loopback TCP
-//! socket and prints its JSON response. Every command, argument and type is
-//! read from the interface the plugin publishes, so this file names no
-//! command of its own. See `protocol` for the wire format and `README.md` for
-//! how to install the plugin and the one-editor-per-port limitation.
+//! socket and prints its JSON response. Every plugin command, argument and type
+//! is read from the interface the plugin publishes. `install` is the one
+//! subcommand that needs no editor: it copies the plugin into a project and
+//! edits that project's `project.godot` directly. See `protocol` for the wire
+//! format and `README.md` for how to install the plugin and the
+//! one-editor-per-port limitation.
 
 mod protocol;
 
 use protocol::{ClientError, DEFAULT_PORT, HOST, Response, send_request};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
@@ -43,6 +46,9 @@ const MAX_INTERFACE_BYTES: u64 = 8_388_608;
 /// The argument kinds this build can encode. A kind the plugin names that is
 /// not one of them is refused with the interface, before any request is built.
 const SUPPORTED_KINDS: [&str; 5] = ["string", "boolean", "json", "res_path", "integer"];
+
+/// The plugin entry that `install` adds to the `[editor_plugins]` enabled list.
+const PLUGIN_CFG_PATH: &str = "res://addons/godot_pipeline/plugin.cfg";
 
 /// What the plugin publishes for one argument. Deserialized from the
 /// interface, never written here.
@@ -144,7 +150,7 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             "--help" | "-h" => help = true,
             "--version" => version = true,
-            other if subcommand.is_none() && matches!(other, "call" | "commands") => {
+            other if subcommand.is_none() && matches!(other, "call" | "commands" | "install") => {
                 subcommand = Some(other);
             }
             _ if subcommand.is_some() => rest.push(argument.clone()),
@@ -166,12 +172,382 @@ fn run(args: &[String]) -> Result<(), String> {
     match subcommand {
         Some("call") => call_command(&rest, port, project_path.as_deref()),
         Some("commands") => list_commands(port, &rest),
-        Some(_) => unreachable!("only call and commands are recognized above"),
+        Some("install") => install_command(&rest),
+        Some(_) => unreachable!("only call, commands and install are recognized above"),
         None => {
             print_usage(port, None)?;
-            Err("missing command (expected 'call' or 'commands')".to_string())
+            Err("missing command (expected 'call', 'commands' or 'install')".to_string())
         }
     }
+}
+
+/// Installs the editor plugin into a Godot project without starting an
+/// editor: `install <project-path> [--addon-source DIR] [--overwrite]`.
+fn install_command(args: &[String]) -> Result<(), String> {
+    let mut project: Option<String> = None;
+    let mut source: Option<String> = None;
+    let mut overwrite = false;
+    let mut arguments = args.iter();
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--addon-source" => {
+                let value = arguments.next().ok_or("--addon-source requires a value")?;
+                source = Some(value.clone());
+            }
+            "--overwrite" => overwrite = true,
+            other if other.starts_with("--") => {
+                return Err(format!("unknown argument for install: {other}"));
+            }
+            other => {
+                if project.is_some() {
+                    return Err(format!(
+                        "too many arguments for install: expected one project path, got {other}"
+                    ));
+                }
+                project = Some(other.to_string());
+            }
+        }
+    }
+    let project = project.ok_or("missing project path for install")?;
+    let report = install(&project, source.as_deref(), overwrite)?;
+    let pretty = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;
+    println!("{pretty}");
+    Ok(())
+}
+
+/// Copies the plugin into `<project>/addons/godot_pipeline` and adds it to the
+/// `[editor_plugins]` enabled list, changing nothing else in `project.godot`.
+/// Every check and the whole new `project.godot` text are computed before the
+/// first write, so a refused install leaves the project untouched.
+fn install(project: &str, source: Option<&str>, overwrite: bool) -> Result<Value, String> {
+    let project_root = std::fs::canonicalize(project)
+        .map_err(|error| format!("invalid project path {project}: {error}"))?;
+    let project_file = project_root.join("project.godot");
+    if !project_file.is_file() {
+        return Err(format!(
+            "not a Godot project (no project.godot): {}",
+            project_root.display()
+        ));
+    }
+    let text = std::fs::read_to_string(&project_file)
+        .map_err(|error| format!("cannot read {}: {error}", project_file.display()))?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&project_file)
+        .map_err(|error| format!("cannot write {}: {error}", project_file.display()))?;
+    let source_root = match source {
+        Some(path) => std::fs::canonicalize(path)
+            .map_err(|error| format!("invalid addon source {path}: {error}"))?,
+        None => PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("addon")
+            .join("godot_pipeline"),
+    };
+    if !source_root.join("plugin.cfg").is_file() {
+        return Err(format!(
+            "addon source is not the Godot Pipeline plugin (no plugin.cfg): {}",
+            source_root.display()
+        ));
+    }
+    let target = project_root.join("addons").join("godot_pipeline");
+    ensure_inside_project(&project_root, &target)?;
+    if target.exists() && !target.is_dir() {
+        return Err(format!(
+            "cannot install into {}: it exists and is not a folder",
+            target.display()
+        ));
+    }
+    let files = addon_files(&source_root)?;
+    let existing = match target.is_dir() {
+        true => addon_files(&target)?,
+        false => BTreeMap::new(),
+    };
+    let same = target.is_dir()
+        && files
+            .iter()
+            .all(|(relative, bytes)| existing.get(relative) == Some(bytes));
+    if !same && target.exists() && !overwrite {
+        return Err(
+            "addons/godot_pipeline already exists and differs from the source; \
+             pass --overwrite to replace the files it contains"
+                .to_string(),
+        );
+    }
+    let (updated, plugin_added) = with_plugin_enabled(&text, &project_file)?;
+    let mut created: Vec<String> = Vec::new();
+    let mut replaced: Vec<String> = Vec::new();
+    if !same {
+        for (relative, bytes) in &files {
+            if existing.get(relative) == Some(bytes) {
+                continue;
+            }
+            let path = target.join(relative);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+            }
+            write_atomically(&path, bytes)?;
+            match existing.contains_key(relative) {
+                true => replaced.push(relative.clone()),
+                false => created.push(relative.clone()),
+            }
+        }
+    }
+    if plugin_added {
+        write_atomically(&project_file, updated.as_bytes())?;
+    }
+    let after = std::fs::read_to_string(&project_file)
+        .map_err(|error| format!("cannot read {}: {error}", project_file.display()))?;
+    let plugin_enabled = matches!(with_plugin_enabled(&after, &project_file), Ok((_, false)));
+    let added = plugin_added && plugin_enabled;
+    let mut report = Map::new();
+    report.insert(
+        "project".to_string(),
+        json!(project_root.display().to_string()),
+    );
+    report.insert("addon".to_string(), json!("addons/godot_pipeline"));
+    report.insert(
+        "source".to_string(),
+        json!(source_root.display().to_string()),
+    );
+    report.insert("created".to_string(), json!(created));
+    report.insert("replaced".to_string(), json!(replaced));
+    report.insert("plugin_enabled".to_string(), json!(plugin_enabled));
+    report.insert("plugin_added".to_string(), json!(added));
+    report.insert(
+        "changed".to_string(),
+        json!(!created.is_empty() || !replaced.is_empty() || added),
+    );
+    if created.is_empty() && replaced.is_empty() && !added {
+        report.insert(
+            "message".to_string(),
+            json!("already installed; nothing changed"),
+        );
+    }
+    Ok(Value::Object(report))
+}
+
+/// Every plugin file below `root`, keyed by its `/`-separated relative path.
+/// `.uid` files are skipped: Godot generates them for the project that owns
+/// the files, so a copy from the repository does not carry them.
+fn addon_files(root: &std::path::Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    let mut files = BTreeMap::new();
+    collect_addon_files(root, root, &mut files)?;
+    Ok(files)
+}
+
+fn collect_addon_files(
+    root: &std::path::Path,
+    directory: &std::path::Path,
+    files: &mut BTreeMap<String, Vec<u8>>,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(directory)
+        .map_err(|error| format!("cannot read {}: {error}", directory.display()))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("cannot read {}: {error}", directory.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_addon_files(root, &path, files)?;
+            continue;
+        }
+        if path.extension().and_then(|extension| extension.to_str()) == Some("uid") {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| format!("cannot read {}: outside the addon folder", path.display()))?;
+        let bytes = std::fs::read(&path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        files.insert(relative.to_string_lossy().replace('\\', "/"), bytes);
+    }
+    Ok(())
+}
+
+/// Refuses a write target whose deepest existing ancestor resolves outside the
+/// project, so a symlinked `addons` folder cannot redirect the copy.
+fn ensure_inside_project(
+    project_root: &std::path::Path,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let mut candidate = path;
+    let resolved = loop {
+        match std::fs::canonicalize(candidate) {
+            Ok(resolved) => break resolved,
+            Err(_) => match candidate.parent() {
+                Some(parent) => candidate = parent,
+                None => {
+                    return Err(format!(
+                        "refusing to write outside the project: {}",
+                        path.display()
+                    ));
+                }
+            },
+        }
+    };
+    if !resolved.starts_with(project_root) {
+        return Err(format!(
+            "refusing to write outside the project: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Writes `bytes` to a temporary file next to `path`, keeps the mode of the
+/// file it replaces, then renames it over `path`: an interrupted write cannot
+/// leave a short file and the old file stays readable until the rename.
+fn write_atomically(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("cannot write {}", path.display()))?;
+    let temp = path.with_file_name(format!(".{}.tmp", name.to_string_lossy()));
+    std::fs::write(&temp, bytes)
+        .map_err(|error| format!("cannot write {}: {error}", temp.display()))?;
+    if let Ok(previous) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&temp, previous.permissions());
+    }
+    std::fs::rename(&temp, path).map_err(|error| {
+        let _ = std::fs::remove_file(&temp);
+        format!("cannot replace {}: {error}", path.display())
+    })
+}
+
+/// Whether `line` is the `enabled` key of `[editor_plugins]`. Spaces around
+/// `=` are allowed, so a hand-edited `enabled = ...` is edited, not duplicated.
+fn is_enabled_key(line: &str) -> bool {
+    line.trim_start()
+        .strip_prefix("enabled")
+        .is_some_and(|rest| rest.trim_start().starts_with('='))
+}
+
+/// The `[editor_plugins]` header and `enabled` key line numbers. A second
+/// section or a second `enabled` key is refused: the command would not know
+/// which value Godot reads, so it must not edit either.
+fn plugin_section(
+    lines: &[String],
+    path: &std::path::Path,
+) -> Result<(Option<usize>, Option<usize>), String> {
+    let headers: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.trim_end() == "[editor_plugins]")
+        .map(|(index, _)| index)
+        .collect();
+    let Some(header) = headers.first().copied() else {
+        return Ok((None, None));
+    };
+    if headers.len() > 1 {
+        return Err(format!(
+            "cannot edit {}: more than one [editor_plugins] section",
+            path.display()
+        ));
+    }
+    let end = lines[header + 1..]
+        .iter()
+        .position(|line| line.trim_end().starts_with('['))
+        .map(|offset| header + 1 + offset)
+        .unwrap_or(lines.len());
+    let keys: Vec<usize> = (header + 1..end)
+        .filter(|&index| is_enabled_key(&lines[index]))
+        .collect();
+    match keys.first() {
+        None => Ok((Some(header), None)),
+        Some(key) if keys.len() == 1 => Ok((Some(header), Some(*key))),
+        Some(_) => Err(format!(
+            "cannot edit {}: more than one enabled key in [editor_plugins]",
+            path.display()
+        )),
+    }
+}
+
+/// The `enabled` line with `PLUGIN_CFG_PATH` appended to its list. Only a
+/// one-line `enabled = PackedStringArray(...)` is supported; other shapes are
+/// refused with the supported shape in the message.
+fn enabled_with_plugin(line: &str, path: &std::path::Path) -> Result<String, String> {
+    let refuse = |detail: &str| {
+        format!(
+            "cannot edit the [editor_plugins] enabled list in {} ({detail}); \
+             use one line enabled = PackedStringArray(...)",
+            path.display()
+        )
+    };
+    let assign = line.find('=').ok_or_else(|| refuse("no ="))?;
+    let open = line[assign..]
+        .find('(')
+        .map(|offset| assign + offset)
+        .ok_or_else(|| refuse("no opening parenthesis"))?;
+    let close = line
+        .rfind(')')
+        .filter(|&close| close > open)
+        .ok_or_else(|| refuse("no closing parenthesis"))?;
+    if line[assign + 1..open].trim() != "PackedStringArray" {
+        return Err(refuse("the value is not a PackedStringArray"));
+    }
+    let inner = line[open + 1..close].trim();
+    let inner = inner.strip_suffix(',').unwrap_or(inner).trim_end();
+    let value = match inner.is_empty() {
+        true => format!("\"{PLUGIN_CFG_PATH}\""),
+        false => format!("{inner}, \"{PLUGIN_CFG_PATH}\""),
+    };
+    Ok(format!("{}({value}){}", &line[..open], &line[close + 1..]))
+}
+
+/// Inserts a missing `enabled` line inside `[editor_plugins]`, keeping one blank
+/// line after the header and before the next key, as Godot writes it.
+fn insert_enabled_line(lines: &mut Vec<String>, header: usize, enabled_line: String) {
+    let after_header = lines.get(header + 1).is_some_and(String::is_empty);
+    let at = match after_header {
+        true => header + 2,
+        false => header + 1,
+    };
+    let mut block = Vec::new();
+    if !after_header {
+        block.push(String::new());
+    }
+    block.push(enabled_line);
+    if lines.get(at).is_some_and(|line| !line.is_empty()) {
+        block.push(String::new());
+    }
+    for (offset, line) in block.into_iter().enumerate() {
+        lines.insert(at + offset, line);
+    }
+}
+
+/// `project.godot` text with the plugin in the `[editor_plugins]` enabled list,
+/// and whether that list changed. Read-only: the caller writes the result.
+fn with_plugin_enabled(text: &str, path: &std::path::Path) -> Result<(String, bool), String> {
+    if text.starts_with('\u{feff}') {
+        return Err(format!(
+            "cannot edit {}: it starts with a byte order mark; save it as plain UTF-8 first",
+            path.display()
+        ));
+    }
+    let mut lines: Vec<String> = text.split('\n').map(str::to_string).collect();
+    let (header, enabled) = plugin_section(&lines, path)?;
+    match (header, enabled) {
+        (Some(_), Some(index)) => {
+            let line = lines[index].clone();
+            if line.contains(PLUGIN_CFG_PATH) {
+                return Ok((text.to_string(), false));
+            }
+            lines[index] = enabled_with_plugin(&line, path)?;
+        }
+        (Some(header), None) => {
+            let enabled_line = format!("enabled=PackedStringArray(\"{PLUGIN_CFG_PATH}\")");
+            insert_enabled_line(&mut lines, header, enabled_line);
+        }
+        (None, _) => {
+            let mut updated = text.to_string();
+            if !updated.is_empty() && !updated.ends_with('\n') {
+                updated.push('\n');
+            }
+            updated.push_str("\n[editor_plugins]\n\nenabled=PackedStringArray(\"");
+            updated.push_str(PLUGIN_CFG_PATH);
+            updated.push_str("\")\n");
+            return Ok((updated, true));
+        }
+    }
+    Ok((lines.join("\n"), true))
 }
 
 /// Runs one plugin command: fetch its interface, build the request from it,
@@ -347,6 +723,64 @@ fn build_request(
     Ok(Value::Object(request))
 }
 
+/// Records one supplied value, refusing when the same argument was already
+/// supplied with a different value (positional and flag forms disagree).
+fn insert_supplied(
+    supplied: &mut HashMap<String, String>,
+    positional_values: &mut HashMap<String, String>,
+    flag_values: &mut HashMap<String, Vec<String>>,
+    name: &str,
+    value: String,
+    form: &'static str,
+    command: &CommandInterface,
+) -> Result<(), String> {
+    // Arguments reachable both positionally and by flag (scene_path,
+    // parent_path) may be supplied more than once. A repeated flag alone
+    // keeps last-wins. A positional and any flag disagreeing
+    // is refused regardless of order or repetition; equal
+    // values in both forms are accepted.
+    let both_forms = command
+        .arguments
+        .iter()
+        .any(|argument| argument.name == name && argument.positional.is_some() && argument.flag.is_some());
+    if both_forms {
+        if form == "positional" {
+            if let Some(flags) = flag_values.get(name) {
+                for flag_value in flags {
+                    if flag_value != &value {
+                        return Err(format!(
+                            "conflicting {} for {}: {} vs {}",
+                            name,
+                            command.cli_name(),
+                            value,
+                            flag_value
+                        ));
+                    }
+                }
+            }
+            positional_values.insert(name.to_string(), value.clone());
+        } else {
+            if let Some(positional) = positional_values.get(name) {
+                if positional != &value {
+                    return Err(format!(
+                        "conflicting {} for {}: {} vs {}",
+                        name,
+                        command.cli_name(),
+                        positional,
+                        value
+                    ));
+                }
+            }
+            flag_values
+                .entry(name.to_string())
+                .or_default()
+                .push(value.clone());
+        }
+    }
+    supplied.insert(name.to_string(), value);
+    Ok(())
+}
+
 /// Binds the call arguments to the interface: flags by the flag the
 /// interface declares, positionals by the index it declares. A flag or an
 /// extra positional the interface does not declare is refused here.
@@ -355,6 +789,8 @@ fn bind_arguments(
     args: &[String],
 ) -> Result<HashMap<String, String>, String> {
     let mut supplied = HashMap::new();
+    let mut positional_values: HashMap<String, String> = HashMap::new();
+    let mut flag_values: HashMap<String, Vec<String>> = HashMap::new();
     let mut position = 0u64;
     let mut arguments = args.iter();
     while let Some(argument) = arguments.next() {
@@ -394,8 +830,22 @@ fn bind_arguments(
                     .cloned()
                     .ok_or_else(|| format!("{} requires a value", declared.label()))?
             };
-            supplied.insert(declared.name.clone(), value);
+            insert_supplied(&mut supplied, &mut positional_values, &mut flag_values, &declared.name, value, "flag", command)?;
             continue;
+        }
+        // Skip positional slots already supplied (e.g. by a flag), so a
+        // positional after `--scene-path A` binds to the next free slot
+        // rather than colliding with the flagged value.
+        while position < u64::MAX {
+            match command
+                .arguments
+                .iter()
+                .find(|candidate| candidate.positional == Some(position))
+            {
+                Some(candidate) if !supplied.contains_key(&candidate.name) => break,
+                Some(_) => position += 1,
+                None => break,
+            }
         }
         let declared = command
             .arguments
@@ -412,7 +862,7 @@ fn bind_arguments(
                 command.cli_name()
             ));
         };
-        supplied.insert(declared.name.clone(), argument.clone());
+        insert_supplied(&mut supplied, &mut positional_values, &mut flag_values, &declared.name, argument.clone(), "positional", command)?;
         position += 1;
     }
     Ok(supplied)
@@ -496,11 +946,14 @@ fn parse_integer(raw: &str) -> Option<i64> {
 /// prints that command's usage from its interface instead.
 fn print_usage(port: u16, command: Option<&str>) -> Result<(), String> {
     let Some(command) = command else {
-        println!("usage: godot-cli [--port PORT] [--project-path <dir>] <call|commands> ...");
+        println!(
+            "usage: godot-cli [--port PORT] [--project-path <dir>] <call|commands|install> ..."
+        );
         println!(
             "       godot-cli call <command> [arguments] [--port PORT] [--project-path <dir>]"
         );
         println!("       godot-cli commands [--json] [--port PORT]");
+        println!("       godot-cli install <project-path> [--addon-source <dir>] [--overwrite]");
         println!("       godot-cli --help | --version");
         println!(
             "  --project-path  the project the command targets; required when the command needs it"
@@ -508,6 +961,9 @@ fn print_usage(port: u16, command: Option<&str>) -> Result<(), String> {
         println!("  --port          override the default port ({DEFAULT_PORT})");
         println!("  call            run one plugin command (needs a running editor)");
         println!("  commands        print the plugin command list (needs a running editor)");
+        println!(
+            "  install         copy the plugin into a project and enable it (needs no editor)"
+        );
         match fetch_commands(port) {
             Ok(data) => print_command_list(&parse_interface(&data)?),
             Err(_) => println!(
@@ -531,17 +987,26 @@ fn print_command_list(interface: &Interface) {
 /// and flags in interface order, the description, and one line per argument.
 fn print_command_usage(command: &CommandInterface) {
     let mut usage = format!("usage: godot-cli call {}", command.cli_name());
-    for argument in command.arguments.iter().filter(|a| a.positional.is_some()) {
-        usage.push_str(&format!(" <{}>", argument.name));
-    }
     for argument in &command.arguments {
-        let Some(flag) = &argument.flag else { continue };
-        usage.push_str(&format!(" {flag}"));
-        usage.push_str(if argument.kind == "boolean" {
-            "[=true|false]"
-        } else {
-            " <value>"
-        });
+        let has_pos = argument.positional.is_some();
+        let has_flag = argument.flag.is_some();
+        if has_pos && has_flag {
+            let flag = argument.flag.as_ref().unwrap();
+            if argument.kind == "boolean" {
+                usage.push_str(&format!(" <{}>|{}[=true|false]", argument.name, flag));
+            } else {
+                usage.push_str(&format!(" <{}>|{} <value>", argument.name, flag));
+            }
+        } else if has_pos {
+            usage.push_str(&format!(" <{}>", argument.name));
+        } else if let Some(flag) = &argument.flag {
+            usage.push_str(&format!(" {flag}"));
+            usage.push_str(if argument.kind == "boolean" {
+                "[=true|false]"
+            } else {
+                " <value>"
+            });
+        }
     }
     println!("{usage}");
     println!("  {}", command.description);
@@ -959,6 +1424,60 @@ mod tests {
             r#"{"command":"instantiate_scene","scene_path":"res://bullet.tscn","parent_path":".","project_path":"/private/tmp"}"#,
         ),
         (
+            "m23b_instantiate_scene_positional",
+            &[
+                "call",
+                "instantiate-scene",
+                "res://bullet.tscn",
+                ".",
+                "--project-path",
+                "/tmp",
+            ],
+            r#"{"command":"instantiate_scene","scene_path":"res://bullet.tscn","parent_path":".","project_path":"/private/tmp"}"#,
+        ),
+        (
+            "m23c_instantiate_scene_flag_scene_pos_parent",
+            &[
+                "call",
+                "instantiate-scene",
+                "--scene-path",
+                "res://bullet.tscn",
+                ".",
+                "--project-path",
+                "/tmp",
+            ],
+            r#"{"command":"instantiate_scene","scene_path":"res://bullet.tscn","parent_path":".","project_path":"/private/tmp"}"#,
+        ),
+        (
+            "m23d_instantiate_scene_pos_scene_flag_parent",
+            &[
+                "call",
+                "instantiate-scene",
+                "res://bullet.tscn",
+                "--parent-path",
+                ".",
+                "--project-path",
+                "/tmp",
+            ],
+            r#"{"command":"instantiate_scene","scene_path":"res://bullet.tscn","parent_path":".","project_path":"/private/tmp"}"#,
+        ),
+        (
+            "m23e_instantiate_scene_both_same",
+            &[
+                "call",
+                "instantiate-scene",
+                "res://bullet.tscn",
+                ".",
+                "--scene-path",
+                "res://bullet.tscn",
+                "--parent-path",
+                ".",
+                "--project-path",
+                "/tmp",
+            ],
+            r#"{"command":"instantiate_scene","scene_path":"res://bullet.tscn","parent_path":".","project_path":"/private/tmp"}"#,
+        ),
+        (
             "m24_save_scene",
             &["call", "save-scene", "--project-path", "/tmp"],
             r#"{"command":"save_scene","project_path":"/private/tmp"}"#,
@@ -968,6 +1487,30 @@ mod tests {
             &[
                 "call",
                 "open-scene",
+                "--scene-path",
+                "res://world.tscn",
+                "--project-path",
+                "/tmp",
+            ],
+            r#"{"command":"open_scene","project_path":"/private/tmp","scene_path":"res://world.tscn","save":false}"#,
+        ),
+        (
+            "m25b_open_scene_positional",
+            &[
+                "call",
+                "open-scene",
+                "res://world.tscn",
+                "--project-path",
+                "/tmp",
+            ],
+            r#"{"command":"open_scene","project_path":"/private/tmp","scene_path":"res://world.tscn","save":false}"#,
+        ),
+        (
+            "m25c_open_scene_both_same",
+            &[
+                "call",
+                "open-scene",
+                "res://world.tscn",
                 "--scene-path",
                 "res://world.tscn",
                 "--project-path",
@@ -2060,5 +2603,362 @@ mod tests {
         ]);
         assert_eq!(error, "unknown argument for query-nodes: --limit=50");
         fetch_only(&lines);
+    }
+
+    #[test]
+    fn a_mixed_positional_and_flag_scene_path_conflict_is_refused() {
+        // Positional A + flag A + flag B -> refused.
+        let (error, lines) = refused(&[
+            "call",
+            "instantiate-scene",
+            "res://a.tscn",
+            ".",
+            "--scene-path",
+            "res://a.tscn",
+            "--scene-path",
+            "res://b.tscn",
+            "--project-path",
+            "/tmp",
+        ]);
+        assert!(error.contains("conflicting"), "{error}");
+        fetch_only(&lines);
+    }
+
+    #[test]
+    fn a_matching_positional_and_flag_scene_path_is_accepted() {
+        let (port, server) = fake_plugin(vec![
+            interface_reply(),
+            Response::Ok { data: json!({ "scanning": false }) },
+        ]);
+        let argv = with_port(
+            port,
+            &[
+                "call",
+                "instantiate-scene",
+                "res://bullet.tscn",
+                ".",
+                "--scene-path",
+                "res://bullet.tscn",
+                "--project-path",
+                "/tmp",
+            ],
+        );
+        run(&argv).unwrap_or_else(|error| panic!("{error}"));
+        let lines = server.join().expect("server thread does not panic");
+        assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn repeated_flags_alone_keep_last_wins() {
+        let (port, server) = fake_plugin(vec![
+            interface_reply(),
+            Response::Ok { data: json!({ "scanning": false }) },
+        ]);
+        let argv = with_port(
+            port,
+            &[
+                "call",
+                "instantiate-scene",
+                "--scene-path",
+                "res://a.tscn",
+                "--scene-path",
+                "res://b.tscn",
+                "--parent-path",
+                ".",
+                "--project-path",
+                "/tmp",
+            ],
+        );
+        run(&argv).unwrap_or_else(|error| panic!("{error}"));
+        let lines = server.join().expect("server thread does not panic");
+        let sent: Value = serde_json::from_str(&lines[1]).expect("parse request");
+        assert_eq!(sent["scene_path"], "res://b.tscn");
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("godot-cli-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).expect("create scratch folder");
+        path
+    }
+
+    fn write_fixture(path: &std::path::Path, text: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create fixture folder");
+        }
+        std::fs::write(path, text).expect("write fixture");
+    }
+
+    fn addon_fixture(root: &std::path::Path) {
+        write_fixture(
+            &root.join("addon/godot_pipeline/plugin.cfg"),
+            "[plugin]\nname=\"Godot Pipeline\"\n",
+        );
+        write_fixture(
+            &root.join("addon/godot_pipeline/editor_plugin.gd"),
+            "@tool\nextends EditorPlugin\n",
+        );
+        write_fixture(
+            &root.join("addon/godot_pipeline/commands/status.gd"),
+            "static func run():\n\treturn {}\n",
+        );
+        write_fixture(
+            &root.join("addon/godot_pipeline/commands/status.gd.uid"),
+            "uid://stale\n",
+        );
+    }
+
+    #[test]
+    fn install_copies_the_addon_enables_the_plugin_and_is_idempotent() {
+        let root = scratch("install");
+        let project = root.join("project");
+        let source = root.join("addon/godot_pipeline");
+        write_fixture(
+            &project.join("project.godot"),
+            "; Engine configuration file.\n\n[application]\n\nconfig/name=\"T\"\n",
+        );
+        addon_fixture(&root);
+        let project_path = project.to_str().expect("project path");
+        let source_path = source.to_str().expect("source path");
+
+        let first = install(project_path, Some(source_path), false).expect("first install");
+        assert_eq!(first["changed"], json!(true));
+        assert_eq!(first["plugin_added"], json!(true));
+        assert_eq!(
+            first["created"],
+            json!(["commands/status.gd", "editor_plugin.gd", "plugin.cfg"])
+        );
+        assert_eq!(first["replaced"], json!([]));
+        assert_eq!(first["plugin_enabled"], json!(true));
+        assert!(project.join("addons/godot_pipeline/plugin.cfg").is_file());
+        assert!(
+            !project
+                .join("addons/godot_pipeline/commands/status.gd.uid")
+                .exists()
+        );
+        let enabled = std::fs::read_to_string(project.join("project.godot")).expect("read project");
+        assert_eq!(
+            enabled,
+            "; Engine configuration file.\n\n[application]\n\nconfig/name=\"T\"\n\n\
+             [editor_plugins]\n\n\
+             enabled=PackedStringArray(\"res://addons/godot_pipeline/plugin.cfg\")\n"
+        );
+
+        let second = install(project_path, Some(source_path), false).expect("second install");
+        assert_eq!(second["changed"], json!(false));
+        assert_eq!(second["created"], json!([]));
+        assert_eq!(second["replaced"], json!([]));
+        assert_eq!(
+            second["message"],
+            json!("already installed; nothing changed")
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.join("project.godot")).expect("read project"),
+            enabled
+        );
+
+        write_fixture(
+            &project.join("addons/godot_pipeline/editor_plugin.gd"),
+            "changed\n",
+        );
+        write_fixture(&project.join("addons/godot_pipeline/notes.txt"), "mine\n");
+        write_fixture(
+            &project.join("addons/godot_pipeline/plugin.cfg.uid"),
+            "uid://local\n",
+        );
+        let refused = install(project_path, Some(source_path), false).expect_err("different addon");
+        assert!(refused.contains("--overwrite"), "{refused}");
+        let replaced = install(project_path, Some(source_path), true).expect("overwrite");
+        assert_eq!(replaced["changed"], json!(true));
+        assert_eq!(replaced["created"], json!([]));
+        assert_eq!(replaced["replaced"], json!(["editor_plugin.gd"]));
+        assert_eq!(
+            std::fs::read_to_string(project.join("addons/godot_pipeline/editor_plugin.gd"))
+                .expect("read addon"),
+            "@tool\nextends EditorPlugin\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.join("addons/godot_pipeline/notes.txt"))
+                .expect("user file"),
+            "mine\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.join("addons/godot_pipeline/plugin.cfg.uid"))
+                .expect("uid file"),
+            "uid://local\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn install_keeps_other_enabled_plugins_and_creates_a_missing_enabled_key() {
+        let root = scratch("plugin-list");
+        let project = root.join("project");
+        let source = root.join("addon/godot_pipeline");
+        addon_fixture(&root);
+        let project_path = project.to_str().expect("project path");
+        let source_path = source.to_str().expect("source path");
+
+        write_fixture(
+            &project.join("project.godot"),
+            "[editor_plugins]\n\nenabled=PackedStringArray(\"res://addons/other/plugin.cfg\")\n\n[input]\n\njump=1\n",
+        );
+        install(project_path, Some(source_path), false).expect("install");
+        assert_eq!(
+            std::fs::read_to_string(project.join("project.godot")).expect("read project"),
+            "[editor_plugins]\n\nenabled=PackedStringArray(\"res://addons/other/plugin.cfg\", \
+             \"res://addons/godot_pipeline/plugin.cfg\")\n\n[input]\n\njump=1\n"
+        );
+
+        write_fixture(
+            &project.join("project.godot"),
+            "[editor_plugins]\n\n[application]\n\nconfig/name=\"T\"\n",
+        );
+        install(project_path, Some(source_path), false).expect("install");
+        assert_eq!(
+            std::fs::read_to_string(project.join("project.godot")).expect("read project"),
+            "[editor_plugins]\n\nenabled=PackedStringArray(\"res://addons/godot_pipeline/plugin.cfg\")\
+             \n\n[application]\n\nconfig/name=\"T\"\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_refuses_before_the_first_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("refusals-before-write");
+        let project = root.join("project");
+        let source = root.join("addon/godot_pipeline");
+        addon_fixture(&root);
+        let project_path = project.to_str().expect("project path");
+        let source_path = source.to_str().expect("source path");
+        let project_file = project.join("project.godot");
+        let addons = project.join("addons");
+
+        std::fs::create_dir_all(&project).expect("create project");
+        std::fs::write(&project_file, [0xff, 0xfe, 0x00]).expect("write non-utf8 project");
+        let not_utf8 = install(project_path, Some(source_path), false).expect_err("non-utf8");
+        assert!(not_utf8.contains("cannot read"), "{not_utf8}");
+        assert!(!addons.exists());
+
+        let multiline = "[editor_plugins]\n\nenabled=PackedStringArray(\n\
+                         \"res://addons/other/plugin.cfg\"\n)\n";
+        write_fixture(&project_file, multiline);
+        let refused = install(project_path, Some(source_path), false).expect_err("multi-line");
+        assert!(
+            refused.contains("one line enabled = PackedStringArray"),
+            "{refused}"
+        );
+        assert!(!addons.exists());
+        assert_eq!(
+            std::fs::read_to_string(&project_file).expect("read project"),
+            multiline
+        );
+
+        let before = std::fs::read(&project_file).expect("read project");
+        std::fs::set_permissions(&project_file, std::fs::Permissions::from_mode(0o444))
+            .expect("make project read-only");
+        let read_only = install(project_path, Some(source_path), false).expect_err("read-only");
+        assert!(read_only.contains("cannot write"), "{read_only}");
+        std::fs::set_permissions(&project_file, std::fs::Permissions::from_mode(0o644))
+            .expect("restore project mode");
+        assert!(!addons.exists());
+        assert_eq!(std::fs::read(&project_file).expect("read project"), before);
+
+        let unreadable = source.join("editor_plugin.gd");
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000))
+            .expect("make source unreadable");
+        let refused = install(project_path, Some(source_path), false).expect_err("unreadable");
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644))
+            .expect("restore source mode");
+        assert!(refused.contains("cannot read"), "{refused}");
+        assert!(!addons.exists());
+        assert_eq!(std::fs::read(&project_file).expect("read project"), before);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn install_edits_an_enabled_key_that_has_spaces_around_the_equals_sign() {
+        let root = scratch("enabled-spaces");
+        let project = root.join("project");
+        let source = root.join("addon/godot_pipeline");
+        addon_fixture(&root);
+        let project_path = project.to_str().expect("project path");
+        let source_path = source.to_str().expect("source path");
+        write_fixture(
+            &project.join("project.godot"),
+            "[editor_plugins]\n\nenabled = PackedStringArray(\"res://addons/other/plugin.cfg\")\n",
+        );
+
+        let reply = install(project_path, Some(source_path), false).expect("install");
+        assert_eq!(reply["plugin_added"], json!(true));
+        assert_eq!(reply["plugin_enabled"], json!(true));
+        let text = std::fs::read_to_string(project.join("project.godot")).expect("read project");
+        assert_eq!(
+            text,
+            "[editor_plugins]\n\nenabled = PackedStringArray(\"res://addons/other/plugin.cfg\", \
+             \"res://addons/godot_pipeline/plugin.cfg\")\n"
+        );
+        assert_eq!(text.matches("enabled").count(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn install_refuses_a_folder_without_a_project_and_a_missing_source() {
+        let root = scratch("refusals");
+        let project = root.join("project");
+        addon_fixture(&root);
+        std::fs::create_dir_all(&project).expect("create project");
+        let project_path = project.to_str().expect("project path");
+        let source_path = root.join("addon/godot_pipeline");
+        let missing = install(
+            project_path,
+            Some(source_path.to_str().expect("source")),
+            false,
+        )
+        .expect_err("folder without project.godot");
+        assert!(missing.contains("no project.godot"), "{missing}");
+
+        write_fixture(&project.join("project.godot"), "config_version=5\n");
+        let no_source = root.join("no-addon");
+        let missing_source = install(
+            project_path,
+            Some(no_source.to_str().expect("source")),
+            false,
+        )
+        .expect_err("missing source");
+        assert!(
+            missing_source.contains("invalid addon source"),
+            "{missing_source}"
+        );
+        let not_plugin =
+            install(project_path, Some(project_path), false).expect_err("not a plugin");
+        assert!(not_plugin.contains("no plugin.cfg"), "{not_plugin}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_refuses_a_target_that_resolves_outside_the_project() {
+        let root = scratch("outside");
+        let project = root.join("project");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&project).expect("create project");
+        std::fs::create_dir_all(&outside).expect("create outside folder");
+        write_fixture(&project.join("project.godot"), "config_version=5\n");
+        addon_fixture(&root);
+        std::os::unix::fs::symlink(&outside, project.join("addons")).expect("symlink addons");
+        let project_path = project.to_str().expect("project path");
+        let source_path = root.join("addon/godot_pipeline");
+        let error = install(
+            project_path,
+            Some(source_path.to_str().expect("source")),
+            false,
+        )
+        .expect_err("target outside the project");
+        assert!(error.contains("outside the project"), "{error}");
+        assert!(!outside.join("godot_pipeline").exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
