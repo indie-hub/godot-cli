@@ -8,7 +8,7 @@ extends EditorPlugin
 ## `rename_node`, `create_node`, `set_property`, `delete_node`,
 ## `connect_signal`, `set_group`, `set_unique_name`, `instantiate_scene`,
 ## `save_scene`, `open_scene`, `console`, `set_parent`, `eval`, `attach_script`,
-## `play`, `stop`, `game_log`, `capture_game`, `input_stage`, `input_read`, `input_apply` and `input_discard`. The read commands report the editor's status, the active
+## `play`, `stop`, `game_log`, `capture_game`, `input_stage`, `input_read`, `input_apply`, `input_discard`, `create_scene`, `save_scene_as`, `list_open_scenes` and `save_open_scene`. The read commands report the editor's status, the active
 ## edited scene's node tree, a node's class/child count/property values, the
 ## nodes matching a class, group, and name search, an engine class's ClassDB
 ## reflection (ancestors, properties, methods, signals), the resource files the
@@ -95,6 +95,10 @@ const COMMANDS := {
 	"input_read": preload("commands/input_read.gd"),
 	"input_apply": preload("commands/input_apply.gd"),
 	"input_discard": preload("commands/input_discard.gd"),
+	"create_scene": preload("commands/create_scene.gd"),
+	"save_scene_as": preload("commands/save_scene_as.gd"),
+	"list_open_scenes": preload("commands/list_open_scenes.gd"),
+	"save_open_scene": preload("commands/save_open_scene.gd"),
 }
 
 ## Version of the command interface the plugin publishes. A client that does

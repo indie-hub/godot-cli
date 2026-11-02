@@ -120,6 +120,31 @@ STAGED_COMMANDS = [
         '\t"input_discard": preload("commands/input_discard.gd"),',
         '\t"input_apply": preload("commands/input_apply.gd"),',
     ),
+    (
+        os.path.join("commands", "scene_write.gd"),
+        None,
+        None,
+    ),
+    (
+        os.path.join("commands", "create_scene.gd"),
+        '\t"create_scene": preload("commands/create_scene.gd"),',
+        '\t"input_discard": preload("commands/input_discard.gd"),',
+    ),
+    (
+        os.path.join("commands", "save_scene_as.gd"),
+        '\t"save_scene_as": preload("commands/save_scene_as.gd"),',
+        '\t"create_scene": preload("commands/create_scene.gd"),',
+    ),
+    (
+        os.path.join("commands", "list_open_scenes.gd"),
+        '\t"list_open_scenes": preload("commands/list_open_scenes.gd"),',
+        '\t"save_scene_as": preload("commands/save_scene_as.gd"),',
+    ),
+    (
+        os.path.join("commands", "save_open_scene.gd"),
+        '\t"save_open_scene": preload("commands/save_open_scene.gd"),',
+        '\t"list_open_scenes": preload("commands/list_open_scenes.gd"),',
+    ),
 ]
 
 PROJECT_GODOT = """; Engine configuration file.
@@ -4523,6 +4548,144 @@ def build_input_discard():
         stage_eval(INPUT_STAGE_NAMES),
     ]
     return out
+
+
+def build_create_scene():
+    # Session create_scene: W1 only, no overwrite flag. Runs with no scene to
+    # prove no edited scene is needed. Refusals carry distinct texts; accepted
+    # files are read back with file_contains on the stable root line (the uid
+    # and unique_id Godot writes are random per run, so no sha256 here).
+    # Every refusal group is bracketed by identical before/after state reads:
+    # list_open_scenes plus an open_scene probe of the refused path, so a
+    # refusal that wrote a file or moved a tab changes the recorded rows.
+    return [
+        ("line", '{"command":"status"}'),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+        ("line", '{"command":"open_scene","project_path":"<PROJ>","scene_path":"res://cs_a.tscn"}'),
+        ("line", '{"command":"create_scene"}'),
+        ("line", '{"command":"create_scene","project_path":"<PROJ>"}'),
+        ("line", '{"command":"create_scene","project_path":"<PROJ>","path":"res://cs_a.tscn","root_type":"Nope"}'),
+        ("line", '{"command":"create_scene","project_path":"<PROJ>","path":"res://cs_a.tscn","root_type":"Node2D","root_name":"a:b"}'),
+        ("line", '{"command":"create_scene","project_path":"<PROJ>","path":"/tmp/x.tscn","root_type":"Node2D"}'),
+        ("line", '{"command":"create_scene","project_path":"<PROJ>","path":"res://a/../b.tscn","root_type":"Node2D"}'),
+        ("line", '{"command":"create_scene","project_path":"<PROJ>","path":"res://h.txt","root_type":"Node2D"}'),
+        ("line", '{"command":"create_scene","project_path":"<PROJ>","path":"res://nope/x.tscn","root_type":"Node2D"}'),
+        ("line", '{"command":"create_scene","project_path":"<PROJ>","path":"res://a\u0001b.tscn","root_type":"Node2D"}'),
+        ("line", '{"command":"create_scene","project_path":"<PROJ>","path":"res://cs_a.tscn","root_type":"CanvasItem"}'),
+        ("line", '{"command":"create_scene","project_path":"<PROJ>","path":"res://cs_a.tscn","root_type":"Resource"}'),
+        ("line", json.dumps({"command": "eval", "project_path": "<PROJ>", "code": 'extends RefCounted\nfunc run(editor, undo_redo):\n\tvar d := DirAccess.open("res://")\n\treturn d.make_dir("dirtarget.tscn")'}, separators=(",", ":"))),
+        ("line", '{"command":"create_scene","project_path":"<PROJ>","path":"res://dirtarget.tscn","root_type":"Node2D"}'),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+        ("line", '{"command":"open_scene","project_path":"<PROJ>","scene_path":"res://cs_a.tscn"}'),
+        ("line", '{"command":"create_scene","project_path":"<PROJ>","path":"res://cs_a.tscn","root_type":"Node2D"}'),
+        ("file_contains", "cs_a.tscn|[node name=\"cs_a\" type=\"Node2D\""),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+        ("file_contains", "cs_a.tscn|[node name=\"cs_a\" type=\"Node2D\""),
+        ("line", '{"command":"create_scene","project_path":"<PROJ>","path":"res://./cs_a.tscn","root_type":"Node2D"}'),
+        ("line", '{"command":"create_scene","project_path":"<PROJ>","path":"res://a//cs_a.tscn","root_type":"Node2D"}'),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+        ("file_contains", "cs_a.tscn|[node name=\"cs_a\" type=\"Node2D\""),
+        ("line", '{"command":"create_scene","project_path":"<PROJ>","path":"res://cs_b.tscn","root_type":"Node3D"}'),
+        ("file_contains", "cs_b.tscn|[node name=\"cs_b\" type=\"Node3D\""),
+        ("line", '{"command":"create_scene","project_path":"<PROJ>","path":"res://cs_c.tscn","root_type":"Control"}'),
+        ("file_contains", "cs_c.tscn|[node name=\"cs_c\" type=\"Control\""),
+        ("line", '{"command":"create_scene","project_path":"<PROJ>","path":"res://cs_a.tscn","root_type":"Node2D"}'),
+        ("file_contains", "cs_a.tscn|[node name=\"cs_a\" type=\"Node2D\""),
+        ("line", '{"command":"create_scene","project_path":"<PROJ>","path":"res://cs_dry.tscn","root_type":"Node2D","dry_run":true}'),
+        ("line", '{"command":"open_scene","project_path":"<PROJ>","scene_path":"res://cs_dry.tscn"}'),
+        ("line", '{"command":"create_scene","project_path":"/no/replay-mismatch","path":"res://cs_x.tscn","root_type":"Node2D"}'),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+    ]
+
+
+def build_save_scene_as():
+    # Session save_scene_as: copy of the edited scene, tab and dirty state
+    # kept. Runs on main.tscn. Overwrite of a closed file reports replaced
+    # true; overwrite of an open tab is refused. Every refusal group is
+    # bracketed by identical before/after state reads: list_open_scenes plus
+    # a file_contains of the refused target, so a refusal that wrote a file
+    # or moved a tab changes the recorded rows.
+    return [
+        ("line", '{"command":"status"}'),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+        ("file_contains", "main.tscn|[node name=\"Main\""),
+        ("line", '{"command":"save_scene_as","project_path":"<PROJ>","path":"res://main.tscn"}'),
+        ("line", '{"command":"save_scene_as","project_path":"<PROJ>","path":"res://./main.tscn","overwrite":true}'),
+        ("line", '{"command":"save_scene_as","project_path":"<PROJ>","path":"res://.//main.tscn","overwrite":true}'),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+        ("file_contains", "main.tscn|[node name=\"Main\""),
+        ("line", '{"command":"save_scene_as","project_path":"<PROJ>","path":"res://sa_new.tscn"}'),
+        ("file_contains", "sa_new.tscn|[node name=\"Main\""),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+        ("file_contains", "sa_new.tscn|[node name=\"Main\""),
+        ("line", '{"command":"save_scene_as","project_path":"<PROJ>","path":"res://sa_new.tscn"}'),
+        ("line", '{"command":"save_scene_as","project_path":"<PROJ>","path":"res://./sa_new.tscn"}'),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+        ("file_contains", "sa_new.tscn|[node name=\"Main\""),
+        ("line", '{"command":"save_scene_as","project_path":"<PROJ>","path":"res://sa_new.tscn","overwrite":true}'),
+        ("file_contains", "sa_new.tscn|[node name=\"Main\""),
+        ("line", '{"command":"open_scene","project_path":"<PROJ>","scene_path":"res://sub.tscn"}'),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+        ("file_contains", "sub.tscn|[node name=\"SubRoot\""),
+        ("line", '{"command":"save_scene_as","project_path":"<PROJ>","path":"res://sub.tscn","overwrite":true}'),
+        ("line", '{"command":"save_scene_as","project_path":"<PROJ>","path":"res://./sub.tscn","overwrite":true}'),
+        ("line", '{"command":"save_scene_as","project_path":"<PROJ>","path":"res://.//sub.tscn","overwrite":true}'),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+        ("file_contains", "sub.tscn|[node name=\"SubRoot\""),
+        ("line", '{"command":"save_scene_as","project_path":"<PROJ>","path":"res://sa_dry.tscn","dry_run":true}'),
+        ("line", '{"command":"open_scene","project_path":"<PROJ>","scene_path":"res://sa_dry.tscn"}'),
+        ("line", '{"command":"save_scene_as","project_path":"/no/replay-mismatch","path":"res://sa_x.tscn"}'),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+    ]
+
+
+def build_list_open_scenes():
+    # Session list_open_scenes: read-only tab order and dirty state. The two
+    # refusals at the end change nothing, bracketed by identical
+    # list_open_scenes reads so a refusal that moved a tab changes the rows.
+    return [
+        ("line", '{"command":"status"}'),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+        ("line", '{"command":"open_scene","project_path":"<PROJ>","scene_path":"res://main.tscn"}'),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+        ("line", '{"command":"open_scene","project_path":"<PROJ>","scene_path":"res://sub.tscn"}'),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+        ("line", '{"command":"create_node","parent_path":".","class_name":"Node2D","name":"Kid","project_path":"<PROJ>"}'),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+        ("line", '{"command":"list_open_scenes","project_path":"/no/replay-mismatch"}'),
+        ("line", '{"command":"list_open_scenes"}'),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+    ]
+
+
+def build_save_open_scene():
+    # Session save_open_scene: WS save of a named open scene. Runs on
+    # main.tscn, dirties it, saves it by path, then checks the clean reply.
+    # Refusals are bracketed by identical before/after state reads:
+    # list_open_scenes plus a file_contains of main.tscn, so a refusal that
+    # wrote a file or moved a tab changes the recorded rows. The untitled
+    # edited refusal cannot be built here: add_root_node only works with no
+    # scene open and open_scene_from_path("") cannot re-edit the untitled
+    # tab, so it is covered by a probe in the repair evidence instead.
+    return [
+        ("line", '{"command":"status"}'),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+        ("file_contains", "main.tscn|[node name=\"Main\""),
+        ("line", '{"command":"save_open_scene","project_path":"<PROJ>","path":"res://nope.tscn"}'),
+        ("line", '{"command":"save_open_scene","project_path":"<PROJ>","path":"res://./nope.tscn"}'),
+        ("line", '{"command":"save_open_scene","project_path":"<PROJ>","path":"res://a//nope.tscn"}'),
+        ("line", '{"command":"save_open_scene","project_path":"<PROJ>","path":""}'),
+        ("line", '{"command":"save_open_scene","project_path":"<PROJ>","path":"/tmp/x.tscn"}'),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+        ("file_contains", "main.tscn|[node name=\"Main\""),
+        ("line", '{"command":"create_node","parent_path":".","class_name":"Node2D","name":"Kid","project_path":"<PROJ>"}'),
+        ("line", '{"command":"save_open_scene","project_path":"<PROJ>","path":"res://main.tscn"}'),
+        ("file_contains", "main.tscn|Kid"),
+        ("line", '{"command":"save_open_scene","project_path":"<PROJ>","path":"res://main.tscn"}'),
+        ("line", '{"command":"save_open_scene","project_path":"/no/replay-mismatch","path":"res://main.tscn"}'),
+        ("line", '{"command":"list_open_scenes","project_path":"<PROJ>"}'),
+    ]
 # The order rows are stored in, which is not the order the sessions run in.
 # Each session writes its rows at its own place here, so a session that
 # --sessions left out leaves a gap instead of shifting the rows after it.
@@ -4532,7 +4695,9 @@ SESSION_ORDER = ("A", "B", "C", "E", "D", "F", "G", "H", "I", "J", "K", "L",
                  "AH", "AI", "AJ", "AK", "EVAL", "RS", "RU", "RD", "RI",
                  "AS", "ASR", "PL0", "PS", "PL", "GL", "CG",
                   "INPUT_STAGE", "INPUT_READ",
-                  "INPUT_APPLY", "INPUT_DISCARD")
+                  "INPUT_APPLY", "INPUT_DISCARD",
+                  "create_scene", "save_scene_as",
+                  "list_open_scenes", "save_open_scene")
 
 # The request list of each session, in storage order. A session records exactly
 # one row per request, so the length of these lists is the stored row layout.
@@ -4558,6 +4723,10 @@ SESSION_REQUESTS = (
     ("INPUT_READ", build_input_read()),
     ("INPUT_APPLY", build_input_apply()),
     ("INPUT_DISCARD", build_input_discard()),
+    ("create_scene", build_create_scene()),
+    ("save_scene_as", build_save_scene_as()),
+    ("list_open_scenes", build_list_open_scenes()),
+    ("save_open_scene", build_save_open_scene()),
 )
 
 
@@ -4877,7 +5046,9 @@ def main():
                     "attach_script.gd", "play.gd", "stop.gd",
                     "game_log.gd", "capture_game.gd",
                     "input_events.gd", "input_stage.gd", "input_read.gd",
-                    "input_apply.gd", "input_discard.gd"):
+                    "input_apply.gd", "input_discard.gd",
+                    "scene_write.gd", "create_scene.gd", "save_scene_as.gd",
+                    "list_open_scenes.gd", "save_open_scene.gd"):
             shutil.copy2(os.path.join(a.plugin_dir, "commands", rel),
                          os.path.join(dst, "commands", rel))
         with open(target, "w") as f:
@@ -4978,6 +5149,10 @@ def main():
         play("INPUT_DISCARD", None, build_input_discard(), None)
         with open(os.path.join(proj, "project.godot"), "w") as f:
             f.write(PROJECT_GODOT)
+        play("create_scene", None, build_create_scene(), None)
+        play("save_scene_as", "res://main.tscn", build_save_scene_as(), "res://main.tscn")
+        play("list_open_scenes", None, build_list_open_scenes(), None)
+        play("save_open_scene", "res://main.tscn", build_save_open_scene(), "res://main.tscn")
         rows = [row for name in SESSION_ORDER for row in blocks[name]]
         with open(a.out, "w") as f:
             for req, rep in rows:

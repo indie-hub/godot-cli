@@ -742,6 +742,145 @@ with `data.unsaved` the scenes that still have unsaved changes after the call
 the editor refuses the open, the reply is an `error` naming the requested
 scene, and a save that already happened stays saved.
 
+`create_scene` creates a new `.tscn` file with one root node and never opens a
+tab. It is class W1: the target must not exist and there is no `--overwrite`
+flag. The check runs when the request is validated; the command does not promise the file is still absent when the bytes are written. `project_path` is checked first. `path` is the `res://` `.tscn` target,
+`--root-type` is a built-in instantiable `Node` subclass, `--root-name` names
+the root (default is the file stem), and `--dry-run` validates without writing. A dry run runs the checks listed below but does not try the write; an unwritable folder passes a dry run and fails the real call.
+The root is built with `ClassDB.instantiate`, packed with `PackedScene.pack`
+and written with `ResourceSaver.save`; both return codes are checked. `list-resources` lists the new file right after the call. The command works with no scene open (`edits_scene` false) and never
+changes the edited scene, dirty state, selection or undo history. On success
+the reply is `{"status":"ok","data":{"written":["res://..."],"replaced":false,"dry_run":false,"undoable":false,"undo_scope":"none: the disk write has no undo in the editor","path":"res://...","root_type":"...","root_name":"...","opened":false}}`;
+with `--dry-run` the reply carries `"written":[]` and `"dry_run":true` and
+writes nothing. A dry run runs the checks listed below but does not try
+the write; an unwritable folder passes a dry run and fails the real call.
+A target is refused when any path component under `res://` is a symlink,
+with `target is a symlink: <path as given>`. On a case-insensitive volume
+a case-only variant of an existing file names the same file and is refused
+with `target already exists: <path as given>`. The refusals reachable
+through the CLI are:
+
+- `create_scene requires string fields: path, root_type, project_path`
+- `create_scene requires a string field: root_name`
+- `create_scene requires a boolean field: dry_run`
+- `project path mismatch: this editor has <editor path> open, not <requested path>`
+- `unknown field: <name>`
+- `unknown class: <name>` (also for a project script class: only built-in classes are accepted)
+- `class is not a Node subclass: <name>`
+- `class cannot be instantiated: <name>`
+- `name must not be empty`
+- `name must not contain any of: . : @ / " %`
+- `path must start with res://: <path>`
+- `path must not contain '..': <path>`
+- `path must not contain control characters: <path>`
+- `path must end with .tscn: <path>`
+- `parent folder does not exist: <path>`
+- `target is a directory: <path>`
+- `target is a symlink: <path>`
+- `target already exists: <path>`
+- `target is not a scene file: <path>`
+- `failed to save the scene: <error text>` (measured: `failed to save the scene: Can't open` for a read-only folder)
+
+Omitted here are `path must be a string`,
+`failed to pack the scene: <error>`, and the exact `class must be a
+built-in Node class, not a project script class: <name>` text (folded
+into `unknown class` above), which the CLI never sends.
+
+`save_scene_as` writes a copy of the edited scene (including unsaved changes)
+to a new path with `PackedScene.pack` of the edited root and
+`ResourceSaver.save`. It is class W1 for a new path and class W2 with
+`--overwrite` for an existing closed file. A read-only file is replaced too. The edited tab keeps its path,
+name, dirty state, selection and undo history; the plugin never calls
+`EditorInterface.save_scene_as`. An untitled edited scene is allowed as the
+source. The command requires an edited scene. Paths compare by normalized
+identity ignoring case: `res://./x.tscn` and `res://a//x.tscn` collapse to
+the stored tab path. On a case-insensitive volume a case-only variant
+of the edited scene or of an open scene names the same file and is
+refused like any other alias (see below), so `res://A.tscn` for the
+edited `res://a.tscn` reports `target already exists: res://A.tscn`
+without `--overwrite` and the own-path text with it; on a case-sensitive
+volume `res://A.tscn` is a different file from `res://a.tscn`:
+`save-scene-as` and `create-scene` create it and leave the open
+`a.tscn` untouched. An alias of the
+edited scene's path is refused with the own-path text with `--overwrite`
+and with `target already exists: <path as given>` without it. An alias of
+another open tab is refused with `target is already open: <path as given>`
+with `--overwrite` and with `target already exists: <path as given>`
+without it. An alias in `save-open-scene` is refused with `scene is not
+open: <path as given>`. A target is refused when any path component under
+`res://` is a symlink. On success the reply is
+`{"status":"ok","data":{"written":["res://..."],"replaced":false,"dry_run":false,"undoable":false,"undo_scope":"none: the disk write has no undo in the editor","path":"res://...","source":"res://...","overwrote_open":false}}`;
+`source` is the edited path or `""` for an untitled source, `replaced` is true
+only for an overwrite, and `--dry-run` returns `"written":[]` with nothing
+written. A dry run runs the checks listed below but does not try
+the write; an unwritable folder passes a dry run and fails the real call.
+The refusals reachable through the CLI are:
+
+- `save_scene_as requires string fields: path, project_path`
+- `save_scene_as requires boolean fields: overwrite, dry_run`
+- `project path mismatch: this editor has <editor path> open, not <requested path>`
+- `unknown field: <name>`
+- `no scene is currently being edited`
+- `path is the edited scene's own path; use save-scene instead`
+- `path must start with res://: <path>`
+- `path must not contain '..': <path>`
+- `path must not contain control characters: <path>`
+- `path must end with .tscn: <path>`
+- `parent folder does not exist: <path>`
+- `target is a directory: <path>`
+- `target is a symlink: <path>`
+- `target already exists: <path>`
+- `target is already open: <path>`
+- `target is not a scene file: <path>`
+- `failed to save the scene: <error text>` (measured: `failed to save the scene: Can't open` for a read-only folder)
+
+Omitted here are `path must be a string` and
+`failed to pack the scene: <error>`, which the CLI never sends.
+
+`list_open_scenes` lists the open scene tabs in tab order with dirty state. It
+is read-only and needs no edited scene. The reply is built from
+`get_open_scene_roots` in tab order and `get_edited_scene_root`; `unsaved`
+comes from `get_unsaved_scenes` by path. It never uses `get_open_scenes` as the
+source, which goes stale after a save-as. An untitled tab has `"path":""` and `"unsaved":true` when it is
+listed as unsaved. On success the reply is
+`{"status":"ok","data":{"scenes":[{"path":"res://...","edited":true,"unsaved":false}],"edited":"res://..."}}`;
+`edited` is the edited path, `""` when the edited scene is untitled, or
+`null` when no scene is edited. The refusals reachable through the CLI are:
+
+- `list_open_scenes requires a string field: project_path`
+- `project path mismatch: this editor has <editor path> open, not <requested path>`
+- `unknown field: <name>`
+
+Nothing is omitted here: no plugin-only raw-request text applies to
+this command.
+
+`save_open_scene` saves the open scene named by a `res://` path to its own
+path, only if it has unsaved changes. It is class WS. If the named scene is
+the edited scene it saves the same way `save-scene` does. Otherwise it
+remembers the edited path, opens the named scene with the same call
+`open-scene` uses, saves with `EditorInterface.save_scene`, then opens the
+remembered scene again. The tab switch is visible: the edited tab changes
+during the call and changes back. The edited tab must have a file path: with an untitled edited scene the call is refused before any tab change. The end state keeps the same tab edited,
+with the edited tab's selection and undo history unchanged by the call; a game that was running when the call started was still running afterwards in the one measured run. The command never calls `save_all_scenes`, never stops a game and
+never opens a dialog. When the named scene is clean the reply carries
+`"saved":false` without touching any tab. On success the reply is
+`{"status":"ok","data":{"path":"res://...","saved":true,"edited":"res://...","undoable":false,"undo_scope":"none: the disk write has no undo in the editor"}}`.
+The refusals reachable through the CLI are:
+
+- `save_open_scene requires string fields: path, project_path`
+- `project path mismatch: this editor has <editor path> open, not <requested path>`
+- `unknown field: <name>`
+- `untitled scenes cannot be saved by path; use save-scene-as instead`
+- `edited scene is untitled; save it with save-scene-as first`
+- `path must start with res://: <path>`
+- `scene is not open: <path>`
+- `scene did not open: <path>`
+- `failed to save the scene: <error text>`
+- `failed to restore the edited scene: <path>`
+
+Nothing is omitted here: no plugin-only raw-request text applies to
+this command.
+
 `play` plays the edited scene, plays a scene named by a `res://` path, or plays
 the project's main scene, in the running editor. `project_path` is required;
 `scene_path` names one scene and is written as the only positional argument;
