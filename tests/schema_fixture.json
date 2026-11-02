@@ -1070,6 +1070,150 @@
      "help": "Absolute path of the target project; canonicalized before sending."
     }
    ]
+  },
+  {
+   "name": "create_scene",
+   "description": "Create a new scene file with an explicit root type without opening it.",
+   "needs_project_path": true,
+   "edits_scene": false,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "path",
+     "flag": null,
+     "positional": 0,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "A res:// .tscn path that must not exist."
+    },
+    {
+     "name": "root_type",
+     "flag": "--root-type",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Built-in Node subclass for the scene root."
+    },
+    {
+     "name": "root_name",
+     "flag": "--root-name",
+     "positional": null,
+     "type": "string",
+     "required": false,
+     "default": null,
+     "help": "Name of the scene root; default is the file stem."
+    },
+    {
+     "name": "dry_run",
+     "flag": "--dry-run",
+     "positional": null,
+     "type": "boolean",
+     "required": false,
+     "default": false,
+     "help": "Validate the whole request and write nothing."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "save_scene_as",
+   "description": "Save a copy of the edited scene to a new path without changing tabs.",
+   "needs_project_path": true,
+   "edits_scene": true,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "path",
+     "flag": null,
+     "positional": 0,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "A res:// .tscn path for the copy."
+    },
+    {
+     "name": "overwrite",
+     "flag": "--overwrite",
+     "positional": null,
+     "type": "boolean",
+     "required": false,
+     "default": false,
+     "help": "Replace an existing closed scene file."
+    },
+    {
+     "name": "dry_run",
+     "flag": "--dry-run",
+     "positional": null,
+     "type": "boolean",
+     "required": false,
+     "default": false,
+     "help": "Validate the whole request and write nothing."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "list_open_scenes",
+   "description": "List the open scene tabs in tab order with dirty state.",
+   "needs_project_path": true,
+   "edits_scene": false,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
+  },
+  {
+   "name": "save_open_scene",
+   "description": "Save a named open scene to its own path without closing tabs.",
+   "needs_project_path": true,
+   "edits_scene": false,
+   "refresh_poll": false,
+   "arguments": [
+    {
+     "name": "path",
+     "flag": null,
+     "positional": 0,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "A res:// path of an open scene to save."
+    },
+    {
+     "name": "project_path",
+     "flag": "--project-path",
+     "positional": null,
+     "type": "string",
+     "required": true,
+     "default": null,
+     "help": "Absolute path of the target project; canonicalized before sending."
+    }
+   ]
   }
  ]
 }
