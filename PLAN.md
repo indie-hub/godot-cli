@@ -1,70 +1,33 @@
-# Godot Pipeline plan: parity with the Unity command line
+# Godot Pipeline plan
 
-Godot Pipeline is a Rust CLI plus a GDScript EditorPlugin for stock Godot. An agent drives a running Godot editor through typed commands instead of a person clicking. The Unity command line (`unity command`, `unity list`) does the same for the Unity Editor. This plan says what the two tools do, what makes sense in Godot, and what is still open. The plan targets the same functionality as the Unity command line, not the same names. Godot Pipeline commands keep kebab-case names.
+Godot Pipeline is a Rust CLI plus a GDScript EditorPlugin for stock Godot. An agent drives a running Godot editor through typed commands instead of a person clicking. The Unity command line (`unity command`, `unity list`) does the same for the Unity Editor. This plan says what the two tools do, what makes sense in Godot, and what is still open. It targets the same functionality as the Unity command line, not the same names.
 
 ## Status
 
-- The command table in `README.md` holds 25 commands. The plugin publishes their names and arguments, and `godot-cli` dispatches them from that interface.
-- Phase 1, read and navigate, is complete. `inspect-node`, `query-nodes`, `open-scene` and `inspect-class` shipped in 0.5.0.
-- Phase 2, Godot scene edits, is complete. `connect-signal`, `set-group`, `set-unique-name` and `instantiate-scene` shipped in 0.6.0.
-- `list-resources`, `inspect-resource`, `console`, `set-parent` and `eval` shipped in 0.7.0.
-- The version in `Cargo.toml` is 0.7.0.
-- The replay baseline in `tools/replay/baseline.jsonl` holds 1222 rows.
-- `cargo test --locked` passes: 30 passed, 0 failed, 0 ignored.
+- Read the command list with `godot-cli commands` (it needs a running editor; the plugin publishes the interface and the CLI reads it on every run).
+- Read the version in `Cargo.toml`.
+- Read the replay baseline in `tools/replay/baseline.jsonl`.
+- Run `cargo test --locked` for the test count.
+- Phase 1, read and navigate, is complete. Phase 2, Godot scene edits, is complete.
+- Later commands (`list-resources`, `inspect-resource`, `console`, `set-parent` and `eval`) shipped after that; see `CHANGELOG.md`.
 - `set-property` accepts 17 scalar types and ten `Packed*Array` types, plus a typed `Array[T]` of those types. It rejects untyped arrays, object and resource references, `Dictionary`, `Callable`, `Signal` and `RID`.
 - The plugin assembles each request across editor ticks. It caps a request at 8 MiB (`MAX_REQUEST_BYTES` in `addon/godot_pipeline/editor_plugin.gd`) and drops an idle connection after 5 seconds (`REQUEST_IDLE_TIMEOUT_MSEC`).
 - The add-on is a prototype and is not ready for distribution.
 
-## Milestone A acceptance (assemble)
+## Acceptance runs
 
-`tools/acceptance/milestone_a.py` drives the merged commands end to end through the real `godot-cli` binary against one fixture scene and prints one PASS or FAIL line per step. It passed all nine steps on 2026-10-23 on two fresh workdirs and ports, in 6.4 s and 7.1 s:
-
-```
-python3 tools/acceptance/milestone_a.py \
-  --godot /Users/bruno/Downloads/Godot_mono.app/Contents/MacOS/Godot \
-  --cli <path to godot-cli> --port <port> --workdir <a directory that does not exist> \
-  --out <transcript.json>
-```
-
-What the run measures. S1 records a snapshot of the stored scene data this fixture uses: for the scene root and every descendant, its path, class, script path or empty string, groups, every property carrying `PROPERTY_USAGE_STORAGE` as text, and every persistent signal connection the node owns as signal name, target path, method name and flags, together with the undo history size and the editor's unsaved-scene list. In the recorded run that snapshot held three nodes (the root and its two children) with 29, 33 and 40 stored properties and no connections, a history of 0 and an empty unsaved list. S2 assigns a texture and S3 an embedded `RectangleShape2D` sized 32 by 48; the size is compared as two numbers read back through `inspect-node` and the saved `.tscn` is matched on the whole `size = Vector2(32, 48)` line, so a 320 by 480 shape fails, and each edit adds exactly one history step. S4 attaches a player script and S5 sets two exported properties, taking the history from 3 to 5 and comparing `speed` and `health` as the numbers 250.0 and 5. S6 presses Undo five times and Redo five times, comparing the scene after every single press with the neighbour snapshot recorded while the edits were made, so six states are held and each of the ten presses is checked rather than only the two ends. S7 sends nine rejected requests, each sent between two snapshots so the bracket covers the request, and each asserts substrings that the message must contain: the property or node or script name and the reason. One of the ten requests is a seeding accept that gives `Sprite` a script so the no-replace refusal can be reached with a compatible second script. S8 saves once and asserts the unsaved list empties and the saved `.tscn` holds the texture and script ext_resources, the `RectangleShape2D` sub_resource, and the exact `size`, `speed` and `health` lines. S9 stops the editor, starts a fresh one and asserts the texture, the shape size, the script and both exported numbers are present with history 0 and an empty unsaved list.
-
-The snapshot does not establish that the scene is unchanged in every respect; these are the limits verified so far, not an exhaustive list. A node's owner is not recorded, so a rejected request could clear an owner and the S7 bracket would still read equal, and packing the fixture then returns two nodes instead of three. The arguments bound to a persistent callable connection are not recorded, so rebinding one leaves the bracket equal. A sub-resource's own identity beyond its rendered `var_to_str` text is not compared, so a resource swap that renders the same text would pass. S8 and S9 can still catch some of the consequences, such as a node missing from the saved scene, but the S7 bracket does not establish equality for any of these three.
-
-The undo and redo presses go through the editor's Scene menu in the title bar, whose items carry ids 13 for Undo and 14 for Redo. The Scene dock's line-editing menu carries ids 5 and 6. Those four ids were measured on Godot 4.7.2 headless, and they were the only Undo and Redo items two independent menu inventories found, so the script selects the menu by item id and item text and never by position or by taking the first match.
-
-The two transcripts were identical after normalizing the workdir path, the elapsed time, the port, and the `uid://` and `unique_id=` values Godot generates per run. Nine deliberate defects were used as negative controls, and each made the script exit non-zero at the step it breaks: a rejected `set-property` that also moves the scene root, adds a group or adds a persistent signal connection, a deleted node-already-has-a-script guard, an unrelated refusal message, a read helper that cannot succeed, an unregistered `attach-script`, a wrong texture path, and a plugin that stores a 320 by 480 shape instead of the requested 32 by 48. Two earlier mistakes in this script's own expectations were found this way and corrected: a `CapsuleShape2D` is correctly accepted for a `Shape2D` property because a subclass passes, and `attach-script` without `--replace` to an unscripted node is a plain attach.
-
-What the run does not measure. It does not play the scene or capture a running game, which belong to Milestone B; it does not detect a runtime `_init` failure or an unsaved editor buffer, because the commands do not; and the replay harness still brackets rejections without recording the unsaved flag, which is why this script reads the unsaved-scene list through `eval`.
-
-## Milestone B acceptance (run and check)
-
-`tools/acceptance/milestone_b.py` drives the merged play, game-log, capture-game and stop commands end to end through the real `godot-cli` binary against one fixture scene and prints seven PASS lines, one per step, when every step passes, and exits non-zero on the first failed assertion. It passed all seven steps on 2026-10-27 on two fresh workdirs and ports:
-
-```
-python3 tools/acceptance/milestone_b.py \
-  --godot /Users/bruno/Downloads/Godot_mono.app/Contents/MacOS/Godot \
-  --cli <path to godot-cli> --port <port> --workdir <a directory that does not exist> \
-  --out <transcript.json>
-```
-
-What the run measures. S1 records the idle baseline through `status`: not playing with the fixture scene open. S2 plays the scene and polls `status` and `game-log` until the game reports `stopped_in_debugger`: it asserts the heartbeat print is present, exactly one error entry carries the deliberate defect text with the script path, line and function in the entry fields and in both the parsed script location and the engine location, and the raw backtrace names the same line. Before the measured play the run makes one throwaway play and stop, because the first play persists the capture autoload line into `project.godot` and a game started before that save forwards no log entries. S3 fixes the script by overwriting its file with ordinary file tools and asserts the autoload line is on disk. S4 plays again and polls `game-log` for a new run identity reporting `running` with no error entry and with both the heartbeat and the fixed-behaviour line. S5 captures through `capture-game`, decodes the base64 reply with the standard library, checks the PNG signature and that the decoded size matches the reply, and checks the drawn block colour at a pixel inside it and the background colour at a pixel outside it, each scaled down by the reported scale, so a black or empty frame fails. S6 stops and asserts `status` reports not playing, `game-log` reports `no_game` with the last run's entries retained, and no game process for the workdir remains. S7 asserts `capture-game` with no game attached is refused with the documented text.
-
-The checks do not establish correctness beyond what they read; these are the limits found so far, not an exhaustive list. The run asserts named log entries exist, not that every print arrived, so a dropped line outside the asserted set would pass. Two pixels are checked, so a render defect anywhere else in the frame would pass. The error check covers one single-frame backtrace shape; deeper stacks and warnings are not exercised. The stop check finds game processes by the workdir path, so a process that lost its path would pass. Only the file-overwrite fix route is measured; fixing through `attach-script` is not exercised. Capture is measured while the game runs; a capture requested while stopped in the debugger is not exercised.
-
-The two transcripts were identical after normalizing the workdir path, the port, and the elapsed time. Five deliberate defects were used as negative controls, and each made the script exit non-zero at the step it breaks: a defect left unfixed so the new run stops in the debugger, a fixture drawn in the wrong colour so the pixel check fails, a game that never errors so the stop never arrives, a skipped stop so the game still plays, and corrupted PNG bytes so the signature check fails. The corrupted-reply control corrupts the received bytes in memory before the check, so it proves the signature check fails rather than that the CLI delivers corrupt bytes.
-
-What the run does not measure. It does not pause or inspect a running game beyond its log; it captures the game viewport only, never the editor; it exercises runtime errors only, not warnings pushed from game code; and it needs a game window for the capture, so a headless display driver is out of scope.
+The Milestone A (assemble) and Milestone B (run and check) acceptance narratives live in docs/history.md.
 
 ## How this plan was made, and how far to trust it
 
-- Bruno's target is the functionality of the Unity command line. On 2026-10-13 the command list was read from a live Unity 6000.4.4f1 project: 142 commands, each with a name, tags, typed parameters and a JSON Schema. The reads changed nothing on the Unity side.
+- The parity target is the functionality of the Unity command line. On 2026-10-13 the command list was read from a live Unity 6000.4.4f1 project: 142 commands, each with a name, tags, typed parameters and a JSON Schema. The reads changed nothing on the Unity side.
 - Three rooms mapped the list in three chunks of 39, 50 and 53 commands. Each chunk was mapped by one room and then re-derived blind by a room from a different vendor.
 - The rooms agreed on 106 commands. On 14 commands they differed only on how large the gap is: one room wrote `DIRECT`, the other wrote `ADAPT`, and both named the same mechanism. On 22 commands they differed on facts.
 - The 22 contested commands were measured in a real Godot 4.7.2 editor. 10 of them were measured by two rooms each. 12 were measured by one room.
 - `eval` was measured in a real Godot 4.7.2 editor by one room of one vendor. That room answered nine questions about running code and, in a second task, two questions about marking the scene unsaved and detecting a scene change. A second vendor re-ran the `eval` measurement. `eval_file` was measured by one vendor and has not been re-run.
 - Every Godot class, method, signal and property in the map was checked by script against the Godot 4.8-dev engine documentation: 323 entries from the author rooms and 403 entries from the blind rooms, all resolved. The script proves that the API exists. It does not prove that the mapping is right.
 - Evidence levels, with their counts from the table in `docs/unity-parity.md`: 11 rows are measured and replicated, 13 rows are measured by one vendor, and 118 rows are docs and source only. A `docs and source only` row is a reading of the Godot 4.8-dev documentation and the engine source. Nobody measured it in a 4.7.2 editor.
-- Twenty commands are built. They cover 30 of the 142 Unity commands, which are listed under "What exists".
+- The table under "What exists" lists commands that cover 30 of the 142 Unity commands, which are listed under "What exists".
 - A row proposes scope. It is not a promise that a command exists or will work.
 - An earlier version of this plan mapped a different Unity surface: an MCP server with 100 tools on port 3333. That surface is not the target. The earlier plan was wrong. Its table was removed, and it stays in git history.
 
@@ -106,10 +69,10 @@ Decisions of 2026-10-13:
 | --- | --- |
 | What is the parity target? | The functionality of the Unity command line (`unity command`, `unity list`). Not the names and not the arguments. Names were the wrong target in the earlier version. |
 | How are new commands named? | In kebab-case, after the Godot mechanism. A command is not renamed after a Unity command. The Unity names are snake_case, for example `create_gameobject`. |
-| Is an `eval` command wanted? | Yes. Bruno wants to run a snippet and read the result, the way `eval` and `eval_file` do in the Unity command line. The decisions of 2026-10-14 below fix the design. |
+| Is an `eval` command wanted? | Yes. The command runs a snippet and reads the result, the way `eval` and `eval_file` do in the Unity command line. The decisions of 2026-10-14 below fix the design. |
 | Where does the capability map live? | In `docs/unity-parity.md` in this repository, and in Basic Memory under the note `godot-pipeline-unity-cli-capability-map-142-commands`. |
 
-Decisions of 2026-10-14, made by Bruno after the measurements:
+Decisions of 2026-10-14, made after the measurements:
 
 | Question | Decision |
 | --- | --- |
@@ -138,16 +101,16 @@ Decisions of 2026-10-14 and 2026-10-15:
 | --- | --- |
 | What does `set-parent` keep? | Every node of the moved subtree keeps its exact owner. A node the edited scene saved before the move is still saved after it, and Undo restores owners exactly. |
 | Is `keep_global_transform=false` reachable through the CLI? | Yes: `godot-cli call set-parent ... --keep-global-transform=false`. A boolean argument is written `--flag`, `--flag=true` or `--flag=false`. |
-| What does `keep_global_transform` preserve? (implemented behaviour, not a recorded decision of Bruno) | For a `Control` it preserves the global position only. A `Node2D` and a `Node3D` keep the full global transform. Every other node type ignores the flag. |
+| What does `keep_global_transform` preserve? (implemented behaviour, not a recorded decision) | For a `Control` it preserves the global position only. A `Node2D` and a `Node3D` keep the full global transform. Every other node type ignores the flag. |
 | Which edits of a base-inherited node are refused? | `rename-node`, `delete-node` and `set-parent` refuse a structural edit of a node inherited from a base scene. The plugin packs the edited scene and walks every level of `SceneState.get_base_scene_state()`. Property, script, group, signal and new-child edits of an inherited node stay allowed as overrides. |
 | What does `eval` return as its value? | `eval` keeps the tagged `JSON.from_native` encoding as its only encoded value, and carries `display` beside it: the same value written as text with `var_to_str`, so a reader does not decode the tagged form by eye. `display` is null when the run did not complete, and also when the readable text is over the 1 MiB display cap; in the cap case the value and every other field are returned, `completed` stays true, and one added `errors` entry of type `warning` names the display size (a `PackedByteArray` of 225000 bytes encodes to 900035 bytes and displays 1125015 bytes). `completed` is false when the value cannot be encoded intact or is deeper than the limit. `errors` entries carry a type (`warning`, `error`, `script`, `shader`), and a warning leaves `completed` true with the value. |
 | What is the `eval` depth limit? | `eval` has an explicit depth limit of 100 JSON levels, counted exactly: an untyped `Array` costs one level, a typed `Array` two, a `Dictionary` two, a tagged terminal value two, a `Callable`, an `RID` and a `Signal` one, and scalars none. Exactly 100 levels come back and 101 is refused. The real command line reads about 125 levels, so the margin is 25. |
 | Are `Callable`, `RID` and `Object` results usable values? | They are documented as not returned as values. A `Callable` round-trips to an empty invalid `Callable`. An `RID` round-trips to a fresh `RID(0)`. An `Object` gives value null. |
 | What does a scene-switching snippet guarantee? | A snippet that switches scenes is outside the dirty-marking guarantee. |
-| Was `set-parent` accepted? | Bruno accepted `set-parent` after repeated validation rounds. It was not independently validated as a final tree on its own. The combined tree that contains it passed an independent validation that re-ran a regression sample of its behaviour. |
-| Was `eval` accepted? | Bruno accepted `eval` after repeated validation rounds. Its depth count is exact: at most 100 JSON levels come back and 101 is refused. The combined tree that contains it passed an independent validation that re-ran a regression sample of its behaviour. |
-| Should the inherited-node check move into the shared request guard? | No. Bruno kept the old refusal precedence: each structural command calls the shared helper after its own checks. A guard-level default that refuses first was rejected: a 94-request probe found 51 error-to-error precedence changes, and the check then ran for requests that used to fail cheaply. |
-| Should docs/reference.md describe what editing a base scene does to a derived scene? | Yes. Bruno asked for it. docs/reference.md describes that renaming or deleting a node in a base scene silently drops the override in a derived scene and detaches its local child; the plugin does not refuse the edit in the base scene. |
+| Was `set-parent` accepted? | `set-parent` was accepted after repeated validation rounds. It was not independently validated as a final tree on its own. The combined tree that contains it passed an independent validation that re-ran a regression sample of its behaviour. |
+| Was `eval` accepted? | `eval` was accepted after repeated validation rounds. Its depth count is exact: at most 100 JSON levels come back and 101 is refused. The combined tree that contains it passed an independent validation that re-ran a regression sample of its behaviour. |
+| Should the inherited-node check move into the shared request guard? | No. The old refusal precedence stays: each structural command calls the shared helper after its own checks. A guard-level default that refuses first was rejected: a 94-request probe found 51 error-to-error precedence changes, and the check then ran for requests that used to fail cheaply. |
+| Should docs/reference.md describe what editing a base scene does to a derived scene? | Yes. docs/reference.md describes that renaming or deleting a node in a base scene silently drops the override in a derived scene and detaches its local child; the plugin does not refuse the edit in the base scene. |
 
 Queued follow-up tasks:
 
@@ -184,13 +147,13 @@ Queued follow-up tasks:
 
 **The code has the reach of the editor process.** In the measured editor the compiled code wrote a file outside the project, read a file, and started a program. The `Expression` class is not a read-only boundary. It ignores text after a valid expression, and `const_calls_only` did not stop a script mutation.
 
-**C# has no working route yet.** Assigning `source_code` on a `CSharpScript` and reloading it did not compile or run C# in the tested 4.7.2 mono editor. External compilers were not tested. Bruno decided that GDScript is the first language and that C# follows later.
+**C# has no working route yet.** Assigning `source_code` on a `CSharpScript` and reloading it did not compile or run C# in the tested 4.7.2 mono editor. External compilers were not tested. GDScript is the first language and C# follows later.
 
 **The code is not confined.** Nobody is refused: there is no caller guard, as in the Unity command. There is no dry run either.
 
 **The two exceptions to the rules.** Rule 3 requires one Undo/Redo action per scene edit. Rule 6 requires that the main thread never blocks. `eval` is an exception to both. Direct scene edits from the submitted code create no undo entry and do not mark the scene unsaved. One `EditorUndoRedoManager` action does. The code can hold the main thread for as long as it runs.
 
-**What `scene_changed` can see.** The plugin fingerprints the live scene tree before and after the call. The fingerprint uses the path, the class, the owner, the script, the groups, the connections and the stored properties. It found all ten tested edits: add with an owner, add without an owner, remove, rename, a property change, a reorder, a property change inside an instanced sub-scene, a signal connection, a group add, and a script attach. Repeated captures of an unchanged scene gave identical results. On a scene of 203 nodes the fingerprint took a mean of 20.5732 ms over five runs. A second vendor re-ran the fingerprint on a 203-node fixture and measured 20.9 to 25.0 ms.
+**What `scene_changed` can see.** The plugin fingerprints the live scene tree before and after the call. The fingerprint uses path, class, owner, script, groups, connections and stored properties. It found all ten tested edits: add with an owner, add without an owner, remove, rename, a property change, a reorder, a property change inside an instanced sub-scene, a signal connection, a group add, and a script attach. Repeated captures of an unchanged scene gave identical results. On a scene of 203 nodes the fingerprint took a mean of 20.5732 ms over five runs. A second vendor re-ran the fingerprint on a 203-node fixture and measured 20.9 to 25.0 ms.
 
 **What `scene_changed` cannot see.** The fingerprint misses an edit that the code undoes before the call returns, state that is not stored, other open scenes, and a deep change inside a referenced resource. A false value does not prove that the code had no side effects. Marking the scene unsaved does not make ownerless nodes, or non-persistent signal connections and groups, saveable.
 
@@ -202,7 +165,7 @@ Queued follow-up tasks:
 
 ## What exists
 
-20 commands are built. The table names each one and the Unity commands it covers. The Unity command names are the `unity_command` values in [the parity map](docs/unity-parity.md).
+The table names 20 of the built commands and the Unity commands each covers. The Unity command names are the `unity_command` values in [the parity map](docs/unity-parity.md).
 
 | Godot Pipeline command | Unity commands it covers |
 | --- | --- |
@@ -344,10 +307,10 @@ That is 21 Unity commands. The other 97 rows are docs and source only, and neith
 
 - A second vendor re-ran the `eval` measurement. `eval` is now measured and replicated. `eval_file` still has a measurement from one vendor.
 
-## Open questions for Bruno
+## Open questions
 
 - The order of work. Nothing in this plan fixes it.
-- Which file paths may `eval_file` read? Nothing is decided. The measured code could read and write outside the project, and Bruno decided that no caller is refused.
+- Which file paths may `eval_file` read? Nothing is decided. The measured code could read and write outside the project, and no caller is refused.
 - Should the exceptions to rule 3 and rule 6 be written into the rules section itself, instead of being stated in the `eval` section?
 - How would a C# `eval` be compiled? No working route was found in the tested editor, and external compilers were not tested.
 - Governance gates: the write classes decide by command on the command line. Whether a later interface repeats them is open; nothing else is built.

@@ -1,13 +1,144 @@
 # Godot Pipeline reference
 
-This file is the detailed reference for the wire protocol and every command. README.md has the overview and the quick start.
+This file is the detailed reference for the wire protocol and every command. README.md has the overview and a short install.
+
+## Start here
+
+Start with the command table below to find a command. Read its row, then read its section further down. Names in the first column are CLI names. The wire name column holds the name the plugin answers to. Install details holds the install, port and first-run text. Write behaviour holds the write semantics.
+
+## Command table
+
+| Command | Wire name | What it does | Area |
+| --- | --- | --- | --- |
+| `status` | `status` | Report the editor version, whether a scene is playing, and the open scene. | read |
+| `scene-tree` | `scene_tree` | Show the node tree of the open scene. | read |
+| `inspect-node` | `inspect_node` | Show a node's class, child count, and property values. | read |
+| `query-nodes` | `query_nodes` | Find nodes in the open scene by class, group, or name. | read |
+| `inspect-class` | `inspect_class` | Show an engine class's properties, methods, and signals. | read |
+| `list-resources` | `list_resources` | List the resource files the editor file system holds. | read |
+| `inspect-resource` | `inspect_resource` | Show one resource file's class, typed properties, and embedded sub-resources. | read |
+| `open-scene` | `open_scene` | Open a scene in the editor; with --save, save the current scene first. | read |
+| `console` | `console` | Show the editor log messages captured since the plugin loaded. | read |
+| `rename-node` | `rename_node` | Rename a node. | edit |
+| `create-node` | `create_node` | Add a new node under another node. | edit |
+| `set-property` | `set_property` | Set one property on a node. | edit |
+| `delete-node` | `delete_node` | Remove a node and its subtree. | edit |
+| `connect-signal` | `connect_signal` | Connect a signal on one node to a method on another node. | edit |
+| `set-group` | `set_group` | Add or remove a persistent group on a node. | edit |
+| `set-unique-name` | `set_unique_name` | Set or clear a node's % unique name. | edit |
+| `instantiate-scene` | `instantiate_scene` | Add an instance of a scene under a node. | edit |
+| `set-parent` | `set_parent` | Move a node under a new parent as one Undo/Redo step. | edit |
+| `attach-script` | `attach_script` | Attach, replace or detach a node's GDScript. | edit |
+| `save-scene` | `save_scene` | Save the open scene to its existing file. | edit |
+| `play` | `play` | Play the edited scene, a named scene or the main scene. | run |
+| `stop` | `stop` | Stop the running game; a no-op when nothing plays. | run |
+| `game-log` | `game_log` | Show the running game's log entries forwarded by the game helper. | run |
+| `capture-game` | `capture_game` | Capture the running game's viewport as a PNG in the reply. | run |
+| `game-key` | `game_key` | Press, hold and release a physical key in the running game through the game helper. | run |
+| `game-click` | `game_click` | Click the left mouse button at viewport coordinates in the running game through the game helper. | run |
+| `eval` | `eval` | Run a GDScript snippet in the live editor and return its value. | edit |
+| `input-stage` | `input_stage` | Stage one input action's deadzone and events without writing any file. | input |
+| `input-read` | `input_read` | Show staged and applied input actions without writing any file. | input |
+| `input-apply` | `input_apply` | Write the staged input actions to project.godot. | input |
+| `input-discard` | `input_discard` | Discard staged input actions without writing. | input |
+| `create-scene` | `create_scene` | Create a new scene file with an explicit root type without opening it. | scene |
+| `save-scene-as` | `save_scene_as` | Save a copy of the edited scene to a new path without changing tabs. | scene |
+| `list-open-scenes` | `list_open_scenes` | List the open scene tabs in tab order with dirty state. | scene |
+| `save-open-scene` | `save_open_scene` | Save a named open scene to its own path without closing tabs. | scene |
+
+## Install details
+
+Build the command-line tool from the repository:
+
+    cargo build
+
+Install the plugin into your project with one command. This needs no editor:
+
+    target/debug/godot-cli install /path/to/project
+
+`install` copies the plugin folder into `addons/godot_pipeline` and adds `res://addons/godot_pipeline/plugin.cfg` to the `[editor_plugins]` `enabled` list in `project.godot`, creating that section when it is absent and preserving the rest of the file. It copies no `.uid` files. Validation of the inputs runs first and a refused install leaves the project untouched, but a write failure partway (a read-only subfolder, a read-only project folder) can leave part of the addon copied and the plugin not enabled, and a rerun completes it. A symlinked `project.godot` is replaced by a regular file. Run it again on an installed project: it changes nothing and says so. `--overwrite` replaces only the files the source addon contains: it overwrites them in place, keeps every other file in `addons/godot_pipeline` (including `.uid` files and files you added) and deletes nothing. The reply lists the files it `created` and the files it `replaced`. `--addon-source <dir>` installs a different copy of the plugin. It refuses a folder that has no `project.godot`, a `project.godot` it cannot read, cannot write, or that is not UTF-8, and an `[editor_plugins]` `enabled` value it cannot edit in place; the error names the cause.
+
+Then open the project in the editor and open the scene you want to work on. The plugin is already enabled; Project Settings > Plugins shows it. In the measured run, running `install` while an editor was open on the project still left the entry in `project.godot` after the editor exited.
+
+When the editor starts with the plugin enabled, the plugin registers the `GodotPipelineCapture` game autoload (the in-game log and capture helper, `res://addons/godot_pipeline/scripts/helper.gd`). The `[autoload]` entry reaches `project.godot` with the next project-settings save; starting the game saves. A second start changes nothing. Disabling the plugin removes the entry again. While the plugin is toggled off, the command line has no server until the plugin is enabled again. Details and the exact lines are below ("Game helper").
+
+The plugin listens on port 47821 unless `GODOT_PIPELINE_PORT` is set when the editor starts:
+
+    GODOT_PIPELINE_PORT=47900 godot --headless --path /path/to/project --editor
+
+The value must be an integer from 1024 to 65535. Any other value makes the plugin print an error and not listen at all; it never falls back to 47821, because another editor may already hold that port. Pass the same number to the command-line tool with `--port`, for example `godot-cli --port 47900 call status`. Each editor needs its own port; two editors with different values run side by side.
+
+This example was run against a headless Godot 4.7.2 editor with `res://world.tscn` open. The scene has a root `Node2D` named `World` with one child, `Background`.
+
+Start the editor with the plugin installed and the scene open:
+
+    godot --headless --path /path/to/project --editor res://world.tscn
+
+`godot` stands for your Godot 4.7.2 executable; on macOS it is inside the application, for example `Godot.app/Contents/MacOS/Godot`. `--headless` runs the editor without a window. These examples use the default port; if your plugin uses another port, pass the same `--port N` to every command.
+
+Read the editor status and the scene tree:
+
+    $ cargo run -- call status
+    {
+      "editor": "Godot Editor",
+      "playing": false,
+      "scene_path": "res://world.tscn",
+      "version": "4.7.2-stable (official)"
+    }
+
+    $ cargo run -- call scene-tree
+    {
+      "children": [
+        {
+          "children": [],
+          "name": "Background",
+          "type": "Node2D"
+        }
+      ],
+      "name": "World",
+      "type": "Node2D"
+    }
+
+Add a `Node2D` named `Player` under the root, move it, and save the scene:
+
+    $ cargo run -- call create-node . Node2D Player --project-path /path/to/project
+    {
+      "class_name": "Node2D",
+      "name": "Player",
+      "parent_path": ".",
+      "requested_name": "Player"
+    }
+
+    $ cargo run -- call set-property Player position '[120, 80]' --project-path /path/to/project
+    {
+      "node_path": "Player",
+      "old_value": "Vector2(0, 0)",
+      "property": "position",
+      "type": "Vector2",
+      "value": "Vector2(120, 80)"
+    }
+
+    $ cargo run -- call save-scene --project-path /path/to/project
+    {
+      "path": "res://world.tscn"
+    }
+
+The new node is in the scene and in the file now. You can undo the edits in the editor.
+
+## Write behaviour
+
+Scene edits go through the editor's undo and redo stack, so you can undo them in the editor. Saving (`save-scene`) and opening a scene (`open-scene`) are not undo steps.
+
+It writes a scene file when you run `save-scene`, when `play` saves an unsaved scene before it launches, and when the editor rewrites the open scene's file as a play starts (Godot writes its own form of that file even when nothing was unsaved). `play`'s `saved` list names only the scenes the command itself saved. It also writes one line the plugin manages: on the first start with the plugin enabled it registers the `GodotPipelineCapture` game autoload, and the `[autoload]` entry reaches `project.godot` with the next project-settings save. Disabling the plugin removes it again. See below for `play` and the "Game helper" section.
+
+Every edit command except `save-scene` goes through the editor's undo and redo stack and saves nothing. Run `save-scene` to write the scene to disk; `play` saves an unsaved edited scene before it launches the game. `open-scene` changes which scene is open and writes no file unless you pass `--save`.
 
 ## Layout
 
 - `addon/godot_pipeline/` - the GDScript `EditorPlugin` source of truth:
   `editor_plugin.gd` holds the socket server, request framing, reply writing,
   and dispatch into one script per command under `commands/`;
-  `commands/command_support.gd` holds the reply constructors, the shared
+  `addon/godot_pipeline/commands/command_support.gd` holds the reply constructors, the shared
   request guard, and the shared constants, and `value_codec.gd` holds the
   JSON/Variant value conversions. Copy this folder into a Godot project's
   `addons/` directory and enable it under Project Settings > Plugins to use
@@ -170,10 +301,10 @@ sub-scene, the roots of nested instances, and nodes with no owner. Instance
 roots owned by the edited scene, local nodes under an editable instance, and
 plain nodes rename and persist. The unique-name check runs first: an
 inherited unique node renamed onto a claimed name gets the unique-name
-collision message. A check after the ownership check rejects a rename of a node
+collision message. A check after that ownership check rejects a rename of a node
 inherited from the edited scene's base scene, with or without a local property,
 script, group or signal override: the node's owner is the edited scene root, so
-the ownership check lets it through, and the engine would write a local copy
+that ownership check lets it through, and the engine would write a local copy
 beside the inherited node, so a save and a fresh reload would show the subtree
 twice. The inherited node, an inherited descendant, and an instance root that
 comes from the base scene are all rejected before the undo action with
@@ -699,11 +830,11 @@ before the undo action is created, so a rejected request leaves the scene, the
 dirty flag, the undo history, and the file untouched.
 
 The move changes only the position. The engine's own re-parent call keeps every
-node of the moved subtree at exactly the owner it already had: a node the
+node of the moved subtree at exactly its previous owner: a node the
 edited scene saved before the move is still saved after it, a node it did not
-save stays unsaved, and Undo restores the owners exactly. Groups, signal
+save stays unsaved, and Undo restores all owners exactly. Groups, signal
 connections and unique names are untouched, and a `%` unique name keeps
-resolving in the same scope because the owner does not change. Exported
+resolving in the same scope because node ownership does not change. Exported
 `NodePath` values stored on other nodes are not rewritten: a node that holds a
 `NodePath` to the moved node still names its old path, and the caller updates
 it with `set-property`. The success reply is
