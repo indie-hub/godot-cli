@@ -4,6 +4,8 @@ Godot Pipeline is a command-line tool plus a small plugin for the Godot editor. 
 
 The agent sends commands over a local socket. Every edit goes through the editor's own undo and redo history, so the agent works the way a person does in the editor, instead of editing scene files by hand.
 
+![Timelapse of an agent building a game in the Godot editor through Godot Pipeline](docs/timelapse.gif)
+
 ## What it does
 
 - It talks only to a plugin that you install in your own project.
