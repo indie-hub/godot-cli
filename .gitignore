@@ -3,3 +3,6 @@
 
 # every hidden folder, including .code4me (agent bookkeeping) and .git tooling folders
 .*/
+
+# CI workflows are the one hidden folder that is committed
+!.github/
