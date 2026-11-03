@@ -154,6 +154,11 @@ fn run(args: &[String]) -> Result<(), String> {
                 subcommand = Some(other);
             }
             _ if subcommand.is_some() => rest.push(argument.clone()),
+            other if !other.starts_with('-') => {
+                return Err(format!(
+                    "unknown subcommand: {other} (expected 'call', 'commands' or 'install'); to run a plugin command use `godot-cli call {other}`"
+                ));
+            }
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -2960,5 +2965,18 @@ mod tests {
         assert!(error.contains("outside the project"), "{error}");
         assert!(!outside.join("godot_pipeline").exists());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_bare_command_name_hints_at_call() {
+        for name in ["status", "scene-tree", "foo"] {
+            let argv = vec!["godot-cli".to_string(), name.to_string()];
+            let error = run(&argv).expect_err("a bare command name is refused");
+            assert!(error.contains(&format!("godot-cli call {name}")), "{error}");
+            assert!(error.contains("unknown subcommand"), "{error}");
+        }
+        let argv = vec!["godot-cli".to_string(), "-x".to_string()];
+        let error = run(&argv).expect_err("a dash word is refused");
+        assert_eq!(error, "unknown argument: -x");
     }
 }

@@ -5022,7 +5022,7 @@ def main():
                     "instead of all of them")
     a = ap.parse_args()
     if a.port == 47821:
-        raise SystemExit("port 47821 is Bruno's live editor; refusing")
+        raise SystemExit("port 47821 is the default editor port; refusing")
     gd = os.path.join(a.plugin_dir, "editor_plugin.gd")
     if not os.path.isfile(gd):
         raise SystemExit("no editor_plugin.gd in --plugin-dir")
