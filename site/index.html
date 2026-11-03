@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Connect your terminal to the running Godot editor. Inspect scenes, author content, run your game and check the result with Godot Pipeline.">
+<meta name="theme-color" content="#171e25"><title>Godot Pipeline — From terminal to scene.</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="wrap nav"><a class="brand" href="#"><span class="logo" aria-hidden="true">g↗</span> Godot Pipeline</a><nav aria-label="Main navigation"><a href="#workflow">Workflow</a><a href="#start">Get started</a><a href="https://github.com/indie-hub/godot-cli">GitHub ↗</a></nav></header>
+<main id="main">
+<section class="hero wrap">
+  <p class="eyebrow"><span class="dot"></span> OPEN SOURCE / EXPERIMENTAL</p>
+  <h1>From terminal<br>to <em>scene.</em></h1>
+  <div class="intro"><p>Your scripts and AI agents.<br>Your running Godot editor.<br>One command line between them.</p><div><a class="button" href="#start">Build something ↗</a><a class="text-link" href="https://github.com/indie-hub/godot-cli/blob/main/docs/reference.md">Explore the commands →</a></div></div>
+  <div class="hero-foot"><span>A Rust CLI + a small GDScript plugin.</span><span>Stock Godot. Local connection. Real editor.</span></div>
+</section>
+<section class="demo"><div class="wrap">
+  <div class="section-head"><div><p class="eyebrow">01 / IN THE EDITOR</p><h2>A small game.<br>A real workflow.</h2></div><p>Inspect. Author. Run. Observe.<br>See an agent work through the editor.</p></div>
+  <div class="demo-frame"><div class="window-bar"><span aria-hidden="true">● ● ●</span><span>GODOT PIPELINE / PROTOTYPE TRIAL</span><button id="demo-toggle" type="button" aria-pressed="false">Play timelapse ↗</button></div><img id="demo-image" src="prototype.png" alt="A collect-and-dodge prototype with a player, enemy and five collectibles." width="1152" height="648"><noscript><p><a href="timelapse.gif">Watch the timelapse</a></p></noscript></div>
+  <p class="caption">A collect-and-dodge prototype authored through the CLI. Timelapse is accelerated. Scripts and assets use ordinary file tools; editor operations go through the plugin.</p>
+</div></section>
+<section id="workflow" class="workflow wrap">
+  <p class="eyebrow">02 / THE LOOP</p><h2>Work with the editor.<br>Keep it in the loop.</h2>
+  <div class="steps">
+    <article><span class="number">01</span><h3>See what’s there.</h3><p>Read the open scene tree. Inspect nodes, classes and resources. Discover the interface published by your editor.</p><code>scene-tree · inspect-node</code></article>
+    <article><span class="number">02</span><h3>Make the change.</h3><p>Create nodes, assign textures and collision shapes, attach scripts and connect signals. Scene edits use Godot’s undo history.</p><code>create-node · set-property</code></article>
+    <article><span class="number">03</span><h3>Check the result.</h3><p>Run the scene, read game logs, capture its viewport and send keyboard or mouse input to the running game.</p><code>play · game-log · capture-game</code></article>
+  </div>
+  <div class="connection"><span>YOUR TERMINAL</span><span aria-hidden="true">⟷</span><span>LOCAL PLUGIN</span><span aria-hidden="true">⟷</span><span>GODOT EDITOR</span><p>Loopback connection. No engine fork.</p></div>
+</section>
+<section id="start" class="start"><div class="wrap start-grid">
+  <div><p class="eyebrow">03 / YOUR FIRST COMMAND</p><h2>Start local.<br>Stay curious.</h2><p>Build the CLI, install the plugin in a test project, then open that project in Godot with a scene ready.</p><p class="requirements">Documented test target: Godot 4.7.2.<br>Requires Rust supporting the 2024 edition.</p><a class="text-link" href="https://github.com/indie-hub/godot-cli#install">Full installation instructions →</a></div>
+  <div class="terminal"><div class="terminal-title">TERMINAL <span>godot-cli</span></div><pre><code><span class="comment"># Build from the repository</span>
+git clone https://github.com/indie-hub/godot-cli.git
+cd godot-cli
+cargo build
+
+<span class="comment"># Install in your test project</span>
+target/debug/godot-cli install /path/to/project
+
+<span class="comment"># Open the project and a scene in Godot, then:</span>
+target/debug/godot-cli call status
+target/debug/godot-cli call scene-tree</code></pre></div>
+</div></section>
+<section class="notes wrap"><div><p class="eyebrow">04 / GOOD TO KNOW</p><h2>Early days.<br>Clear boundaries.</h2><p>This is an experimental developer tool. Start in a test project and check the command reference before using it on ongoing work.</p></div><div class="faq">
+  <details><summary>Is this Godot’s own command line?</summary><p>This is a separate CLI and plugin for controlling a running editor. It complements the Godot executable’s existing command line.</p></details>
+  <details><summary>What saves, and what can I undo?</summary><p>Scene-edit commands participate in editor undo history. Saving and opening scenes are not undo steps. Play can save scenes; the plugin registers a capture-helper autoload. Input apply writes project settings. The reference documents each command’s effects.</p></details>
+  <details><summary>Can an AI agent use it?</summary><p>Yes. The editor publishes the command interface and the CLI returns structured results. Game behaviour stays in ordinary scripts. This supports an authoring workflow; it does not promise to generate any game automatically.</p></details>
+  <details><summary>What’s supported?</summary><p>The repository documents stock Godot 4.7.2 as the tested engine. Build instructions and current limits live there. Wider engine and platform compatibility is not implied.</p></details>
+</div></section>
+<section class="closing wrap"><p class="eyebrow">HELP SHAPE WHAT COMES NEXT</p><h2>What would you<br>automate first?</h2><a class="button" href="https://github.com/indie-hub/godot-cli/issues">Share a workflow ↗</a></section>
+</main>
+<footer class="wrap"><a class="brand" href="#">Godot Pipeline</a><p>An independent community project.<br>Not an official Godot Engine product.</p><a href="https://github.com/indie-hub/godot-cli">Source on GitHub ↗</a></footer>
+<script src="site.js"></script>
+</body></html>
