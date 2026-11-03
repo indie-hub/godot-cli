@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-03
+
+### Changed
+- `input-stage --help` now shows a strict-JSON `--events` example.
+- A bare command name such as `godot-cli status` now fails with an unknown-subcommand message that shows the `godot-cli call <name>` form; dash words keep `unknown argument`.
+- `plugin.cfg` description shortened to a single sentence.
+- `tools/replay/replay.py` port refusal message no longer names a person.
+
 ## [0.8.0] - 2026-11-02
 
 ### Added
