@@ -1,4 +1,4 @@
-Golden replay harness for the Godot Pipeline editor plugin (1810 rows:
+Golden replay harness for the Godot Pipeline editor plugin (2033 rows:
 1-148 unchanged, 149-200 cover inspect-class and open-scene, 201-262 cover
 connect-signal, 263-362 cover set-group, 363-413 cover set-unique-name,
 414-477 cover the rename unique-flag fix, 478-530 cover the rename option C
@@ -7,8 +7,8 @@ reloads of the accepted inherited-rename cases, 631-636 cover the
 instantiate-scene no-scene guards, 637-719 cover instantiate-scene accepted and
 rejected cases, 720-729 cover the fresh reloads of the accepted instances,
 730-764 cover list-resources, 765-825 cover inspect-resource, 826-827
-cover the published command interface (now twenty-nine entries, with console,
-set_parent, eval, attach_script, play, stop, game_log, capture_game, input_stage, input_read, input_apply and input_discard last), 828-842 cover console validation, 843-938 cover
+cover the published command interface (now thirty-five entries, with console,
+set_parent, eval, attach_script, play, stop, game_log, capture_game, game_key, game_click, input_stage, input_read, input_apply, input_discard, create_scene, save_scene_as, list_open_scenes and save_open_scene last), 828-842 cover console validation, 843-938 cover
 set-parent, 939-945 cover the fresh reload of the accepted set-parent moves,
 946-976 cover set-parent in a derived scene, 977-982 cover the fresh reload of
 the derived-scene moves, 983-1051 cover set-parent against the inherited-node
@@ -46,7 +46,7 @@ unknown top-level field and a misspelled dry_run key that both write nothing,
 wrong-project and missing-field refusals, and a staged entry whose name holds U+FFFD
 (refused as malformed without writing), and 1792-1810 cover INPUT_DISCARD (one entry, then the rest, then
 an already empty store, with every refusal keeping the store, now also covering
-a U+0000 control character in the action name (refused as U+FFFD).
+a U+0000 control character in the action name (refused as U+FFFD), 1811-1846 cover create_scene, 1847-1876 cover save_scene_as, 1877-1888 cover list_open_scenes, 1889-1904 cover save_open_scene, 1905-1914 cover INSTALL, 1915-1984 cover GAME_KEY and 1985-2033 cover GAME_CLICK.
 The script identity is read directly with `get_script()` through `eval`
 (six readings bracketing the three script rejection rows in the build
 script, and a per-node script map in the same eval that reads the history
@@ -85,7 +85,7 @@ HOW TO RUN
   still stored in the storage order above, so FILE holds only the named sessions'
   rows. An unknown name is refused before any editor starts, and the message
   lists the valid names. An empty value is refused. Without --sessions every
-  session runs and FILE is the full 1810-row baseline.
+  session runs and FILE is the full 2033-row baseline.
   Every staging step and every fixture write still happens when sessions are
   filtered, so a selected session meets the same project files it meets in a full
   run. Only the editor launches of sessions that neither run nor were asked for
@@ -129,7 +129,7 @@ HOW TO RUN
   run and still fails the full run. Use --sessions to work on one command at a
   time. The full run stays mandatory at integration and for validators.
 
-  Each run takes several minutes: one --import plus fifty-three editor launches
+  Each run takes several minutes: one --import plus fifty-nine editor launches
   (in launch order A with no scene, E with no scene, G with no scene, J with no
   scene, T with no scene, W with no scene, X with no scene, Y with no scene, the
   console session with no scene, the play no-scene session with no scene, the
@@ -146,12 +146,12 @@ HOW TO RUN
   res://ib_delete.tscn, RS and RU with res://rs_main.tscn, RD with
   res://rs_derived.tscn, RI with res://rs_inst.tscn, AS with
   res://as_main.tscn, ASR with res://as_derived.tscn, PS and PL with
-  res://pl_clean.tscn, GL and CG with no scene, and INPUT_STAGE, INPUT_READ, INPUT_APPLY and INPUT_DISCARD with no scene), 1810 stored rows
-  (1645 requests and 165 file checks).
-  The plugin has twenty-nine commands, a different count. Rows are stored A, B, C,
+  res://pl_clean.tscn, GL and CG with no scene, INPUT_STAGE, INPUT_READ, INPUT_APPLY, INPUT_DISCARD, create_scene, list_open_scenes, GAME_KEY and GAME_CLICK with no scene, save_scene_as and save_open_scene with res://main.tscn, and INSTALL with no editor), 2033 stored rows
+  (1848 requests and 185 file checks).
+  The plugin has thirty-five commands, a different count. Rows are stored A, B, C,
   E, D, F, G, H, I, J, K, L, N, O, P, Q, R, S, T, U, V, W, X, Y, CONSOLE,
   Z, AA, AB, AC, AD, AE, AF, AG, AH, AI, AJ, AK, EVAL, RS, RU, RD, RI,
-  AS, ASR, PL0, PS, PL, GL, CG, INPUT_STAGE, INPUT_READ, INPUT_APPLY, INPUT_DISCARD: a
+  AS, ASR, PL0, PS, PL, GL, CG, INPUT_STAGE, INPUT_READ, INPUT_APPLY, INPUT_DISCARD, create_scene, save_scene_as, list_open_scenes, save_open_scene, INSTALL, GAME_KEY, GAME_CLICK: a
   fresh editor restores the previous session's open scenes, so the no-scene
   sessions (A, E, G, J, T, W, X, Y, the console session and the eval session,
   and C before it opens anything) must run before any scene session. The console
