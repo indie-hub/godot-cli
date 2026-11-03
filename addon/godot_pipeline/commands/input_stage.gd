@@ -76,7 +76,7 @@ static func interface() -> Dictionary:
 		"refresh_poll": false,
 		"arguments": [
 		{"name": "action", "flag": "--action", "positional": null, "type": "string", "required": true, "default": null, "help": "Action name without the input/ prefix."},
-		{"name": "events", "flag": "--events", "positional": null, "type": "json", "required": false, "default": null, "help": "JSON array of 1 to 32 wire event objects; refused with --remove."},
+		{"name": "events", "flag": "--events", "positional": null, "type": "json", "required": false, "default": null, "help": "JSON array of 1 to 32 wire event objects; refused with --remove. Example: --events '[{\"type\":\"key\",\"keycode\":65}]'."},
 		{"name": "deadzone", "flag": "--deadzone", "positional": null, "type": "json", "required": false, "default": null, "help": "Deadzone number from 0.0 to 1.0; default 0.2; refused with --remove."},
 		{"name": "remove", "flag": "--remove", "positional": null, "type": "boolean", "required": false, "default": false, "help": "Stage a removal entry instead of events."},
 		{"name": "project_path", "flag": "--project-path", "positional": null, "type": "string", "required": true, "default": null, "help": "Absolute path of the target project; canonicalized before sending."},
