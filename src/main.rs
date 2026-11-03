@@ -744,10 +744,9 @@ fn insert_supplied(
     // keeps last-wins. A positional and any flag disagreeing
     // is refused regardless of order or repetition; equal
     // values in both forms are accepted.
-    let both_forms = command
-        .arguments
-        .iter()
-        .any(|argument| argument.name == name && argument.positional.is_some() && argument.flag.is_some());
+    let both_forms = command.arguments.iter().any(|argument| {
+        argument.name == name && argument.positional.is_some() && argument.flag.is_some()
+    });
     if both_forms {
         if form == "positional" {
             if let Some(flags) = flag_values.get(name) {
@@ -765,16 +764,16 @@ fn insert_supplied(
             }
             positional_values.insert(name.to_string(), value.clone());
         } else {
-            if let Some(positional) = positional_values.get(name) {
-                if positional != &value {
-                    return Err(format!(
-                        "conflicting {} for {}: {} vs {}",
-                        name,
-                        command.cli_name(),
-                        positional,
-                        value
-                    ));
-                }
+            if let Some(positional) = positional_values.get(name)
+                && positional != &value
+            {
+                return Err(format!(
+                    "conflicting {} for {}: {} vs {}",
+                    name,
+                    command.cli_name(),
+                    positional,
+                    value
+                ));
             }
             flag_values
                 .entry(name.to_string())
@@ -835,7 +834,15 @@ fn bind_arguments(
                     .cloned()
                     .ok_or_else(|| format!("{} requires a value", declared.label()))?
             };
-            insert_supplied(&mut supplied, &mut positional_values, &mut flag_values, &declared.name, value, "flag", command)?;
+            insert_supplied(
+                &mut supplied,
+                &mut positional_values,
+                &mut flag_values,
+                &declared.name,
+                value,
+                "flag",
+                command,
+            )?;
             continue;
         }
         // Skip positional slots already supplied (e.g. by a flag), so a
@@ -867,7 +874,15 @@ fn bind_arguments(
                 command.cli_name()
             ));
         };
-        insert_supplied(&mut supplied, &mut positional_values, &mut flag_values, &declared.name, argument.clone(), "positional", command)?;
+        insert_supplied(
+            &mut supplied,
+            &mut positional_values,
+            &mut flag_values,
+            &declared.name,
+            argument.clone(),
+            "positional",
+            command,
+        )?;
         position += 1;
     }
     Ok(supplied)
@@ -1942,7 +1957,7 @@ mod tests {
         let outside = base.join(format!("cli_res_path_outside_{unique}"));
         std::fs::create_dir_all(&outside).expect("create outside dir");
         std::fs::write(outside.join("a.tres"), "not a real resource").expect("write outside file");
-        std::os::unix::fs::symlink(&outside.join("a.tres"), dir.join("linked.tres"))
+        std::os::unix::fs::symlink(outside.join("a.tres"), dir.join("linked.tres"))
             .expect("create symlink");
         let (port, server) = fake_plugin(vec![interface_reply()]);
 
@@ -2288,7 +2303,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&outside).expect("create outside dir");
         std::fs::write(outside.join("a.tres"), "not a real resource").expect("write outside file");
-        std::os::unix::fs::symlink(&outside.join("a.tres"), dir.join("escape.tres"))
+        std::os::unix::fs::symlink(outside.join("a.tres"), dir.join("escape.tres"))
             .expect("create symlink");
         let (port, server) = fake_plugin(vec![interface_reply()]);
 
@@ -2451,7 +2466,7 @@ mod tests {
             let (port, server) = fake_plugin(vec![Response::Ok {
                 data: json!({ "protocol_version": 2, "commands": [] }),
             }]);
-            let error = run(&with_port(port, &argv)).expect_err("the version is refused");
+            let error = run(&with_port(port, argv)).expect_err("the version is refused");
             assert_eq!(
                 error, "unsupported protocol version: 2 (this godot-cli knows 1)",
                 "for {argv:?}"
@@ -2633,7 +2648,9 @@ mod tests {
     fn a_matching_positional_and_flag_scene_path_is_accepted() {
         let (port, server) = fake_plugin(vec![
             interface_reply(),
-            Response::Ok { data: json!({ "scanning": false }) },
+            Response::Ok {
+                data: json!({ "scanning": false }),
+            },
         ]);
         let argv = with_port(
             port,
@@ -2657,7 +2674,9 @@ mod tests {
     fn repeated_flags_alone_keep_last_wins() {
         let (port, server) = fake_plugin(vec![
             interface_reply(),
-            Response::Ok { data: json!({ "scanning": false }) },
+            Response::Ok {
+                data: json!({ "scanning": false }),
+            },
         ]);
         let argv = with_port(
             port,
