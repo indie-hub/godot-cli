@@ -1,0 +1,22 @@
+name: audit
+
+on:
+  pull_request:
+    paths: [Cargo.toml, Cargo.lock]
+  push:
+    branches: [main]
+    paths: [Cargo.toml, Cargo.lock]
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-audit:
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v4.2.2, pinned by commit
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit
